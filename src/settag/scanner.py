@@ -7,14 +7,32 @@ class UnsupportedInputError(ValueError):
     pass
 
 
-def scan_mp3(path: Path) -> list[Path]:
+SUPPORTED_EXTENSIONS = frozenset(
+    {
+        ".aif",
+        ".aiff",
+        ".flac",
+        ".m4a",
+        ".m4b",
+        ".mp3",
+        ".mp4",
+        ".wav",
+        ".wave",
+    }
+)
+
+
+def scan_audio(path: Path) -> list[Path]:
     resolved = path.expanduser().resolve()
     if not resolved.exists():
         raise FileNotFoundError(f"Input does not exist: {resolved}")
 
     if resolved.is_file():
-        if resolved.suffix.lower() != ".mp3":
-            raise UnsupportedInputError(f"Only MP3 files are supported: {resolved}")
+        if resolved.suffix.lower() not in SUPPORTED_EXTENSIONS:
+            supported = ", ".join(sorted(SUPPORTED_EXTENSIONS))
+            raise UnsupportedInputError(
+                f"Unsupported audio extension for {resolved}. Supported: {supported}"
+            )
         return [resolved]
 
     if not resolved.is_dir():
@@ -23,5 +41,5 @@ def scan_mp3(path: Path) -> list[Path]:
     return sorted(
         candidate.resolve()
         for candidate in resolved.rglob("*")
-        if candidate.is_file() and candidate.suffix.lower() == ".mp3"
+        if candidate.is_file() and candidate.suffix.lower() in SUPPORTED_EXTENSIONS
     )

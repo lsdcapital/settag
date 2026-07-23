@@ -1,19 +1,21 @@
 # settag
 
 `settag` is a small, analysis-first genre tagger for DJ music libraries. It
-analyzes MP3 audio with Essentia's 2025 Discogs519 MAEST models and emits a
-JSONL change plan. It changes an audio file only when `--write` is supplied.
+analyzes audio with Essentia's 2025 Discogs519 MAEST models, displays a compact
+change-plan summary, and can save the complete result as JSONL. It changes an
+audio file only when `--write` is supplied.
 
 The first release is intentionally narrow:
 
-- MP3 files only
+- MP3, FLAC, M4A/M4B/MP4, AIFF, and WAV files
 - genre analysis only
 - the 519-label Discogs taxonomy
-- JSONL output for every attempted file
-- namespaced ID3 `TXXX` fields only
+- concise console output with optional complete JSONL records
+- namespaced, format-native SetTag metadata only
 - no interactive mode, watcher, daemon, web UI, or SetPath integration
 
-It never writes or replaces the standard `GENRE` (`TCON`) field.
+It never writes or replaces standard genre fields such as ID3 `TCON`, Vorbis
+`GENRE`, or MP4 `©gen`.
 
 ## Install
 
@@ -39,13 +41,14 @@ uv sync
 uv run settag models download
 ```
 
-Dry-run a single MP3:
+Dry-run a single audio file:
 
 ```sh
-uv run settag analyze "/path/to/track.mp3"
+uv run settag analyze "/path/to/track.flac"
 ```
 
-Or recursively analyze every MP3 in a directory and save the JSONL plan:
+Or recursively analyze every supported audio file in a directory and save the
+JSONL plan:
 
 ```sh
 uv run settag analyze "/path/to/music/library" \
@@ -76,7 +79,19 @@ Check whether the required models are installed:
 uv run settag models status
 ```
 
-Only MP3 files are currently supported.
+### Supported formats
+
+SetTag uses the parsed Mutagen container type to choose an approved writer:
+
+| Files | Native SetTag metadata |
+|---|---|
+| MP3, AIFF, WAV | ID3v2 `TXXX:SETTAG_*` frames |
+| FLAC | Vorbis comments named `SETTAG_*` |
+| M4A, M4B, MP4 | MP4 freeform atoms under `com.lsdcapital.settag` |
+
+The scanner recognizes `.mp3`, `.flac`, `.m4a`, `.m4b`, `.mp4`, `.aif`,
+`.aiff`, `.wav`, and `.wave`. Raw AAC and other containers remain unsupported
+for metadata writes even if Essentia could decode their audio.
 
 ## Analyze without changing files
 
@@ -90,12 +105,36 @@ For a single track:
 uv run settag analyze "/path/to/track.mp3"
 ```
 
-The default output is JSONL on stdout. Diagnostics go to stderr, so output can
-also be redirected safely:
+The default `INFO` output shows the path, selected genres, scores, and number
+of planned SetTag changes. It also makes the preservation boundary explicit:
+
+```text
+INFO   standard genre: House (unchanged)
+INFO   SetTag genres: none -> Electronic---Tropical House 58.4%, Electronic---House 54.6%
+INFO   dry run: 6 SetTag fields would change; nothing written
+```
+
+It does not print all 519 model activations.
+
+Use `--output` for a complete, machine-readable JSONL audit record:
 
 ```sh
-uv run settag analyze /path/to/music > analysis.jsonl
+uv run settag analyze /path/to/music --output analysis.jsonl
 ```
+
+Or enable debug logging to inspect the complete record in the console:
+
+```sh
+LOG_LEVEL=DEBUG uv run settag analyze "/path/to/track.mp3"
+```
+
+`LOG_LEVEL` accepts `DEBUG`, `INFO`, `WARNING`, `ERROR`, or `CRITICAL`
+(case-insensitive). Debug logs and normal progress go to stderr; a file passed
+with `--output` contains JSONL only.
+
+Essentia's TensorFlow backend may also print a one-time Abseil/MLIR startup
+message directly from native code. That message is harmless and is not
+controlled by Python's `LOG_LEVEL`.
 
 Predictions must meet the threshold. `settag` does not force a top prediction:
 
@@ -113,17 +152,24 @@ uv run settag analyze /path/to/music \
   --output applied.jsonl
 ```
 
-Only these ID3 `TXXX` descriptions are owned and updated by `settag`:
+Only these logical fields are owned and updated by SetTag:
 
 - `SETTAG_GENRE`
 - `SETTAG_GENRE_SCORES`
+- `SETTAG_VERSION`
 - `SETTAG_MODEL`
 - `SETTAG_ANALYZED_AT`
 - `SETTAG_CONFIG_SHA256`
 
+Each writer maps those fields to its format-native namespace. For example,
+`SETTAG_GENRE` is `TXXX:SETTAG_GENRE` in ID3, `SETTAG_GENRE` in FLAC Vorbis
+comments, and `----:com.lsdcapital.settag:GENRE` in MP4.
+`SETTAG_GENRE` and the decoded `SETTAG_GENRE_SCORES` entries always contain
+the same selected labels in the same order.
+
 Existing title, artist, album, standard genre, comments, artwork, and fields
 owned by other tools are left untouched. Reanalysis may replace or remove
-`settag`-owned fields so they continue to describe the current result.
+SetTag-owned fields so they continue to describe the current result.
 
 ## Model
 
@@ -143,7 +189,9 @@ the older model family and add a second inference pipeline.
 
 ## Licensing
 
-The `settag` source code is licensed under AGPL-3.0-only.
+The `settag` source code is licensed under AGPL-3.0-only and is intended to be
+distributed as open-source software. The current pretrained-model workflow is
+intended for non-commercial use because the model files have separate terms.
 
 Essentia and its models have their own terms. Essentia's official licensing
 page currently describes:
@@ -172,11 +220,11 @@ uv run ruff check .
 ```
 
 The unit tests do not run model inference. A real-audio smoke test requires
-downloaded models and a local MP3:
+downloaded models and a local supported audio file:
 
 ```sh
 uv run settag models status
-uv run settag analyze /path/to/track.mp3
+uv run settag analyze /path/to/track.flac
 ```
 
 Design details and the JSONL/tag contracts are in [DESIGN.md](DESIGN.md).

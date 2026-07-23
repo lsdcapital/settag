@@ -7,7 +7,7 @@ from typing import Any
 from settag import __version__
 from settag.hashing import sha256_file, sha256_json
 from settag.policy import Prediction
-from settag.tags import TagChange
+from settag.tags import TagPlan
 
 
 def utc_now() -> str:
@@ -41,7 +41,7 @@ def analysis_record(
     config: dict[str, object],
     predictions: list[Prediction],
     selected: list[Prediction],
-    changes: list[TagChange],
+    tag_plan: TagPlan,
     write_requested: bool,
     write_status: str,
     result_sha256: str | None,
@@ -67,10 +67,7 @@ def analysis_record(
         "config": config,
         "predictions": [item.to_dict() for item in predictions],
         "selected": [item.to_dict() for item in selected],
-        "tag_plan": {
-            "format": "id3",
-            "changes": [item.to_dict() for item in changes],
-        },
+        "tag_plan": tag_plan.to_dict(),
         "write": write,
     }
 

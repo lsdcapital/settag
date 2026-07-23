@@ -3,9 +3,9 @@
 ## Product boundary
 
 ```text
-audio files → settag analysis/change plan → optional settag-owned ID3 tags
+audio files → settag analysis/change plan → optional format-native SetTag metadata
                                                     ↓
-                                          any metadata consumer
+                                           any metadata consumer
 ```
 
 `settag` is independent from SetPath. SetPath should remain a read-only
@@ -15,26 +15,41 @@ tool.
 ## Safety invariants
 
 1. Analysis is the default; writing requires `--write`.
-2. Only MP3 files are accepted.
-3. Only `TXXX` frames with a `SETTAG_` description are changed.
-4. Standard `TCON`/`GENRE` is never changed.
+2. Only formats with an approved SetTag metadata adapter are accepted.
+3. Only fields in SetTag's native namespace are changed.
+4. Standard genre fields such as ID3 `TCON`, Vorbis `GENRE`, and MP4 `©gen`
+   are never changed.
 5. Predictions below the configured threshold are never selected merely to
    ensure a non-empty result.
-6. Existing multi-value fields and all metadata owned by other software are
-   preserved.
+6. Existing multi-value fields, artwork, and logical metadata owned by other
+   software are preserved.
 7. Every result states the model files, their SHA-256 digests, the analysis
    time, and a hash of the selection configuration.
-8. Every attempted input emits either an analysis record or an error record.
+8. Every attempted input produces either an analysis record or an error
+   record; complete records are persisted with `--output` or exposed through
+   debug logging.
 
 ## Pipeline
 
 ```text
-scan → fingerprint → infer → select → plan → optionally apply → emit JSONL
+scan → fingerprint → infer → select → plan → optionally apply → summarize
+                                                                  └→ JSONL
 ```
 
 The model is loaded once per CLI invocation and reused for all tracks.
 Inference failures are isolated to the affected record so a directory scan can
 continue. A run exits non-zero when any track fails.
+
+Normal `INFO` logging contains a compact per-track summary. The complete record
+is written as JSONL when `--output` is supplied and is also logged when
+`LOG_LEVEL=DEBUG`. JSONL is an audit/data format rather than routine console
+noise.
+
+Essentia decoding and metadata writing are separate capabilities. The scanner
+currently admits MP3, FLAC, M4A/M4B/MP4, AIFF, and WAV. After analysis, Mutagen
+detects the actual metadata container and selects an approved adapter. A file
+whose extension is recognized but whose metadata container is not cannot be
+written.
 
 ## JSONL record
 
@@ -101,18 +116,32 @@ probabilities.
 
 `source.sha256` fingerprints the file before any requested write. Written
 records also contain `write.result_sha256`, which fingerprints the resulting
-file after the ID3 update.
+file after the native metadata update.
 
 ## Tag contract
 
 `SETTAG_GENRE` is a multi-value list containing only selected Discogs519
 labels. `SETTAG_GENRE_SCORES` is compact JSON containing the selected label
-and activation pairs. `SETTAG_MODEL` identifies the model pair.
+and activation pairs in exactly the same membership and order.
+`SETTAG_VERSION` identifies the SetTag software version.
+`SETTAG_MODEL` identifies the analysis model pair.
 `SETTAG_ANALYZED_AT` is UTC. `SETTAG_CONFIG_SHA256` identifies the selection
 configuration.
 
-The full prediction ranking remains in JSONL rather than being embedded in the
-audio file.
+The native representations are:
+
+| Adapter | Files | Representation |
+|---|---|---|
+| `id3` | MP3, AIFF, WAV | `TXXX:SETTAG_*` |
+| `vorbis-comments` | FLAC | `SETTAG_*` comments |
+| `mp4-freeform` | M4A, M4B, MP4 | `----:com.lsdcapital.settag:*` |
+
+For MP4, the logical `SETTAG_` prefix is represented by the
+`com.lsdcapital.settag` freeform namespace, so `SETTAG_MODEL` becomes
+`----:com.lsdcapital.settag:MODEL`.
+
+The full prediction ranking remains in JSONL and debug logging rather than
+being embedded in the audio file or printed during a normal run.
 
 If reanalysis selects no genres, an existing `SETTAG_GENRE` and
 `SETTAG_GENRE_SCORES` are removed. Provenance fields are still updated. This
@@ -122,13 +151,13 @@ leaving all non-settag metadata alone.
 ## Deferred work
 
 - analysis cache and resume support
-- FLAC/Vorbis comments
-- M4A/MP4 freeform atoms
-- AIFF and WAV ID3 adapters
+- Ogg Vorbis and Opus comments
+- APEv2 formats such as WavPack, Monkey's Audio, and Musepack
+- ASF/WMA attributes
+- analysis-only support for decodable but non-writable containers
 - mood/theme models
 - explicit opt-in support for filling empty standard fields
 - concurrency and worker model lifecycle
-- a generic SetPath file-tag importer
 
-These should be added only after the MP3/genre contract is exercised on a real
-DJ library.
+These should be added only after the format-native genre contract is exercised
+on a real DJ library.
