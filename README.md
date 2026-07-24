@@ -31,9 +31,10 @@ uv run settag analyze "/path/to/music" --tasks genre,mood-theme,instrument
 ```
 
 Models are downloaded once into `~/.cache/settag/models`. They are not bundled
-with this repository or its Python distributions. Review [Licensing](#licensing)
-before using the default models in a professional, business, or
-revenue-generating workflow.
+with this repository or its Python distributions. Downloads and installed
+files must match the SHA-256 digests pinned in SetTag's model catalogue before
+inference can start. Review [Licensing](#licensing) before using the default
+models in a professional, business, or revenue-generating workflow.
 
 ## Run the app
 
@@ -388,12 +389,21 @@ change or an analysis-error record rejects the whole plan before writing.
 Legacy `settag.plan/v1` and `settag.plan/v2` plans remain readable; their
 previously selected labels are treated as the complete available evidence.
 
-## Scores and model
+## Scores and models
 
-The pinned model pair is:
+The pinned production models are:
 
-- embedding: `discogs-maest-30s-pw-519l-2`
-- classifier: `genre_discogs519-discogs-maest-30s-pw-519l-1`
+- MAEST genre:
+  - `discogs-maest-30s-pw-519l-2`
+  - `genre_discogs519-discogs-maest-30s-pw-519l-1`
+- optional Discogs-EffNet metadata:
+  - `discogs-effnet-bs64-1`
+  - `mtg_jamendo_moodtheme-discogs-effnet-1`
+  - `mtg_jamendo_instrument-discogs-effnet-1`
+
+When genre and EffNet tasks are requested together, one 16 kHz audio decode
+feeds both model stacks. Mood/theme and instrument always reuse one EffNet
+embedding pass.
 
 Each score is the mean class-wise sigmoid activation across analyzed audio
 patches. It is useful for ranking and applying a score cutoff, but it is not
@@ -457,6 +467,7 @@ run model inference. A real-audio smoke test requires downloaded models:
 
 ```sh
 uv run settag models status
+uv run settag models status --tasks genre,mood-theme,instrument
 uv run settag "/path/to/track.flac"
 ```
 

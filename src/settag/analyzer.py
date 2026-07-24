@@ -22,6 +22,7 @@ from settag.model_store import (
 )
 from settag.policy import Prediction, rank_predictions
 from settag.tasks import AnalysisTask, ordered_tasks
+from settag.taxonomy import readable_label
 
 
 class AnalyzerError(RuntimeError):
@@ -109,6 +110,9 @@ class EssentiaGenreAnalyzer:
             sampleRate=self.spec.sample_rate,
             resampleQuality=4,
         )()
+        return self._predict_audio(audio)
+
+    def _predict_audio(self, audio: Any) -> list[Prediction]:
         embeddings = self._embedding_model(audio)
 
         pool = self._pool_type()
@@ -167,9 +171,12 @@ class EssentiaEffnetAnalyzer:
             spec = MODEL_SPECS_BY_TASK[task]
             metadata_path = spec.path(model_dir, "classifier_metadata")
             metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
-            labels = metadata.get("classes")
-            if not isinstance(labels, list) or not all(isinstance(item, str) for item in labels):
+            source_labels = metadata.get("classes")
+            if not isinstance(source_labels, list) or not all(
+                isinstance(item, str) for item in source_labels
+            ):
                 raise AnalyzerError(f"Invalid classifier metadata: {metadata_path}")
+            labels = [readable_label(item) for item in source_labels]
             outputs = metadata.get("schema", {}).get("outputs", [])
             output_name = next(
                 (
@@ -205,6 +212,9 @@ class EssentiaEffnetAnalyzer:
             sampleRate=self._sample_rate,
             resampleQuality=4,
         )()
+        return self._predict_audio(audio)
+
+    def _predict_audio(self, audio: Any) -> dict[AnalysisTask, list[Prediction]]:
         embeddings = self._embedding_model(audio)
         results: dict[AnalysisTask, list[Prediction]] = {}
         for task, (model, labels, _) in self._heads.items():
@@ -245,14 +255,52 @@ class EssentiaTaskAnalyzer:
             if self._effnet is not None
             else "unknown"
         )
+        if self._genre is not None and self._effnet is not None:
+            if self._genre.spec.sample_rate != self._effnet._sample_rate:
+                raise AnalyzerError(
+                    "MAEST and EffNet require different sample rates; "
+                    "a shared audio decode is not possible"
+                )
+            self._loader_type = self._genre._loader_type
+            self._sample_rate = self._genre.spec.sample_rate
+        else:
+            self._loader_type = None
+            self._sample_rate = None
+        self._tensorflow_startup_pending = True
 
     def analyze_tasks(self, path: Path) -> dict[AnalysisTask, list[Prediction]]:
+        if self._genre is not None and self._effnet is not None:
+            if self._tensorflow_startup_pending:
+                with _filter_tensorflow_startup_stderr():
+                    predictions = self._analyze_shared_audio(path)
+                self._tensorflow_startup_pending = False
+                return predictions
+            return self._analyze_shared_audio(path)
+
         results: dict[AnalysisTask, list[Prediction]] = {}
         if self._genre is not None:
             results["genre"] = self._genre.analyze(path)
         if self._effnet is not None:
             results.update(self._effnet.analyze_tasks(path))
         return results
+
+    def _analyze_shared_audio(
+        self,
+        path: Path,
+    ) -> dict[AnalysisTask, list[Prediction]]:
+        assert self._genre is not None
+        assert self._effnet is not None
+        assert self._loader_type is not None
+        assert self._sample_rate is not None
+        audio = self._loader_type(
+            filename=str(path),
+            sampleRate=self._sample_rate,
+            resampleQuality=4,
+        )()
+        return {
+            "genre": self._genre._predict_audio(audio),
+            **self._effnet._predict_audio(audio),
+        }
 
 
 @contextmanager

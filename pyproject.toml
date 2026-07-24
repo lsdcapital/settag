@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "settag"
 version = "0.1.0"
-description = "A safe, analysis-first Essentia genre tagger for DJ libraries"
+description = "A safe, analysis-first Essentia music tagger for DJ libraries"
 readme = "README.md"
 license = "AGPL-3.0-only"
 license-files = ["LICENSE", "THIRD_PARTY_NOTICES.md"]

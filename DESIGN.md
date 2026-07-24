@@ -185,6 +185,10 @@ scan → read tags → choose tracks → load model → infer → select → pla
 
 The Textual workflow constructs the model lazily on the first analysis action
 and reuses it for later batches. The plain workflow constructs it immediately.
+When MAEST and EffNet tasks are selected together, one 16 kHz decode feeds both
+stacks; mood/theme and instrument share a single EffNet embedding pass. Every
+required model artifact is verified against its pinned SHA-256 before the
+analyzer is constructed.
 Interactive cancellation is cooperative between tracks: the in-flight native
 inference finishes, completed results remain reviewable, and unprocessed tracks
 remain selected. Failures are isolated during analysis. A run returns non-zero
@@ -326,5 +330,5 @@ cannot be applied.
 - APEv2 formats such as WavPack, Monkey's Audio, and Musepack
 - ASF/WMA
 - analysis-only support for decodable but unwritable containers
-- mood/theme models
+- representative-library calibration of task-specific thresholds
 - curated taxonomy search and aliases beyond direct user input
