@@ -10,16 +10,18 @@ from collections.abc import Sequence
 from contextlib import ExitStack
 from dataclasses import replace
 from pathlib import Path
-from typing import TextIO
+from typing import Any, TextIO
 
-from settag.analyzer import EssentiaGenreAnalyzer
+from settag.analyzer import EssentiaGenreAnalyzer, EssentiaTaskAnalyzer
 from settag.catalog import DISCOGS519_MAEST
 from settag.hashing import sha256_file
 from settag.model_store import (
     DEFAULT_MODEL_DIR,
     download_models,
+    download_task_models,
     installed_manifest,
-    missing_files,
+    installed_task_manifests,
+    missing_task_files,
 )
 from settag.plans import (
     PlanError,
@@ -37,6 +39,7 @@ from settag.tags import (
     read_genre_state,
     read_owned_values,
 )
+from settag.tasks import AnalysisTask, parse_tasks
 from settag.tui import SetTagApp
 from settag.workflow import (
     AnalysisBatch,
@@ -90,6 +93,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="Download the pinned model pair directly from Essentia.",
     )
     _add_model_dir(download)
+    _add_tasks(download)
     download.add_argument(
         "--force",
         action="store_true",
@@ -101,6 +105,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="Show whether all required model files are installed.",
     )
     _add_model_dir(status)
+    _add_tasks(status)
 
     analyze = subparsers.add_parser(
         "analyze",
@@ -108,6 +113,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     analyze.add_argument("path", type=Path)
     _add_analysis_options(analyze)
+    _add_tasks(analyze)
     analyze.add_argument(
         "--write",
         action="store_true",
@@ -181,6 +187,26 @@ def _add_analysis_options(parser: argparse.ArgumentParser) -> None:
             "stored evidence is unaffected (default: 0.10)."
         ),
     )
+
+
+def _add_tasks(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--tasks",
+        type=_analysis_tasks,
+        default=("genre",),
+        metavar="TASKS",
+        help=(
+            "Comma-separated analysis tasks: genre,mood-theme,instrument "
+            "(default: genre)."
+        ),
+    )
+
+
+def _analysis_tasks(value: str) -> tuple[AnalysisTask, ...]:
+    try:
+        return parse_tasks(value)
+    except ValueError as error:
+        raise argparse.ArgumentTypeError(str(error)) from error
 
 
 def _positive_int(value: str) -> int:
@@ -421,20 +447,33 @@ def _print_plain_batch(source: Path, batch: AnalysisBatch) -> None:
 def _run_models(args: argparse.Namespace) -> int:
     model_dir = args.model_dir.expanduser().resolve()
     if args.models_command == "download":
-        manifest = download_models(model_dir, force=args.force)
+        manifest = (
+            download_models(model_dir, force=args.force)
+            if args.tasks == ("genre",)
+            else download_task_models(model_dir, args.tasks, force=args.force)
+        )
         print(json.dumps(manifest, indent=2, sort_keys=True))
         return 0
 
     if args.models_command == "status":
-        missing = missing_files(model_dir)
+        missing = missing_task_files(model_dir, args.tasks)
         if missing:
-            print(f"model: {DISCOGS519_MAEST.id}")
+            print(f"tasks: {','.join(args.tasks)}")
             print(f"directory: {model_dir}")
             print("status: missing")
-            for item in missing:
-                print(f"missing: {item.filename}")
+            for task, files in missing.items():
+                for item in files:
+                    print(f"missing[{task}]: {item.filename}")
             return 1
-        print(json.dumps(installed_manifest(model_dir), indent=2, sort_keys=True))
+        manifest = (
+            installed_manifest(model_dir)
+            if args.tasks == ("genre",)
+            else {
+                "schema": "settag.models/v2",
+                "tasks": installed_task_manifests(model_dir, args.tasks),
+            }
+        )
+        print(json.dumps(manifest, indent=2, sort_keys=True))
         return 0
 
     raise AssertionError(f"Unhandled models command: {args.models_command}")
@@ -457,7 +496,12 @@ def _run_analyze(args: argparse.Namespace) -> int:
 
     try:
         paths = scan_audio(args.path)
-        analyzer = EssentiaGenreAnalyzer(args.model_dir.expanduser().resolve())
+        model_dir = args.model_dir.expanduser().resolve()
+        analyzer = (
+            EssentiaGenreAnalyzer(model_dir)
+            if args.tasks == ("genre",)
+            else EssentiaTaskAnalyzer(model_dir, args.tasks)
+        )
     except Exception as error:
         print(str(error), file=sys.stderr)
         return 2
@@ -779,7 +823,7 @@ def _prompt_for_batch_apply(write_count: int) -> bool:
 def _analyze_one(
     path: Path,
     *,
-    analyzer: EssentiaGenreAnalyzer,
+    analyzer: Any,
     top: int,
     threshold: float,
     write: bool,
@@ -795,9 +839,7 @@ def _analyze_one(
     source = track.source
     analyzed_at = track.analyzed_at
     config = track.config
-    predictions = track.predictions
     evidence = track.evidence
-    selected = track.selected
     desired = track.desired
     genre_state = track.genre_state
     tag_plan = track.tag_plan
@@ -824,11 +866,25 @@ def _analyze_one(
         source=source,
         analyzed_at=analyzed_at,
         backend_version=analyzer.backend_version,
-        model=analyzer.model_manifest,
         config=config,
-        predictions=predictions,
-        evidence=evidence,
-        selected=selected,
+        tasks={
+            task: {
+                "provenance": track.task_provenance[task],
+                "predictions": [
+                    item.to_dict()
+                    for item in track.task_predictions[task]
+                ],
+                "evidence": [
+                    item.to_dict()
+                    for item in track.task_evidence[task]
+                ],
+                "selected": [
+                    item.to_dict()
+                    for item in track.task_selected[task]
+                ],
+            }
+            for task in track.task_predictions
+        },
         tag_plan=tag_plan,
         write_requested=write_requested,
         write_status=write_status,

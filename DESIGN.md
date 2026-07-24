@@ -57,6 +57,14 @@ a conventional genre, or up-to-date tracks. Analysis consumes the intersection
 of the current filtered view and its selected tracks; hidden selections are
 never silently included.
 
+Analysis is a serial background job layered over both phases. Its input batch
+is frozen at start. Each completed track is staged, persisted to the workbench,
+and exposed to review before the next track begins. The user can navigate the
+library, inspect details, enter review with `V`, edit or save completed plans,
+and write the completed snapshot while later tracks continue analyzing. An
+in-flight track has no plan and cannot enter a write. Track-level concurrency
+is deliberately avoided so background operation does not multiply model load.
+
 The dense table combines analysis validity and date into one `Analysis`
 column: `Never`, `Up to date · date`, `Reanalyze · date`,
 `Incomplete · date`, or `New · date`. The details panel retains the full
@@ -92,7 +100,8 @@ footer changes with the current phase:
 
 ```text
 Choose: Space toggle · I details · A all/none · F filter · V review (when ready) · Enter/R analyze · Q quit
-Analyzing: Esc cancel after current track
+Analyzing in Library: I details · F filter · V review completed · Esc stop after current
+Analyzing in Review: Space toggle · A all/none · I details · E genre · S save · Enter/W write completed · Esc stop after current
 Review: Space toggle · A all/none · I details · E genre · S save · Enter/W write
 ```
 
@@ -105,8 +114,10 @@ only selection cue.
 `W` performs preflight and opens one confirmation screen with `Write` focused
 by default. `Enter` confirms and `Esc` returns to review. SetTag performs
 preflight again, then writes and verifies. Analysis errors disable batch
-writing. A successful write does not exit the app: written tracks become
-current library entries, while any unwritten tracks remain in review.
+writing. When analysis is still running, preflight snapshots only completed,
+checked plans; later results cannot enter an already-confirmed write. A
+successful write does not exit the app: written tracks become current library
+entries, while any unwritten tracks remain in review.
 
 ## Local workbench
 
@@ -125,7 +136,7 @@ The default SQLite path follows the platform application-data convention:
 `SETTAG_STATE_DB` changes the default and `run --state-db PATH` overrides one
 invocation. Plain CLI commands are stateless and never open the workbench.
 
-Records reuse the validated `settag.plan/v3` representation. An upsert is
+Records reuse the validated `settag.plan/v4` representation. An upsert is
 committed after every successful track analysis and after each staged standard
 genre edit. A verified write deletes its corresponding entry. Persistence
 failure leaves the in-memory review intact; cleanup failure after a verified
@@ -213,18 +224,26 @@ The owned logical fields are:
 
 - `SETTAG_GENRE`: the bounded Discogs519 evidence labels in ranked order
 - `SETTAG_GENRE_SCORES`: compact JSON with the same labels, order, and scores
+- `SETTAG_MOOD_THEME`: bounded EffNet mood/theme labels in ranked order
+- `SETTAG_MOOD_THEME_SCORES`: compact JSON with the same labels, order, and scores
+- `SETTAG_INSTRUMENT`: bounded EffNet instrument labels in ranked order
+- `SETTAG_INSTRUMENT_SCORES`: compact JSON with the same labels, order, and scores
 - `SETTAG_VERSION`: SetTag version
 - `SETTAG_MODEL`: model-pair identifier
 - `SETTAG_ANALYZED_AT`: UTC analysis time
 - `SETTAG_CONFIG_SHA256`: evidence-configuration fingerprint
+- `SETTAG_PROVENANCE`: `settag.provenance/v2`, keyed by task with full model
+  manifests, artifact digests, configuration, thresholds, and timestamps
 
-The full 519-label prediction vector is retained in `settag.analysis/v1`
-output and debug logging. Audio metadata stores the top 20 ranked results
-without applying the SetTag review cutoff. Importers can apply their own score
-policy to this bounded evidence.
+`genre` is the default task and loads only MAEST. Explicit `mood-theme` and
+`instrument` tasks share one Discogs-EffNet embedding pass and use their own
+heads. Genre evidence is exclusively MAEST-derived. EffNet output cannot write
+the SetTag or conventional genre fields.
 
-The six owned fields are one analysis bundle. The conventional file genre is
-the only independently staged metadata layer.
+Task updates are independent. A partial run replaces only the requested task
+records and preserves valid evidence and provenance for other tasks. Audio
+metadata stores the top 20 ranked results for each task without applying the
+review cutoff.
 
 Scores are mean sigmoid activations across audio patches. They are suitable
 for ranking and applying a score cutoff but are not demonstrated calibrated
@@ -232,10 +251,10 @@ confidence or probabilities.
 
 ## Complete analysis record
 
-`settag.analysis/v1` records the source fingerprint, analysis time, backend,
-exact model files and SHA-256 values, evidence configuration, review policy,
-full predictions, bounded evidence, the review-selected subset, native SetTag
-plan, and write result.
+`settag.analysis/v2` records the source fingerprint, analysis time, backend,
+requested tasks, exact model files and SHA-256 values, evidence configuration,
+review policy, task-keyed full predictions, bounded evidence, review-selected
+subsets, native SetTag plan, and write result.
 
 The immediate `analyze --write` path remains evidence-only. It does not stage
 or write a conventional genre.
@@ -245,11 +264,11 @@ succeeded.
 
 ## Compact plan record
 
-Current compact plans use `settag.plan/v3`:
+Current compact plans use `settag.plan/v4`:
 
 ```json
 {
-  "schema": "settag.plan/v3",
+  "schema": "settag.plan/v4",
   "path": "/absolute/path/track.mp3",
   "source": {
     "sha256": "...",

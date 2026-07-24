@@ -6,18 +6,25 @@ from typing import Any
 
 from settag import __version__
 from settag.hashing import sha256_file, sha256_json
-from settag.policy import EVIDENCE_LIMIT, Prediction
+from settag.policy import EVIDENCE_LIMIT
 from settag.tags import TagPlan
+from settag.tasks import AnalysisTask, ordered_tasks
 
 
 def utc_now() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 
-def config_record(*, top: int, threshold: float) -> dict[str, object]:
+def config_record(
+    *,
+    top: int,
+    threshold: float,
+    tasks: tuple[AnalysisTask, ...] = ("genre",),
+) -> dict[str, object]:
     evidence: dict[str, object] = {
-        "schema": "settag.evidence/v1",
+        "schema": "settag.evidence/v2",
         "limit": EVIDENCE_LIMIT,
+        "tasks": list(ordered_tasks(tasks)),
     }
     return {
         "evidence": evidence,
@@ -44,11 +51,8 @@ def analysis_record(
     source: dict[str, object],
     analyzed_at: str,
     backend_version: str,
-    model: dict[str, object],
     config: dict[str, object],
-    predictions: list[Prediction],
-    evidence: list[Prediction],
-    selected: list[Prediction],
+    tasks: dict[str, dict[str, object]],
     tag_plan: TagPlan,
     write_requested: bool,
     write_status: str,
@@ -62,7 +66,7 @@ def analysis_record(
         write["result_sha256"] = result_sha256
 
     return {
-        "schema": "settag.analysis/v1",
+        "schema": "settag.analysis/v2",
         "source": source,
         "analyzed_at": analyzed_at,
         "analyzer": {
@@ -71,11 +75,8 @@ def analysis_record(
             "backend": "essentia-tensorflow",
             "backend_version": backend_version,
         },
-        "model": model,
         "config": config,
-        "predictions": [item.to_dict() for item in predictions],
-        "evidence": [item.to_dict() for item in evidence],
-        "selected": [item.to_dict() for item in selected],
+        "tasks": tasks,
         "tag_plan": tag_plan.to_dict(),
         "write": write,
     }

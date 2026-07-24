@@ -6,16 +6,22 @@ import os
 import re
 import sys
 import tempfile
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
 import numpy as np
 
-from settag.catalog import DISCOGS519_MAEST, ModelSpec
-from settag.model_store import installed_manifest, require_models
+from settag.catalog import DISCOGS519_MAEST, MODEL_SPECS_BY_TASK, ModelSpec
+from settag.model_store import (
+    installed_manifest,
+    installed_task_manifests,
+    require_models,
+    require_task_models,
+)
 from settag.policy import Prediction, rank_predictions
+from settag.tasks import AnalysisTask, ordered_tasks
 
 
 class AnalyzerError(RuntimeError):
@@ -117,6 +123,136 @@ class EssentiaGenreAnalyzer:
 
         activations = raw.reshape(-1, len(self.labels)).mean(axis=0)
         return rank_predictions(self.labels, activations.tolist())
+
+
+class EssentiaEffnetAnalyzer:
+    def __init__(
+        self,
+        model_dir: Path,
+        tasks: Sequence[AnalysisTask],
+    ) -> None:
+        selected = tuple(task for task in ordered_tasks(tasks) if task != "genre")
+        if not selected:
+            raise ValueError("EffNet analyzer requires mood-theme or instrument")
+        require_task_models(model_dir, selected)
+        self.model_dir = model_dir
+        self.tasks = selected
+        self.model_manifests = installed_task_manifests(model_dir, selected)
+        self.backend_version = _package_version("essentia-tensorflow")
+
+        try:
+            from essentia import log
+            from essentia.standard import (
+                MonoLoader,
+                TensorflowPredict2D,
+                TensorflowPredictEffnetDiscogs,
+            )
+        except ImportError as error:
+            raise AnalyzerError(
+                "Essentia TensorFlow bindings are unavailable. Run `uv sync` "
+                "or install the `essentia-tensorflow` dependency."
+            ) from error
+
+        log.infoActive = False
+        log.warningActive = False
+        self._loader_type = MonoLoader
+        embedding_spec = MODEL_SPECS_BY_TASK[selected[0]]
+        self._sample_rate = embedding_spec.sample_rate
+        self._embedding_model = TensorflowPredictEffnetDiscogs(
+            graphFilename=str(embedding_spec.path(model_dir, "embedding")),
+            output=embedding_spec.embedding_output,
+        )
+        self._heads: dict[AnalysisTask, tuple[Any, list[str], str]] = {}
+        for task in selected:
+            spec = MODEL_SPECS_BY_TASK[task]
+            metadata_path = spec.path(model_dir, "classifier_metadata")
+            metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+            labels = metadata.get("classes")
+            if not isinstance(labels, list) or not all(isinstance(item, str) for item in labels):
+                raise AnalyzerError(f"Invalid classifier metadata: {metadata_path}")
+            outputs = metadata.get("schema", {}).get("outputs", [])
+            output_name = next(
+                (
+                    item.get("name")
+                    for item in outputs
+                    if isinstance(item, dict) and item.get("output_purpose") == "predictions"
+                ),
+                spec.classifier_output,
+            )
+            if not isinstance(output_name, str):
+                raise AnalyzerError(f"Invalid classifier output metadata: {metadata_path}")
+            self._heads[task] = (
+                TensorflowPredict2D(
+                    graphFilename=str(spec.path(model_dir, "classifier")),
+                    output=output_name,
+                ),
+                labels,
+                output_name,
+            )
+        self._tensorflow_startup_pending = True
+
+    def analyze_tasks(self, path: Path) -> dict[AnalysisTask, list[Prediction]]:
+        if self._tensorflow_startup_pending:
+            with _filter_tensorflow_startup_stderr():
+                predictions = self._analyze_tasks(path)
+            self._tensorflow_startup_pending = False
+            return predictions
+        return self._analyze_tasks(path)
+
+    def _analyze_tasks(self, path: Path) -> dict[AnalysisTask, list[Prediction]]:
+        audio = self._loader_type(
+            filename=str(path),
+            sampleRate=self._sample_rate,
+            resampleQuality=4,
+        )()
+        embeddings = self._embedding_model(audio)
+        results: dict[AnalysisTask, list[Prediction]] = {}
+        for task, (model, labels, _) in self._heads.items():
+            raw = np.asarray(model(embeddings), dtype=float)
+            if raw.size % len(labels) != 0:
+                raise AnalyzerError(
+                    f"{task} classifier returned {raw.size} values for {len(labels)} labels"
+                )
+            activations = raw.reshape(-1, len(labels)).mean(axis=0)
+            results[task] = rank_predictions(labels, activations.tolist())
+        return results
+
+
+class EssentiaTaskAnalyzer:
+    """Load only the explicitly selected task families and expose one task result map."""
+
+    def __init__(self, model_dir: Path, tasks: Sequence[AnalysisTask]) -> None:
+        self.tasks = ordered_tasks(tasks)
+        if not self.tasks:
+            raise ValueError("at least one analysis task is required")
+        self._genre = EssentiaGenreAnalyzer(model_dir) if "genre" in self.tasks else None
+        effnet_tasks = tuple(task for task in self.tasks if task != "genre")
+        self._effnet = (
+            EssentiaEffnetAnalyzer(model_dir, effnet_tasks)
+            if effnet_tasks
+            else None
+        )
+        manifests: dict[AnalysisTask, dict[str, object]] = {}
+        if self._genre is not None:
+            manifests["genre"] = self._genre.model_manifest
+        if self._effnet is not None:
+            manifests.update(self._effnet.model_manifests)
+        self.model_manifests = manifests
+        self.backend_version = (
+            self._genre.backend_version
+            if self._genre is not None
+            else self._effnet.backend_version
+            if self._effnet is not None
+            else "unknown"
+        )
+
+    def analyze_tasks(self, path: Path) -> dict[AnalysisTask, list[Prediction]]:
+        results: dict[AnalysisTask, list[Prediction]] = {}
+        if self._genre is not None:
+            results["genre"] = self._genre.analyze(path)
+        if self._effnet is not None:
+            results.update(self._effnet.analyze_tasks(path))
+        return results
 
 
 @contextmanager

@@ -120,6 +120,94 @@ class TrackEntry:
         return self.metadata is not None and self.plan is None and self.metadata.needs_analysis
 
 
+@dataclass(frozen=True)
+class TrackTableColumn:
+    key: str
+    label: str
+    cell_index: int
+    min_width: int
+    max_width: int
+
+
+class ResponsiveTrackTable(DataTable):
+    """Notify the app after this table receives its final layout width."""
+
+    def on_resize(self, _event: events.Resize) -> None:
+        app = self.app
+        if isinstance(app, SetTagApp):
+            app.call_after_refresh(app._sync_table_columns)
+
+
+TRACK_TABLE_COLUMNS = (
+    TrackTableColumn("selected", "", 0, 1, 1),
+    TrackTableColumn("track", "Track", 1, 8, 1_000),
+    TrackTableColumn("file_genre", "File genre", 2, 10, 18),
+    TrackTableColumn("analysis", "Analysis", 3, 12, 24),
+    TrackTableColumn("suggested", "Suggested", 4, 10, 20),
+    TrackTableColumn("score", "Score", 5, 5, 5),
+    TrackTableColumn("changes", "Changes", 6, 7, 7),
+)
+TRACK_TABLE_COLUMN_BY_KEY = {column.key: column for column in TRACK_TABLE_COLUMNS}
+TRACK_TABLE_COLUMN_PRIORITY = (
+    "analysis",
+    "file_genre",
+    "suggested",
+    "changes",
+    "score",
+)
+
+
+def _track_table_layout(
+    viewport_width: int,
+    *,
+    cell_padding: int = 1,
+    scrollbar_width: int = 2,
+) -> tuple[tuple[TrackTableColumn, int], ...]:
+    """Fit the most useful columns inside the table's visible width."""
+    available = max(1, viewport_width - scrollbar_width)
+    column_padding = 2 * cell_padding
+    widths = {
+        "selected": TRACK_TABLE_COLUMN_BY_KEY["selected"].min_width,
+        "track": max(
+            TRACK_TABLE_COLUMN_BY_KEY["track"].min_width,
+            available // 3,
+        ),
+    }
+
+    def render_width(key: str) -> int:
+        return widths[key] + column_padding
+
+    total_width = sum(render_width(key) for key in widths)
+    if total_width > available:
+        widths["track"] = max(
+            1,
+            available - render_width("selected") - column_padding,
+        )
+        total_width = sum(render_width(key) for key in widths)
+
+    for key in TRACK_TABLE_COLUMN_PRIORITY:
+        column = TRACK_TABLE_COLUMN_BY_KEY[key]
+        candidate_width = column.min_width + column_padding
+        if total_width + candidate_width > available:
+            break
+        widths[key] = column.min_width
+        total_width += candidate_width
+
+    remaining = max(0, available - total_width)
+    for key in ("analysis", "file_genre", "suggested"):
+        if key not in widths:
+            continue
+        column = TRACK_TABLE_COLUMN_BY_KEY[key]
+        expansion = min(remaining, column.max_width - widths[key])
+        widths[key] += expansion
+        remaining -= expansion
+    widths["track"] += remaining
+
+    return tuple(
+        (column, widths[column.key]) for column in TRACK_TABLE_COLUMNS if column.key in widths
+    )
+
+
 def _suggested_label(predictions: Sequence[Prediction]) -> str | None:
     """Return the direct child label without performing taxonomy mapping."""
     if not predictions:
@@ -572,9 +660,7 @@ class SetTagApp(App[TuiOutcome]):
     ) -> None:
         super().__init__()
         if metadata_loader is None and initial_metadata is None:
-            raise ValueError(
-                "SetTagApp requires a metadata loader or initial metadata"
-            )
+            raise ValueError("SetTagApp requires a metadata loader or initial metadata")
         self.source = source.expanduser().resolve()
         self.metadata_loader = metadata_loader
         self.analysis_loader = analysis_loader
@@ -594,10 +680,18 @@ class SetTagApp(App[TuiOutcome]):
         self._pending_analysis_indices: tuple[int, ...] = ()
         self._analysis_cancel_requested = Event()
         self._analysis_completed_count = 0
+        self._analysis_success_count = 0
+        self._analysis_failure_count = 0
         self._analysis_current_path: Path | None = None
+        self._analysis_navigation_changed = False
         self._pending_write: tuple[PlannedWrite, ...] = ()
         self._written_count = 0
+        self._table_layout: tuple[tuple[TrackTableColumn, int], ...] = ()
         self.sub_title = "Reading existing metadata"
+
+    @property
+    def analysis_running(self) -> bool:
+        return bool(self._pending_analysis_indices)
 
     def compose(self) -> ComposeResult:
         yield Header()
@@ -623,7 +717,7 @@ class SetTagApp(App[TuiOutcome]):
             with Horizontal(id="workspace"):
                 with Vertical(id="tracks-pane"):
                     yield Static("Library", markup=False, classes="section-title")
-                    yield DataTable(
+                    yield ResponsiveTrackTable(
                         cursor_type="row",
                         zebra_stripes=True,
                         id="tracks",
@@ -635,16 +729,8 @@ class SetTagApp(App[TuiOutcome]):
         yield Footer(compact=True)
 
     def on_mount(self) -> None:
-        table = self.query_one("#tracks", DataTable)
-        table.add_columns(
-            "",
-            "Track",
-            "File genre",
-            "Analysis",
-            "Suggested",
-            "Score",
-            "Changes",
-        )
+        self.set_class(self.size.width < 100, "narrow")
+        self._sync_table_columns()
         if self.initial_metadata is not None:
             self._show_metadata(self.initial_metadata)
         else:
@@ -652,6 +738,27 @@ class SetTagApp(App[TuiOutcome]):
 
     def on_resize(self, event: events.Resize) -> None:
         self.set_class(event.size.width < 100, "narrow")
+        self.call_after_refresh(self._sync_table_columns)
+
+    def _sync_table_columns(self) -> None:
+        table = self.query_one("#tracks", DataTable)
+        layout = _track_table_layout(
+            table.size.width,
+            cell_padding=table.cell_padding,
+        )
+        if layout == self._table_layout:
+            return
+
+        preferred_index = self._current_index()
+        self._table_layout = layout
+        table.clear(columns=True)
+        for column, width in layout:
+            table.add_column(column.label, width=width, key=column.key)
+        if self.entries:
+            self._rebuild_table(
+                preferred_index,
+                refresh_surrounding=False,
+            )
 
     def check_action(
         self,
@@ -660,15 +767,17 @@ class SetTagApp(App[TuiOutcome]):
     ) -> bool | None:
         del parameters
         if action == "cancel_analysis":
-            if not self.busy or not self._pending_analysis_indices:
+            if not self.analysis_running:
                 return False
             return None if self._analysis_cancel_requested.is_set() else True
         if action == "review":
-            return (
-                self.phase == "choose"
-                and not self.busy
-                and bool(self.review_indices)
-            )
+            return self.phase == "choose" and not self.busy and bool(self.review_indices)
+        if (
+            self.analysis_running
+            and self.phase == "choose"
+            and action in {"toggle_track", "toggle_all", "analyze"}
+        ):
+            return False
         phase_actions = CHOOSE_ACTIONS if self.phase == "choose" else REVIEW_ACTIONS
         if action in CHOOSE_ACTIONS | REVIEW_ACTIONS:
             return action in phase_actions
@@ -706,9 +815,7 @@ class SetTagApp(App[TuiOutcome]):
         total: int,
         name: str,
     ) -> None:
-        self.query_one("#loading-status", Static).update(
-            f"{completed} of {total} · {name}"
-        )
+        self.query_one("#loading-status", Static).update(f"{completed} of {total} · {name}")
         self.query_one("#metadata-progress", ProgressBar).update(
             total=total,
             progress=completed,
@@ -728,8 +835,7 @@ class SetTagApp(App[TuiOutcome]):
             for track in metadata.tracks
         ]
         entries.extend(
-            TrackEntry(path=failure.path, metadata_error=failure)
-            for failure in metadata.failures
+            TrackEntry(path=failure.path, metadata_error=failure) for failure in metadata.failures
         )
         self.entries = sorted(entries, key=lambda entry: str(entry.path))
         self.analysis_selected = {
@@ -738,9 +844,7 @@ class SetTagApp(App[TuiOutcome]):
             if entry.can_analyze and entry.needs_analysis
         }
         self.review_indices = {
-            index
-            for index, entry in enumerate(self.entries)
-            if entry.plan is not None
+            index for index, entry in enumerate(self.entries) if entry.plan is not None
         }
         self.write_selected = {
             index
@@ -802,11 +906,7 @@ class SetTagApp(App[TuiOutcome]):
         if self.library_filter == "all":
             return list(indices)
         if self.library_filter == "needs_analysis":
-            return [
-                index
-                for index in indices
-                if self.entries[index].needs_analysis
-            ]
+            return [index for index in indices if self.entries[index].needs_analysis]
         if self.library_filter == "missing_genre":
             return [
                 index
@@ -826,21 +926,26 @@ class SetTagApp(App[TuiOutcome]):
             )
         ]
 
-    def _rebuild_table(self, preferred_index: int | None = None) -> None:
+    def _rebuild_table(
+        self,
+        preferred_index: int | None = None,
+        *,
+        refresh_surrounding: bool = True,
+    ) -> None:
         if preferred_index is None:
             preferred_index = self._current_index()
         self.visible_indices = self._filtered_indices()
         table = self.query_one("#tracks", DataTable)
         table.clear()
         for index in self.visible_indices:
-            table.add_row(*self._row_cells(index), key=str(index))
+            table.add_row(*self._visible_row_cells(index), key=str(index))
 
-        self._update_context()
-        self._update_status()
+        if refresh_surrounding:
+            self._update_context()
+            self._update_status()
         if not self.visible_indices:
-            self.query_one("#inspector", Static).update(
-                "No tracks match this view."
-            )
+            if refresh_surrounding:
+                self.query_one("#inspector", Static).update("No tracks match this view.")
             return
 
         try:
@@ -849,7 +954,12 @@ class SetTagApp(App[TuiOutcome]):
             cursor_row = 0
         table.focus()
         table.move_cursor(row=cursor_row)
-        self._update_inspector(self.visible_indices[cursor_row])
+        if refresh_surrounding:
+            self._update_inspector(self.visible_indices[cursor_row])
+
+    def _visible_row_cells(self, index: int) -> tuple[str, ...]:
+        cells = self._row_cells(index)
+        return tuple(cells[column.cell_index] for column, _width in self._table_layout)
 
     def _row_cells(
         self,
@@ -922,10 +1032,7 @@ class SetTagApp(App[TuiOutcome]):
         if entry.plan is not None:
             values = entry.plan.desired["SETTAG_ANALYZED_AT"]
             value = values[0] if values else None
-        elif (
-            entry.metadata is not None
-            and entry.metadata.cached_plan is not None
-        ):
+        elif entry.metadata is not None and entry.metadata.cached_plan is not None:
             values = entry.metadata.cached_plan.desired["SETTAG_ANALYZED_AT"]
             value = values[0] if values else None
         else:
@@ -947,8 +1054,7 @@ class SetTagApp(App[TuiOutcome]):
             )
         else:
             failures = sum(
-                self.entries[index].analysis_error is not None
-                for index in self.review_indices
+                self.entries[index].analysis_error is not None for index in self.review_indices
             )
             text = (
                 f"{self.source}  ·  {len(self.review_indices)} reviewed"
@@ -1041,8 +1147,7 @@ class SetTagApp(App[TuiOutcome]):
             lines.extend(self._candidate_lines(predictions, selected))
         elif metadata.genre_state.settag:
             lines.extend(
-                f"  • {label} (score metadata unavailable)"
-                for label in metadata.genre_state.settag
+                f"  • {label} (score metadata unavailable)" for label in metadata.genre_state.settag
             )
         else:
             lines.append("  None")
@@ -1064,11 +1169,7 @@ class SetTagApp(App[TuiOutcome]):
                     if index in self.analysis_selected
                     else "Not selected for analysis."
                 ),
-                *(
-                    ["Press V to review this saved result."]
-                    if entry.plan is not None
-                    else []
-                ),
+                *(["Press V to review this saved result."] if entry.plan is not None else []),
                 "The audio model has not been loaded.",
             ]
         )
@@ -1142,11 +1243,7 @@ class SetTagApp(App[TuiOutcome]):
         lines.extend(
             [
                 "",
-                (
-                    "Will be written."
-                    if index in self.write_selected
-                    else "Will not be written."
-                ),
+                ("Will be written." if index in self.write_selected else "Will not be written."),
                 "The SetTag analysis bundle is always written together.",
                 "The standard genre is a separate, editable staged change.",
             ]
@@ -1176,9 +1273,7 @@ class SetTagApp(App[TuiOutcome]):
         hidden = len(evidence) - len(selected)
         if hidden:
             noun = "score" if hidden == 1 else "scores"
-            lines.append(
-                f"  {hidden} additional ranked {noun} stored for importing apps."
-            )
+            lines.append(f"  {hidden} additional ranked {noun} stored for importing apps.")
         return lines
 
     def _refresh_row(self, index: int) -> None:
@@ -1186,42 +1281,53 @@ class SetTagApp(App[TuiOutcome]):
             return
         row = self.visible_indices.index(index)
         table = self.query_one("#tracks", DataTable)
-        for column, value in enumerate(self._row_cells(index)):
+        for column, value in enumerate(self._visible_row_cells(index)):
             table.update_cell_at(
                 Coordinate(row, column),
                 value,
-                update_width=True,
             )
         self._update_inspector(index)
         self._update_status()
 
     def _update_status(self, message: str | None = None) -> None:
-        if self.busy and self._pending_analysis_indices:
+        if self.busy:
+            if message is not None:
+                self.query_one("#status", Static).update(message)
+            return
+
+        if self.analysis_running:
             if self._analysis_cancel_requested.is_set():
+                progress = "Stopping after the current track"
+            else:
+                progress = (
+                    "Analysis running in background"
+                    f"  ·  {self._analysis_completed_count} of "
+                    f"{len(self._pending_analysis_indices)} complete"
+                )
+
+            if self.phase == "choose":
+                review_hint = (
+                    f"  ·  V review {len(self.review_indices)} ready" if self.review_indices else ""
+                )
                 base = (
-                    "Cancel requested"
-                    "  ·  The current track will finish"
-                    "  ·  Completed results will be kept"
+                    f"{progress}{review_hint}  ·  I details  ·  F filter  ·  Esc stop after current"
                 )
             else:
+                selected = len(self.write_selected)
                 base = (
-                    "Analysis is read-only"
-                    "  ·  Esc cancels after the current track"
+                    f"{progress}"
+                    f"  ·  {selected} completed track"
+                    f"{'s' if selected != 1 else ''} ready to write"
+                    "  ·  Enter/W write completed"
+                    "  ·  Esc stop after current"
                 )
-            self.query_one("#status", Static).update(
-                f"{message}  ·  {base}" if message else base
-            )
+            self.query_one("#status", Static).update(f"{message}  ·  {base}" if message else base)
             return
 
         if self.phase == "choose":
-            selected = sum(
-                index in self.analysis_selected
-                for index in self.visible_indices
-            )
+            selected = sum(index in self.analysis_selected for index in self.visible_indices)
             review_hint = (
-                f"  ·  V review {len(self.review_indices)} ready"
-                if self.review_indices
-                else ""
+                f"  ·  V review {len(self.review_indices)} ready" if self.review_indices else ""
             )
             base = (
                 f"{selected} selected in this view"
@@ -1243,12 +1349,12 @@ class SetTagApp(App[TuiOutcome]):
                 f"  ·  {genre_edits} standard genre edits"
                 "  ·  Space toggle  ·  Enter/W review write"
             )
-        self.query_one("#status", Static).update(
-            f"{message}  ·  {base}" if message else base
-        )
+        self.query_one("#status", Static).update(f"{message}  ·  {base}" if message else base)
 
     def action_toggle_track(self) -> None:
         if self.busy:
+            return
+        if self.phase == "choose" and self.analysis_running:
             return
         index = self._current_index()
         if index is None:
@@ -1277,12 +1383,10 @@ class SetTagApp(App[TuiOutcome]):
     def action_toggle_all(self) -> None:
         if self.busy:
             return
+        if self.phase == "choose" and self.analysis_running:
+            return
         if self.phase == "choose":
-            eligible = {
-                index
-                for index in self.visible_indices
-                if self.entries[index].can_analyze
-            }
+            eligible = {index for index in self.visible_indices if self.entries[index].can_analyze}
             selection = self.analysis_selected
         else:
             eligible = {
@@ -1308,6 +1412,7 @@ class SetTagApp(App[TuiOutcome]):
         if visible and index is not None:
             self._update_inspector(index)
         self.query_one("#tracks", DataTable).focus()
+        self.call_after_refresh(self._sync_table_columns)
 
     def action_cycle_filter(self) -> None:
         if self.busy:
@@ -1320,7 +1425,7 @@ class SetTagApp(App[TuiOutcome]):
         self._rebuild_table()
 
     def action_analyze(self) -> None:
-        if self.busy:
+        if self.busy or self.analysis_running:
             return
         if self.phase != "choose":
             self.notify("Press B to choose another analysis batch.")
@@ -1328,10 +1433,7 @@ class SetTagApp(App[TuiOutcome]):
         indices = tuple(
             index
             for index in self.visible_indices
-            if (
-                index in self.analysis_selected
-                and self.entries[index].can_analyze
-            )
+            if (index in self.analysis_selected and self.entries[index].can_analyze)
         )
         if not indices:
             self.notify(
@@ -1342,9 +1444,11 @@ class SetTagApp(App[TuiOutcome]):
         self._analysis_cancel_requested.clear()
         self._pending_analysis_indices = indices
         self._analysis_completed_count = 0
+        self._analysis_success_count = 0
+        self._analysis_failure_count = 0
         self._analysis_current_path = self.entries[indices[0]].path
-        self.busy = True
-        self.sub_title = "Analyzing selected tracks"
+        self._analysis_navigation_changed = False
+        self.sub_title = "Analyzing in background"
         self.refresh_bindings()
         self._show_analysis_activity()
         self._update_status()
@@ -1356,10 +1460,12 @@ class SetTagApp(App[TuiOutcome]):
         if not self.review_indices:
             self.notify("There are no analyzed tracks ready to review.")
             return
+        if self.analysis_running:
+            self._analysis_navigation_changed = True
         self._show_review()
 
     def action_cancel_analysis(self) -> None:
-        if not self.busy or not self._pending_analysis_indices:
+        if not self.analysis_running:
             return
         if self._analysis_cancel_requested.is_set():
             return
@@ -1370,32 +1476,50 @@ class SetTagApp(App[TuiOutcome]):
 
     @work(thread=True, exclusive=True, group="analysis", exit_on_error=False)
     def _analyze_selected(self, indices: tuple[int, ...]) -> None:
-        paths = [self.entries[index].path for index in indices]
-        try:
-            batch = self.analysis_loader(
-                paths,
-                self._analysis_progress_from_worker,
-                self._analysis_cancel_requested.is_set,
-            )
-        except Exception as error:
-            self.call_from_thread(
-                self._analysis_failed,
-                f"{type(error).__name__}: {error}",
-            )
-            return
-        self.call_from_thread(self._analysis_complete, batch)
+        total = len(indices)
+        completed = 0
+        cancelled = False
+        for index in indices:
+            if self._analysis_cancel_requested.is_set():
+                cancelled = True
+                break
 
-    def _analysis_progress_from_worker(
-        self,
-        completed: int,
-        total: int,
-        path: Path,
-    ) -> None:
+            path = self.entries[index].path
+            try:
+                batch = self.analysis_loader(
+                    (path,),
+                    lambda _completed, _total, _path: None,
+                    self._analysis_cancel_requested.is_set,
+                )
+            except Exception as error:
+                self.call_from_thread(
+                    self._analysis_failed,
+                    f"{type(error).__name__}: {error}",
+                )
+                return
+
+            has_result = bool(batch.planned or batch.failures)
+            if not has_result and batch.cancelled:
+                cancelled = True
+                break
+
+            completed += 1
+            self.call_from_thread(
+                self._analysis_item_complete,
+                index,
+                batch,
+                completed,
+                total,
+            )
+            if batch.cancelled:
+                cancelled = True
+                break
+
         self.call_from_thread(
-            self._advance_analysis_activity,
+            self._analysis_finished,
             completed,
             total,
-            path,
+            cancelled and completed < total,
         )
 
     def _show_analysis_activity(self) -> None:
@@ -1404,7 +1528,7 @@ class SetTagApp(App[TuiOutcome]):
         activity = self.query_one("#analysis-activity")
         activity.display = True
         self.query_one("#analysis-activity-title", Static).update(
-            f"Analyzing track 1 of {total}  ·  0 complete"
+            f"Analyzing in background  ·  track 1 of {total}  ·  0 complete"
         )
         if path is not None:
             self.query_one("#analysis-activity-file", Static).update(
@@ -1419,8 +1543,7 @@ class SetTagApp(App[TuiOutcome]):
         total = len(self._pending_analysis_indices)
         path = self._analysis_current_path
         self.query_one("#analysis-activity-title", Static).update(
-            "Cancel requested"
-            f"  ·  {self._analysis_completed_count} of {total} complete"
+            f"Cancel requested  ·  {self._analysis_completed_count} of {total} complete"
         )
         if path is not None:
             self.query_one("#analysis-activity-file", Static).update(
@@ -1452,7 +1575,7 @@ class SetTagApp(App[TuiOutcome]):
             next_path = self.entries[next_index].path
             self._analysis_current_path = next_path
             self.query_one("#analysis-activity-title", Static).update(
-                f"Analyzing track {completed + 1} of {total}"
+                f"Analyzing in background  ·  track {completed + 1} of {total}"
                 f"  ·  {completed} complete"
             )
             self.query_one("#analysis-activity-file", Static).update(
@@ -1464,9 +1587,7 @@ class SetTagApp(App[TuiOutcome]):
         self.query_one("#analysis-activity-title", Static).update(
             f"Finalizing results  ·  {completed} of {total} complete"
         )
-        self.query_one("#analysis-activity-file", Static).update(
-            f"Finished {path.name}"
-        )
+        self.query_one("#analysis-activity-file", Static).update(f"Finished {path.name}")
 
     def _hide_analysis_activity(self) -> None:
         self.query_one("#analysis-activity").display = False
@@ -1474,23 +1595,43 @@ class SetTagApp(App[TuiOutcome]):
         self._analysis_current_path = None
 
     def _analysis_failed(self, message: str) -> None:
-        self.busy = False
+        completed = self._analysis_completed_count
+        total = len(self._pending_analysis_indices)
+        remaining = total - completed
         self._pending_analysis_indices = ()
         self._analysis_cancel_requested.clear()
         self._hide_analysis_activity()
-        self.sub_title = "Choose tracks to analyze"
+        self.sub_title = (
+            "Review analyzed tracks" if self.phase == "review" else "Choose tracks to analyze"
+        )
         self.refresh_bindings()
-        self._update_status("Analysis did not start; nothing was written")
+        if completed:
+            self._update_status(
+                f"Analysis stopped after {completed} of {total} tracks"
+                f"  ·  {remaining} remain selected"
+            )
+        else:
+            self._update_status("Analysis did not start; nothing was written")
         self.push_screen(ErrorScreen("Could not analyze selection", message))
 
-    def _analysis_complete(self, batch: AnalysisBatch) -> None:
-        by_path = {entry.path: index for index, entry in enumerate(self.entries)}
-        completed_paths: set[Path] = set()
-        completed_indices: set[int] = set()
-        for plan in batch.planned:
+    def _analysis_item_complete(
+        self,
+        index: int,
+        batch: AnalysisBatch,
+        completed: int,
+        total: int,
+    ) -> None:
+        entry = self.entries[index]
+        plan = next(
+            (item for item in batch.planned if item.path == entry.path),
+            None,
+        )
+        failure = next(
+            (item for item in batch.failures if item.path == entry.path),
+            None,
+        )
+        if plan is not None:
             plan = stage_default_file_genre(plan)
-            index = by_path[plan.path]
-            entry = self.entries[index]
             entry.plan = plan
             entry.plan_cached = False
             entry.analysis_error = None
@@ -1498,67 +1639,71 @@ class SetTagApp(App[TuiOutcome]):
             if plan.readable_changes:
                 self.write_selected.add(index)
             self._persist(index)
-            completed_paths.add(plan.path)
-            completed_indices.add(index)
-
-        for failure in batch.failures:
-            index = by_path[failure.path]
-            entry = self.entries[index]
+            self._analysis_success_count += 1
+        else:
+            if failure is None:
+                failure = AnalysisFailure(
+                    path=entry.path,
+                    error_type="RuntimeError",
+                    message="Analyzer returned no result for this track",
+                )
             entry.plan = None
             entry.analysis_error = failure
             self.review_indices.add(index)
             self.write_selected.discard(index)
-            completed_paths.add(failure.path)
-            completed_indices.add(index)
+            self._analysis_failure_count += 1
 
-        pending_indices = self._pending_analysis_indices
-        if not batch.cancelled:
-            for index in pending_indices:
-                entry = self.entries[index]
-                if entry.path not in completed_paths:
-                    entry.plan = None
-                    entry.analysis_error = AnalysisFailure(
-                        path=entry.path,
-                        error_type="RuntimeError",
-                        message="Analyzer returned no result for the selected track",
-                    )
-                    self.review_indices.add(index)
-                    self.write_selected.discard(index)
-                    completed_indices.add(index)
+        self.analysis_selected.discard(index)
+        self._advance_analysis_activity(completed, total, entry.path)
+        preferred_index = self._current_index()
+        self._rebuild_table(preferred_index=preferred_index)
+        self.refresh_bindings()
 
-        self.analysis_selected.difference_update(completed_indices)
+    def _analysis_finished(
+        self,
+        completed: int,
+        total: int,
+        cancelled: bool,
+    ) -> None:
+        remaining = total - completed
         self._pending_analysis_indices = ()
-        self.busy = False
         self._analysis_cancel_requested.clear()
         self._hide_analysis_activity()
         self.refresh_bindings()
 
-        remaining = len(pending_indices) - len(completed_indices)
-        if batch.cancelled and remaining > 0:
-            if completed_indices:
+        if self.phase == "choose" and self.review_indices and not self._analysis_navigation_changed:
+            self._show_review()
+        else:
+            self._rebuild_table()
+
+        if cancelled and remaining > 0:
+            if completed:
                 self._show_review()
                 self._update_status(
-                    f"Cancelled after {len(completed_indices)} of "
-                    f"{len(pending_indices)} tracks; {remaining} remain selected"
+                    f"Cancelled after {completed} of {total} tracks; {remaining} remain selected"
                 )
             else:
                 self._show_library()
-                self._update_status(
-                    "Analysis cancelled; visible tracks remain selected"
-                )
+                self._update_status("Analysis cancelled; visible tracks remain selected")
             return
 
-        self._show_review()
+        summary = (
+            f"Analysis complete  ·  {self._analysis_success_count} analyzed"
+            f"  ·  {self._analysis_failure_count} failed"
+        )
+        if not self.busy:
+            self._update_status(summary)
+        self.notify(summary, title="Background analysis complete", timeout=6)
 
     def action_library(self) -> None:
         if self.busy:
             return
         if self.phase == "choose":
             return
+        if self.analysis_running:
+            self._analysis_navigation_changed = True
         self.analysis_selected = {
-            index
-            for index, entry in enumerate(self.entries)
-            if entry.needs_analysis
+            index for index, entry in enumerate(self.entries) if entry.needs_analysis
         }
         self._show_library()
 
@@ -1591,11 +1736,7 @@ class SetTagApp(App[TuiOutcome]):
         item = self.entries[index].plan
         if item is None:
             return
-        genres = tuple(
-            value.strip()
-            for value in result.split(",")
-            if value.strip()
-        )
+        genres = tuple(value.strip() for value in result.split(",") if value.strip())
         self.entries[index].plan = stage_file_genre(item, genres)
         if self.entries[index].plan.readable_changes:
             self.write_selected.add(index)
@@ -1664,9 +1805,7 @@ class SetTagApp(App[TuiOutcome]):
     def _confirm_preflight(self, _prepared: Sequence[object]) -> None:
         self.busy = False
         track_count = len(self._pending_write)
-        standard_count = sum(
-            item.standard_genre_change is not None for item in self._pending_write
-        )
+        standard_count = sum(item.standard_genre_change is not None for item in self._pending_write)
         evidence_count = sum(len(item.evidence) for item in self._pending_write)
         self.push_screen(
             ConfirmWriteScreen(
@@ -1727,10 +1866,7 @@ class SetTagApp(App[TuiOutcome]):
         self._written_count += completed
         self.busy = False
         self._pending_write = ()
-        message = (
-            f"Done. {completed} file{'s' if completed != 1 else ''} "
-            "written and verified."
-        )
+        message = f"Done. {completed} file{'s' if completed != 1 else ''} written and verified."
         if cleanup_error is not None:
             message += (
                 " The audio write succeeded, but SetTag could not clear its "
@@ -1769,11 +1905,7 @@ class SetTagApp(App[TuiOutcome]):
             entry = self.entries[index]
             if entry.metadata is not None:
                 analyzed_at_values = item.desired["SETTAG_ANALYZED_AT"]
-                analyzed_at = (
-                    analyzed_at_values[0]
-                    if analyzed_at_values
-                    else None
-                )
+                analyzed_at = analyzed_at_values[0] if analyzed_at_values else None
                 standard_genre = (
                     item.target_file_genre
                     if item.target_file_genre is not None
@@ -1784,9 +1916,7 @@ class SetTagApp(App[TuiOutcome]):
                     genre_state=replace(
                         entry.metadata.genre_state,
                         standard=standard_genre,
-                        settag=tuple(
-                            prediction.label for prediction in item.selected
-                        ),
+                        settag=tuple(prediction.label for prediction in item.selected),
                     ),
                     owned=item.desired,
                     stored_predictions=item.evidence,
@@ -1866,6 +1996,13 @@ class SetTagApp(App[TuiOutcome]):
     def action_quit(self) -> None:
         if self.busy:
             self.notify("A safety check or write is in progress.", severity="warning")
+            return
+        if self.analysis_running:
+            self.notify(
+                "Analysis is still running. Press Esc to stop after the current "
+                "track before quitting.",
+                severity="warning",
+            )
             return
         if self._written_count:
             message = (

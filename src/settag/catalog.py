@@ -63,3 +63,73 @@ DISCOGS519_MAEST = ModelSpec(
         ),
     ),
 )
+
+DISCOGS_EFFNET_MOOD_THEME = ModelSpec(
+    id="essentia/mtg-jamendo-moodtheme-discogs-effnet/v1",
+    embedding_output="PartitionedCall:1",
+    classifier_input="model/Placeholder",
+    classifier_output="model/Sigmoid",
+    sample_rate=16_000,
+    files=(
+        ModelFile(
+            role="embedding",
+            filename="discogs-effnet-bs64-1.pb",
+            url=f"{BASE_URL}/feature-extractors/discogs-effnet/discogs-effnet-bs64-1.pb",
+        ),
+        ModelFile(
+            role="embedding_metadata",
+            filename="discogs-effnet-bs64-1.json",
+            url=f"{BASE_URL}/feature-extractors/discogs-effnet/discogs-effnet-bs64-1.json",
+        ),
+        ModelFile(
+            role="classifier",
+            filename="mtg_jamendo_moodtheme-discogs-effnet-1.pb",
+            url=f"{BASE_URL}/classification-heads/mtg_jamendo_moodtheme/"
+            "mtg_jamendo_moodtheme-discogs-effnet-1.pb",
+        ),
+        ModelFile(
+            role="classifier_metadata",
+            filename="mtg_jamendo_moodtheme-discogs-effnet-1.json",
+            url=f"{BASE_URL}/classification-heads/mtg_jamendo_moodtheme/"
+            "mtg_jamendo_moodtheme-discogs-effnet-1.json",
+        ),
+    ),
+)
+
+DISCOGS_EFFNET_INSTRUMENT = ModelSpec(
+    id="essentia/mtg-jamendo-instrument-discogs-effnet/v1",
+    embedding_output="PartitionedCall:1",
+    classifier_input="model/Placeholder",
+    classifier_output="model/Sigmoid",
+    sample_rate=16_000,
+    files=(
+        ModelFile(
+            role="embedding",
+            filename="discogs-effnet-bs64-1.pb",
+            url=f"{BASE_URL}/feature-extractors/discogs-effnet/discogs-effnet-bs64-1.pb",
+        ),
+        ModelFile(
+            role="embedding_metadata",
+            filename="discogs-effnet-bs64-1.json",
+            url=f"{BASE_URL}/feature-extractors/discogs-effnet/discogs-effnet-bs64-1.json",
+        ),
+        ModelFile(
+            role="classifier",
+            filename="mtg_jamendo_instrument-discogs-effnet-1.pb",
+            url=f"{BASE_URL}/classification-heads/mtg_jamendo_instrument/"
+            "mtg_jamendo_instrument-discogs-effnet-1.pb",
+        ),
+        ModelFile(
+            role="classifier_metadata",
+            filename="mtg_jamendo_instrument-discogs-effnet-1.json",
+            url=f"{BASE_URL}/classification-heads/mtg_jamendo_instrument/"
+            "mtg_jamendo_instrument-discogs-effnet-1.json",
+        ),
+    ),
+)
+
+MODEL_SPECS_BY_TASK = {
+    "genre": DISCOGS519_MAEST,
+    "mood-theme": DISCOGS_EFFNET_MOOD_THEME,
+    "instrument": DISCOGS_EFFNET_INSTRUMENT,
+}

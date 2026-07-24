@@ -7,13 +7,22 @@ from pathlib import Path
 from typing import Any
 
 from settag.policy import EVIDENCE_LIMIT, Prediction
-from settag.tags import GenreState, OwnedValues, TagChange, TagPlan
+from settag.tags import (
+    OWNED_DESCRIPTIONS,
+    OwnedValues,
+    TagChange,
+    read_task_provenance,
+    task_evidence_from_owned,
+)
+from settag.tasks import TASK_ORDER
 
-PLAN_SCHEMA = "settag.plan/v3"
+PLAN_SCHEMA = "settag.plan/v4"
+LEGACY_PLAN_SCHEMA_V3 = "settag.plan/v3"
 LEGACY_PLAN_SCHEMA_V2 = "settag.plan/v2"
 LEGACY_PLAN_SCHEMA = "settag.plan/v1"
 SUPPORTED_PLAN_SCHEMAS = {
     PLAN_SCHEMA,
+    LEGACY_PLAN_SCHEMA_V3,
     LEGACY_PLAN_SCHEMA_V2,
     LEGACY_PLAN_SCHEMA,
 }
@@ -122,66 +131,13 @@ def stage_default_file_genre(item: PlannedWrite) -> PlannedWrite:
     )
 
 
-def plan_record(
-    *,
-    source: dict[str, object],
-    genre_state: GenreState,
-    evidence: list[Prediction],
-    selected: list[Prediction],
-    tag_plan: TagPlan,
-    readable_changes: list[str],
-    model_id: str,
-    analyzed_at: str,
-    settag_version: str,
-    config_sha256: str,
-    target_file_genre: tuple[str, ...] | None = None,
-) -> dict[str, object]:
-    standard_change = (
-        TagChange(
-            field=_standard_genre_field(tag_plan.format),
-            before=list(genre_state.standard) or None,
-            after=list(target_file_genre) or None,
-        )
-        if target_file_genre is not None and target_file_genre != genre_state.standard
-        else None
-    )
-    return {
-        "schema": PLAN_SCHEMA,
-        "path": source["path"],
-        "source": {
-            "sha256": source["sha256"],
-            "size": source["size"],
-            "mtime_ns": source["mtime_ns"],
-        },
-        "file_genre": list(genre_state.standard),
-        "target_file_genre": (
-            list(target_file_genre) if target_file_genre is not None else None
-        ),
-        "evidence": [item.to_dict() for item in evidence],
-        "selected": [item.to_dict() for item in selected],
-        "metadata_format": tag_plan.format,
-        "provenance": {
-            "settag_version": settag_version,
-            "model": model_id,
-            "analyzed_at": analyzed_at,
-            "config_sha256": config_sha256,
-        },
-        "changes": {
-            "settag": readable_changes,
-            "file_genre": (
-                friendly_standard_genre_change(standard_change)
-                if standard_change is not None
-                else None
-            ),
-        },
-    }
-
-
 def planned_write_record(item: PlannedWrite) -> dict[str, object]:
     model = item.desired["SETTAG_MODEL"]
     analyzed_at = item.desired["SETTAG_ANALYZED_AT"]
     version = item.desired["SETTAG_VERSION"]
     config = item.desired["SETTAG_CONFIG_SHA256"]
+    task_evidence = task_evidence_from_owned(item.desired)
+    task_provenance = read_task_provenance(item.desired)
     return {
         "schema": PLAN_SCHEMA,
         "path": str(item.path),
@@ -198,6 +154,23 @@ def planned_write_record(item: PlannedWrite) -> dict[str, object]:
         ),
         "evidence": [prediction.to_dict() for prediction in item.evidence],
         "selected": [prediction.to_dict() for prediction in item.selected],
+        "tasks": {
+            task: {
+                "evidence": [
+                    prediction.to_dict()
+                    for prediction in task_evidence.get(task, ())
+                ],
+                "provenance": task_provenance.get(task),
+            }
+            for task in TASK_ORDER
+            if task in task_evidence or task in task_provenance
+        },
+        "metadata": {
+            "fields": {
+                field: item.desired.get(field)
+                for field in OWNED_DESCRIPTIONS
+            },
+        },
         "metadata_format": item.metadata_format,
         "provenance": {
             "settag_version": version[0] if version else "unknown",
@@ -316,10 +289,10 @@ def _planned_write(
     selected = tuple(_predictions(record.get("selected"), f"{location}.selected"))
     evidence = (
         tuple(_predictions(record.get("evidence"), f"{location}.evidence"))
-        if schema == PLAN_SCHEMA
+        if schema in {PLAN_SCHEMA, LEGACY_PLAN_SCHEMA_V3}
         else selected
     )
-    if schema == PLAN_SCHEMA:
+    if schema in {PLAN_SCHEMA, LEGACY_PLAN_SCHEMA_V3}:
         _validate_evidence(evidence, f"{location}.evidence")
         if not _is_ordered_subset(selected, evidence):
             raise PlanError(
@@ -358,26 +331,49 @@ def _planned_write(
                 recorded_standard_change,
                 f"{location}.changes.file_genre",
             )
-    genres = [item.label for item in evidence] or None
-    scores = (
-        [
-            json.dumps(
-                [item.to_dict() for item in evidence],
-                ensure_ascii=False,
-                separators=(",", ":"),
+    if schema == PLAN_SCHEMA:
+        metadata = _mapping(record.get("metadata"), f"{location}.metadata")
+        fields = _mapping(metadata.get("fields"), f"{location}.metadata.fields")
+        unknown = sorted(set(fields) - set(OWNED_DESCRIPTIONS))
+        missing = sorted(set(OWNED_DESCRIPTIONS) - set(fields))
+        if unknown or missing:
+            raise PlanError(
+                f"{location}.metadata.fields: expected the complete SetTag field set"
             )
-        ]
-        if evidence
-        else None
-    )
-    desired: OwnedValues = {
-        "SETTAG_GENRE": genres,
-        "SETTAG_GENRE_SCORES": scores,
-        "SETTAG_VERSION": [settag_version],
-        "SETTAG_MODEL": [model_id],
-        "SETTAG_ANALYZED_AT": [analyzed_at],
-        "SETTAG_CONFIG_SHA256": [config_sha256],
-    }
+        desired = {
+            field: _optional_string_list(
+                fields.get(field),
+                f"{location}.metadata.fields.{field}",
+            )
+            for field in OWNED_DESCRIPTIONS
+        }
+        stored_genre = task_evidence_from_owned(desired).get("genre", ())
+        if tuple(stored_genre) != evidence:
+            raise PlanError(
+                f"{location}.evidence: does not match the stored genre metadata"
+            )
+        _validate_task_records(record.get("tasks"), desired, location)
+    else:
+        genres = [item.label for item in evidence] or None
+        scores = (
+            [
+                json.dumps(
+                    [item.to_dict() for item in evidence],
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                )
+            ]
+            if evidence
+            else None
+        )
+        desired = {
+            "SETTAG_GENRE": genres,
+            "SETTAG_GENRE_SCORES": scores,
+            "SETTAG_VERSION": [settag_version],
+            "SETTAG_MODEL": [model_id],
+            "SETTAG_ANALYZED_AT": [analyzed_at],
+            "SETTAG_CONFIG_SHA256": [config_sha256],
+        }
 
     planned = PlannedWrite(
         path=file_path,
@@ -455,6 +451,42 @@ def _predictions(value: object, location: str) -> list[Prediction]:
     return predictions
 
 
+def _optional_string_list(value: object, location: str) -> list[str] | None:
+    if value is None:
+        return None
+    return _string_list(value, location)
+
+
+def _validate_task_records(
+    value: object,
+    desired: OwnedValues,
+    location: str,
+) -> None:
+    tasks = _mapping(value, f"{location}.tasks")
+    evidence = task_evidence_from_owned(desired)
+    provenance = read_task_provenance(desired)
+    expected = {
+        task
+        for task in TASK_ORDER
+        if task in evidence or task in provenance
+    }
+    if set(tasks) != expected:
+        raise PlanError(f"{location}.tasks: does not match the stored task metadata")
+    for task in expected:
+        entry = _mapping(tasks.get(task), f"{location}.tasks.{task}")
+        recorded = tuple(
+            _predictions(entry.get("evidence"), f"{location}.tasks.{task}.evidence")
+        )
+        if recorded != evidence.get(task, ()):
+            raise PlanError(
+                f"{location}.tasks.{task}.evidence: does not match stored metadata"
+            )
+        if entry.get("provenance") != provenance.get(task):
+            raise PlanError(
+                f"{location}.tasks.{task}.provenance: does not match stored metadata"
+            )
+
+
 def friendly_change(change: TagChange) -> str:
     logical = _logical_field(change.field)
     before_count = len(change.before or ())
@@ -465,12 +497,20 @@ def friendly_change(change: TagChange) -> str:
     if logical == "SETTAG_GENRE_SCORES":
         action = "add" if change.before is None else "remove" if change.after is None else "update"
         return f"Ranked score data: {action}"
+    if logical in {"SETTAG_MOOD_THEME", "SETTAG_INSTRUMENT"}:
+        name = "Mood/theme" if logical == "SETTAG_MOOD_THEME" else "Instrument"
+        return f"{name} labels: {before_count} → {after_count}"
+    if logical in {"SETTAG_MOOD_THEME_SCORES", "SETTAG_INSTRUMENT_SCORES"}:
+        name = "Mood/theme" if "MOOD_THEME" in logical else "Instrument"
+        action = "add" if change.before is None else "remove" if change.after is None else "update"
+        return f"{name} ranked score data: {action}"
 
     labels = {
         "SETTAG_VERSION": "SetTag version",
         "SETTAG_MODEL": "Analysis model",
         "SETTAG_ANALYZED_AT": "Analysis time",
         "SETTAG_CONFIG_SHA256": "Evidence configuration",
+        "SETTAG_PROVENANCE": "Task provenance",
     }
     label = labels.get(logical, logical)
     return f"{label}: {_friendly_values(change.before)} → {_friendly_values(change.after)}"

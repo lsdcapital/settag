@@ -6,13 +6,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal, Protocol
 
-from settag import __version__
 from settag.hashing import sha256_file
 from settag.plans import (
     PLAN_ERROR_SCHEMA,
     PlannedWrite,
     friendly_change,
-    plan_record,
     planned_write_record,
 )
 from settag.policy import Prediction, collect_evidence, select_predictions
@@ -23,12 +21,14 @@ from settag.tags import (
     TagChange,
     TagPlan,
     apply_metadata_tags,
-    build_owned_values,
+    build_task_owned_values,
     plan_owned_tags,
     plan_standard_genres,
     read_genre_state,
     read_owned_values,
+    task_evidence_from_owned,
 )
+from settag.tasks import AnalysisTask, ordered_tasks
 
 
 class GenreAnalyzer(Protocol):
@@ -57,6 +57,10 @@ class PreparedTrack:
     desired: OwnedValues
     genre_state: GenreState
     tag_plan: TagPlan
+    task_predictions: dict[AnalysisTask, list[Prediction]]
+    task_evidence: dict[AnalysisTask, list[Prediction]]
+    task_selected: dict[AnalysisTask, list[Prediction]]
+    task_provenance: dict[AnalysisTask, dict[str, object]]
 
 
 @dataclass(frozen=True)
@@ -142,20 +146,38 @@ def prepare_track(
 ) -> PreparedTrack:
     source = source_record(path)
     analyzed_at = utc_now()
-    config = config_record(top=top, threshold=threshold)
-    predictions = analyzer.analyze(path)
-    evidence = collect_evidence(predictions)
-    selected = select_predictions(evidence, threshold=threshold, top=top)
-    spec = analyzer.spec
-    model_id = getattr(spec, "id", None)
-    if not isinstance(model_id, str):
-        raise RuntimeError("Analyzer model specification has no string id")
-    desired = build_owned_values(
-        evidence,
-        model_id=model_id,
-        analyzed_at=analyzed_at,
-        config_sha256=str(config["sha256"]),
+    current_owned = read_owned_values(path)
+    task_predictions, manifests = _analyze_tasks(analyzer, path)
+    config = config_record(
+        top=top,
+        threshold=threshold,
+        tasks=ordered_tasks(task_predictions),
     )
+    task_evidence = {
+        task: collect_evidence(predictions)
+        for task, predictions in task_predictions.items()
+    }
+    task_selected = {
+        task: select_predictions(evidence, threshold=threshold, top=top)
+        for task, evidence in task_evidence.items()
+    }
+    task_provenance = {
+        task: {
+            "model": manifests[task],
+            "analyzed_at": analyzed_at,
+            "config": config,
+        }
+        for task in ordered_tasks(task_predictions)
+    }
+    desired = build_task_owned_values(
+        current_owned,
+        task_evidence,
+        task_provenance,
+    )
+    stored = task_evidence_from_owned(desired)
+    evidence = list(stored.get("genre", ()))
+    predictions = task_predictions.get("genre", evidence)
+    selected = task_selected.get("genre", [])
     genre_state = read_genre_state(path)
     tag_plan = plan_owned_tags(path, desired)
     return PreparedTrack(
@@ -168,7 +190,49 @@ def prepare_track(
         desired=desired,
         genre_state=genre_state,
         tag_plan=tag_plan,
+        task_predictions=task_predictions,
+        task_evidence=task_evidence,
+        task_selected=task_selected,
+        task_provenance=task_provenance,
     )
+
+
+def _analyze_tasks(
+    analyzer: GenreAnalyzer,
+    path: Path,
+) -> tuple[
+    dict[AnalysisTask, list[Prediction]],
+    dict[AnalysisTask, dict[str, object]],
+]:
+    analyze_tasks = getattr(analyzer, "analyze_tasks", None)
+    manifests = getattr(analyzer, "model_manifests", None)
+    if callable(analyze_tasks) and isinstance(manifests, dict):
+        raw = analyze_tasks(path)
+        if not isinstance(raw, dict):
+            raise RuntimeError("Task analyzer returned an invalid result")
+        results = {
+            task: list(raw[task])
+            for task in ordered_tasks(raw)
+        }
+        selected_manifests: dict[AnalysisTask, dict[str, object]] = {}
+        for task in results:
+            manifest = manifests.get(task)
+            if not isinstance(manifest, dict):
+                raise RuntimeError(f"Task analyzer has no model manifest for {task}")
+            selected_manifests[task] = manifest
+        return results, selected_manifests
+
+    predictions = analyzer.analyze(path)
+    spec = analyzer.spec
+    model_id = getattr(spec, "id", None)
+    if not isinstance(model_id, str):
+        raise RuntimeError("Analyzer model specification has no string id")
+    manifest = getattr(analyzer, "model_manifest", None)
+    if not isinstance(manifest, dict):
+        manifest = {"schema": "settag.models/v1", "id": model_id, "files": {}}
+    elif manifest.get("id") != model_id:
+        manifest = {**manifest, "id": model_id}
+    return {"genre": predictions}, {"genre": manifest}
 
 
 def analyze_paths(
@@ -337,21 +401,7 @@ def _single_owned_value(owned: OwnedValues, field: str) -> str | None:
 
 
 def plan_record_for_track(track: PreparedTrack) -> dict[str, object]:
-    model_id = track.desired["SETTAG_MODEL"]
-    config_sha256 = track.desired["SETTAG_CONFIG_SHA256"]
-    settag_version = track.desired["SETTAG_VERSION"]
-    return plan_record(
-        source=track.source,
-        genre_state=track.genre_state,
-        evidence=track.evidence,
-        selected=track.selected,
-        tag_plan=track.tag_plan,
-        readable_changes=[friendly_change(change) for change in track.tag_plan.changes],
-        model_id=model_id[0] if model_id else "unknown",
-        analyzed_at=track.analyzed_at,
-        settag_version=settag_version[0] if settag_version else __version__,
-        config_sha256=config_sha256[0] if config_sha256 else "unknown",
-    )
+    return planned_write_record(planned_write_for_track(track))
 
 
 def planned_write_for_track(track: PreparedTrack) -> PlannedWrite:

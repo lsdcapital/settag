@@ -22,9 +22,11 @@ from settag.tags import (
     apply_metadata_tags,
     apply_owned_tags,
     build_owned_values,
+    build_task_owned_values,
     plan_owned_tags,
     plan_standard_genres,
     read_genre_state,
+    read_owned_values,
 )
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -193,6 +195,59 @@ def test_id3_write_preserves_standard_and_unowned_tags(tmp_path: Path) -> None:
     assert tags["TXXX:SETTAG_GENRE"].text == ["Electronic---Deep House"]
     assert tags["TXXX:SETTAG_VERSION"].text == [__version__]
     assert tags["TXXX:SETTAG_MODEL"].text == ["model/v1"]
+
+
+@pytest.mark.parametrize("fixture", [None, "tagged.flac", "tagged.m4a"])
+def test_task_bundle_round_trips_across_supported_containers(
+    tmp_path: Path,
+    fixture: str | None,
+) -> None:
+    if fixture is None:
+        path = tmp_path / "track.wav"
+        _tagged_wav(path)
+    else:
+        path = _copy_fixture(fixture, tmp_path)
+    current = read_owned_values(path)
+    evidence = {
+        "mood-theme": [
+            Prediction("dark", 0.82),
+            Prediction("deep", 0.61),
+        ],
+        "instrument": [
+            Prediction("synthesizer", 0.91),
+            Prediction("drummachine", 0.74),
+        ],
+    }
+    provenance = {
+        task: {
+            "model": {
+                "schema": "settag.models/v1",
+                "id": f"model/{task}/v1",
+                "files": {
+                    "embedding": {"name": "effnet.pb", "sha256": "a" * 64},
+                    "classifier": {"name": f"{task}.pb", "sha256": "b" * 64},
+                },
+            },
+            "analyzed_at": "2026-07-24T12:00:00Z",
+            "config": {
+                "evidence": {"limit": 20, "tasks": [task]},
+                "selection": {"top": 5, "score_cutoff": 0.1},
+                "sha256": "c" * 64,
+            },
+        }
+        for task in evidence
+    }
+
+    desired = build_task_owned_values(current, evidence, provenance)  # type: ignore[arg-type]
+    apply_owned_tags(path, desired)
+    stored = read_owned_values(path)
+
+    assert stored["SETTAG_MOOD_THEME"] == ["dark", "deep"]
+    assert stored["SETTAG_INSTRUMENT"] == ["synthesizer", "drummachine"]
+    assert stored["SETTAG_GENRE"] is None
+    task_provenance = json.loads(stored["SETTAG_PROVENANCE"][0])
+    assert set(task_provenance["tasks"]) == {"mood-theme", "instrument"}
+    assert read_genre_state(path).standard == ("Existing genre",)
 
 
 def test_explicit_id3_genre_edit_is_planned_written_and_verified(tmp_path: Path) -> None:

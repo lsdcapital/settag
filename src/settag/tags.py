@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from abc import ABC, abstractmethod
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -16,16 +17,22 @@ from mutagen.wave import WAVE
 
 from settag import __version__
 from settag.policy import Prediction
+from settag.tasks import TASK_FIELDS, TASK_ORDER, AnalysisTask, task_name
 
 ENCODING_UTF8 = 3
 MP4_MEAN = "com.lsdcapital.settag"
 OWNED_DESCRIPTIONS = (
     "SETTAG_GENRE",
     "SETTAG_GENRE_SCORES",
+    "SETTAG_MOOD_THEME",
+    "SETTAG_MOOD_THEME_SCORES",
+    "SETTAG_INSTRUMENT",
+    "SETTAG_INSTRUMENT_SCORES",
     "SETTAG_VERSION",
     "SETTAG_MODEL",
     "SETTAG_ANALYZED_AT",
     "SETTAG_CONFIG_SHA256",
+    "SETTAG_PROVENANCE",
 )
 
 OwnedValues = dict[str, list[str] | None]
@@ -96,6 +103,159 @@ def build_owned_values(
         "SETTAG_ANALYZED_AT": [analyzed_at],
         "SETTAG_CONFIG_SHA256": [config_sha256],
     }
+
+
+def build_task_owned_values(
+    current: Mapping[str, list[str] | None],
+    evidence_by_task: Mapping[AnalysisTask, list[Prediction]],
+    provenance_by_task: Mapping[AnalysisTask, dict[str, object]],
+) -> OwnedValues:
+    """Merge newly analyzed tasks into the complete SetTag-owned metadata bundle."""
+    desired: OwnedValues = {
+        description: current.get(description)
+        for description in OWNED_DESCRIPTIONS
+    }
+    provenance = read_task_provenance(current)
+    for task in TASK_ORDER:
+        evidence = evidence_by_task.get(task)
+        task_provenance = provenance_by_task.get(task)
+        if evidence is None or task_provenance is None:
+            continue
+        label_field, score_field = TASK_FIELDS[task]
+        labels = [item.label for item in evidence]
+        desired[label_field] = labels or None
+        desired[score_field] = (
+            [
+                json.dumps(
+                    [item.to_dict() for item in evidence],
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                )
+            ]
+            if labels
+            else None
+        )
+        provenance[task] = task_provenance
+
+    if evidence_by_task:
+        desired["SETTAG_VERSION"] = [__version__]
+    if "genre" in evidence_by_task:
+        genre = provenance_by_task["genre"]
+        model = genre.get("model")
+        model_id = model.get("id") if isinstance(model, dict) else None
+        analyzed_at = genre.get("analyzed_at")
+        config = genre.get("config")
+        config_sha256 = config.get("sha256") if isinstance(config, dict) else None
+        desired["SETTAG_MODEL"] = [model_id] if isinstance(model_id, str) else None
+        desired["SETTAG_ANALYZED_AT"] = (
+            [analyzed_at] if isinstance(analyzed_at, str) else None
+        )
+        desired["SETTAG_CONFIG_SHA256"] = (
+            [config_sha256] if isinstance(config_sha256, str) else None
+        )
+
+    desired["SETTAG_PROVENANCE"] = (
+        [
+            json.dumps(
+                {
+                    "schema": "settag.provenance/v2",
+                    "tasks": {
+                        task: provenance[task]
+                        for task in TASK_ORDER
+                        if task in provenance
+                    },
+                },
+                ensure_ascii=False,
+                separators=(",", ":"),
+                sort_keys=True,
+            )
+        ]
+        if provenance
+        else None
+    )
+    return desired
+
+
+def read_task_provenance(
+    owned: Mapping[str, list[str] | None],
+) -> dict[AnalysisTask, dict[str, object]]:
+    serialized = owned.get("SETTAG_PROVENANCE")
+    parsed: dict[AnalysisTask, dict[str, object]] = {}
+    if serialized is not None and len(serialized) == 1:
+        try:
+            value = json.loads(serialized[0])
+        except (TypeError, ValueError, json.JSONDecodeError):
+            value = None
+        if isinstance(value, dict) and value.get("schema") == "settag.provenance/v2":
+            tasks = value.get("tasks")
+            if isinstance(tasks, dict):
+                for raw_task, entry in tasks.items():
+                    try:
+                        task = task_name(raw_task)
+                    except ValueError:
+                        continue
+                    if isinstance(entry, dict):
+                        parsed[task] = entry
+
+    if "genre" not in parsed:
+        model = _single_owned(owned, "SETTAG_MODEL")
+        analyzed_at = _single_owned(owned, "SETTAG_ANALYZED_AT")
+        config_sha256 = _single_owned(owned, "SETTAG_CONFIG_SHA256")
+        if model and analyzed_at and config_sha256:
+            parsed["genre"] = {
+                "model": {"schema": "settag.models/v1", "id": model, "files": {}},
+                "analyzed_at": analyzed_at,
+                "config": {"sha256": config_sha256},
+            }
+    return parsed
+
+
+def task_evidence_from_owned(
+    owned: Mapping[str, list[str] | None],
+) -> dict[AnalysisTask, tuple[Prediction, ...]]:
+    results: dict[AnalysisTask, tuple[Prediction, ...]] = {}
+    for task in TASK_ORDER:
+        label_field, score_field = TASK_FIELDS[task]
+        labels = owned.get(label_field)
+        serialized = owned.get(score_field)
+        if not labels or serialized is None or len(serialized) != 1:
+            continue
+        try:
+            values = json.loads(serialized[0])
+        except (TypeError, ValueError, json.JSONDecodeError):
+            continue
+        if not isinstance(values, list):
+            continue
+        predictions: list[Prediction] = []
+        valid = True
+        for value in values:
+            if not isinstance(value, dict):
+                valid = False
+                break
+            label = value.get("label")
+            score = value.get("score")
+            if (
+                not isinstance(label, str)
+                or isinstance(score, bool)
+                or not isinstance(score, (int, float))
+                or not 0 <= float(score) <= 1
+            ):
+                valid = False
+                break
+            predictions.append(Prediction(label, float(score)))
+        if valid and [item.label for item in predictions] == labels:
+            results[task] = tuple(predictions)
+    return results
+
+
+def _single_owned(
+    owned: Mapping[str, list[str] | None],
+    field: str,
+) -> str | None:
+    values = owned.get(field)
+    if values is None or len(values) != 1 or not values[0]:
+        return None
+    return values[0]
 
 
 class OwnedTagStore(ABC):

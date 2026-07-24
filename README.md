@@ -1,9 +1,8 @@
 # settag
 
-SetTag is a terminal-first genre assistant for DJ music libraries. It analyzes
-audio with Essentia's Discogs519 MAEST models, shows ranked genre evidence
-beside the file's existing genre, and lets you stage and verify metadata
-changes before writing.
+SetTag is a terminal-first analysis assistant for DJ music libraries. It uses
+MAEST for genre and optional Discogs-EffNet heads for mood/theme and instrument
+evidence, then lets you stage and verify metadata changes before writing.
 
 The default experience is a Textual app. The same executable also provides a
 plain, non-TUI CLI for scripts, redirected output, saved plans, and CI.
@@ -21,6 +20,14 @@ Python 3.10–3.14 and [uv](https://docs.astral.sh/uv/) are recommended:
 ```sh
 uv sync
 uv run settag models download
+```
+
+Genre is the default and the only model loaded unless tasks are requested
+explicitly:
+
+```sh
+uv run settag models download --tasks genre,mood-theme,instrument
+uv run settag analyze "/path/to/music" --tasks genre,mood-theme,instrument
 ```
 
 Models are downloaded once into `~/.cache/settag/models`. They are not bundled
@@ -61,6 +68,11 @@ remain visible but unselected. Adjust the selection, then press `R` to load the
 model and analyze only the selected tracks visible in the current filter.
 Selections in other filtered views are not included.
 
+Analysis runs serially in a background worker. The selected batch is fixed when
+the job starts, but the interface remains available for navigation, filtering,
+and inspection. Each completed track is persisted immediately and becomes
+available under `V` while the next track is still running.
+
 The library keys are:
 
 | Key | Action |
@@ -80,7 +92,13 @@ safely interrupted halfway through a track. Completed results remain available
 for review and are saved in the local workbench; unprocessed tracks remain
 selected for a later run. Cancellation never writes metadata.
 
-After analysis, the app switches to review:
+Background execution keeps the interface interactive, but inference remains
+CPU-intensive; a warm laptop and active fans are expected during a large batch.
+SetTag deliberately analyzes one track at a time rather than multiplying that
+load with parallel track workers.
+
+Press `V` as soon as the first track completes to open review. If you stay in
+the library, the app switches to review when the full batch finishes:
 
 ```text
   ✓  Track                       File genre    Analysis          Suggested          Score  Changes
@@ -106,12 +124,15 @@ The review keys are:
 | `I` | Show or hide review candidates and staged changes |
 | `E` | Set this track's standard genre, clear it, or use the suggestion |
 | `S` | Save the included tracks as a reusable JSONL plan |
-| `Enter` / `W` | Preflight, confirm once, write, and verify |
+| `Enter` / `W` | Preflight, confirm once, write, and verify completed tracks |
 | `B` | Return to the metadata library to choose another analysis batch |
 | `Q` | Quit |
 
 Newly analyzed tracks with SetTag changes are checked for writing by default.
 Press `Space` to check or uncheck the highlighted track.
+While background analysis continues, review, genre editing, plan saving, and
+writing operate on the completed snapshot only. The in-flight track cannot
+enter a write until its analysis plan is complete.
 When a newly analyzed track has no conventional genre, SetTag visibly stages
 the conservative standard-genre suggestion there by default. It never replaces
 a non-empty genre automatically. Use `E` to change the staged value or clear it
@@ -230,7 +251,7 @@ uv run settag analyze "/path/to/music" \
 ```
 
 `analyze --write` updates SetTag-owned evidence only. Standard genre editing is
-available through the app or a saved v3 plan because it must be staged
+available through the app or a saved v4 plan because it must be staged
 explicitly per track.
 
 ### Logging
@@ -268,20 +289,28 @@ SetTag owns these logical evidence fields:
 
 - `SETTAG_GENRE`
 - `SETTAG_GENRE_SCORES`
+- `SETTAG_MOOD_THEME`
+- `SETTAG_MOOD_THEME_SCORES`
+- `SETTAG_INSTRUMENT`
+- `SETTAG_INSTRUMENT_SCORES`
 - `SETTAG_VERSION`
 - `SETTAG_MODEL`
 - `SETTAG_ANALYZED_AT`
 - `SETTAG_CONFIG_SHA256`
+- `SETTAG_PROVENANCE`
 
-`SETTAG_GENRE` contains the bounded ranked evidence labels.
-`SETTAG_GENRE_SCORES` is one compact JSON value containing the same labels,
-order, and raw model scores. SetTag currently stores the top 20 results without
-a score cutoff. Metadata consumers such as SetPath can therefore choose their
-own cutoff instead of inheriting SetTag's review preference.
+Each task's label field contains bounded ranked evidence. Its `_SCORES` field
+is one compact JSON value containing the same labels, order, and raw model
+scores. SetTag stores the top 20 results without a score cutoff so consumers
+such as SetPath can choose their own policy.
 
-The six SetTag-owned fields form one analysis bundle and are written together.
-They are not six independently selectable tags. The conventional genre remains
-a separate staged layer.
+Genre evidence is exclusively MAEST-derived. EffNet cannot populate
+`SETTAG_GENRE` or a conventional genre field. Task updates are independent:
+an instrument-only run replaces instrument evidence while preserving valid
+genre and mood/theme evidence. `SETTAG_PROVENANCE` is a versioned, task-keyed
+record of exact model identifiers, artifact digests, configuration, thresholds,
+and analysis timestamps. The conventional genre remains a separate staged
+layer.
 
 The standard genre is not part of the SetTag namespace. For newly analyzed
 tracks where it is empty, the app stages the conservative standard-genre
@@ -302,13 +331,13 @@ file writes cannot form one transaction across multiple files.
 
 ## Saved plans
 
-`settag.plan/v3` is the compact review and write contract. It records bounded
+`settag.plan/v4` is the compact review and write contract. It records bounded
 evidence separately from SetTag's current review selection and records the
 observed file genre separately from an optional staged target:
 
 ```json
 {
-  "schema": "settag.plan/v3",
+  "schema": "settag.plan/v4",
   "path": "/path/to/music/track.mp3",
   "source": {
     "sha256": "b7b118125b3289157da76212b54c2e1f91b4db2c3c0ff1bca4094c4d0046ed23",

@@ -52,6 +52,28 @@ class PinnedFakeAnalyzer(FakeAnalyzer):
     spec = SimpleNamespace(id=DISCOGS519_MAEST.id)
 
 
+class FakeInstrumentAnalyzer:
+    backend_version = "test"
+    model_manifests = {
+        "instrument": {
+            "schema": "settag.models/v1",
+            "id": "essentia/instrument-effnet/v1",
+            "files": {
+                "embedding": {"name": "effnet.pb", "sha256": "a" * 64},
+                "classifier": {"name": "instrument.pb", "sha256": "b" * 64},
+            },
+        },
+    }
+
+    def analyze_tasks(self, path: Path) -> dict[str, list[Prediction]]:
+        return {
+            "instrument": [
+                Prediction("synthesizer", 0.81),
+                Prediction("drummachine", 0.62),
+            ]
+        }
+
+
 class TtyStringIO(StringIO):
     def isatty(self) -> bool:
         return True
@@ -137,11 +159,12 @@ def test_analyze_write_applies_exact_planned_fields(tmp_path: Path) -> None:
         "Electronic---Deep House",
         "Electronic---House",
     ]
-    assert record["evidence"] == [
+    assert record["schema"] == "settag.analysis/v2"
+    assert record["tasks"]["genre"]["evidence"] == [
         {"label": "Electronic---Deep House", "score": 0.72},
         {"label": "Electronic---House", "score": 0.05},
     ]
-    assert record["selected"] == [
+    assert record["tasks"]["genre"]["selected"] == [
         {"label": "Electronic---Deep House", "score": 0.72},
     ]
 
@@ -164,8 +187,8 @@ def test_score_cutoff_and_top_do_not_remove_portable_evidence(
 
     record = json.loads(output.getvalue())
     tags = WAVE(path).tags
-    assert record["selected"] == []
-    assert record["evidence"] == [
+    assert record["tasks"]["genre"]["selected"] == []
+    assert record["tasks"]["genre"]["evidence"] == [
         {"label": "Electronic---Deep House", "score": 0.72},
         {"label": "Electronic---House", "score": 0.05},
     ]
@@ -174,6 +197,88 @@ def test_score_cutoff_and_top_do_not_remove_portable_evidence(
         "Electronic---Deep House",
         "Electronic---House",
     ]
+
+
+def test_instrument_only_run_preserves_genre_and_publishes_task_provenance(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "track.wav"
+    _silent_wav(path)
+    _add_genre(path, "Existing genre")
+
+    _analyze_one(
+        path,
+        analyzer=FakeAnalyzer(),  # type: ignore[arg-type]
+        top=5,
+        threshold=0.10,
+        write=True,
+        output=StringIO(),
+    )
+    genre_tags = WAVE(path).tags
+    assert genre_tags is not None
+    genre_before = list(genre_tags["TXXX:SETTAG_GENRE"].text)
+
+    output = StringIO()
+    _analyze_one(
+        path,
+        analyzer=FakeInstrumentAnalyzer(),  # type: ignore[arg-type]
+        top=5,
+        threshold=0.10,
+        write=True,
+        output=output,
+    )
+
+    tags = WAVE(path).tags
+    record = json.loads(output.getvalue())
+    assert tags is not None
+    assert tags["TCON"].text == ["Existing genre"]
+    assert tags["TXXX:SETTAG_GENRE"].text == genre_before
+    assert tags["TXXX:SETTAG_INSTRUMENT"].text == [
+        "synthesizer",
+        "drummachine",
+    ]
+    provenance = json.loads(tags["TXXX:SETTAG_PROVENANCE"].text[0])
+    assert provenance["schema"] == "settag.provenance/v2"
+    assert set(provenance["tasks"]) == {"genre", "instrument"}
+    assert provenance["tasks"]["instrument"]["model"]["files"]["embedding"]["sha256"] == (
+        "a" * 64
+    )
+    assert set(record["tasks"]) == {"instrument"}
+    assert "genre" not in record["tasks"]
+
+
+def test_explicit_instrument_task_does_not_construct_genre_analyzer(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    path = tmp_path / "track.wav"
+    output = tmp_path / "analysis.jsonl"
+    _silent_wav(path)
+
+    def unexpected_genre(_model_dir):
+        raise AssertionError("instrument-only analysis must not load MAEST")
+
+    monkeypatch.setattr("settag.cli.EssentiaGenreAnalyzer", unexpected_genre)
+    monkeypatch.setattr(
+        "settag.cli.EssentiaTaskAnalyzer",
+        lambda _model_dir, tasks: FakeInstrumentAnalyzer(),
+    )
+
+    result = main(
+        [
+            "analyze",
+            str(path),
+            "--tasks",
+            "instrument",
+            "--output",
+            str(output),
+        ]
+    )
+
+    record = json.loads(output.read_text(encoding="utf-8"))
+    assert result == 0
+    assert set(record["tasks"]) == {"instrument"}
+    assert WAVE(path).tags is None
 
 
 def test_default_file_genre_never_replaces_an_existing_value(
@@ -221,12 +326,13 @@ def test_analyze_without_output_logs_summary_and_complete_debug_record(
     ) in messages
     assert (
         "  dry run: SetTag analysis bundle would change "
-        "(6 internal fields); nothing written"
+        "(7 internal fields); nothing written"
     ) in messages
     debug_record = json.loads(caplog.records[-1].getMessage())
-    assert len(debug_record["predictions"]) == 2
-    assert debug_record["evidence"] == debug_record["predictions"]
-    assert debug_record["selected"] == [{"label": "Electronic---Deep House", "score": 0.72}]
+    genre = debug_record["tasks"]["genre"]
+    assert len(genre["predictions"]) == 2
+    assert genre["evidence"] == genre["predictions"]
+    assert genre["selected"] == [{"label": "Electronic---Deep House", "score": 0.72}]
 
 
 def test_unhandled_ctrl_c_exits_without_a_traceback(monkeypatch, capsys) -> None:
@@ -473,7 +579,7 @@ def test_compact_plan_is_human_readable_and_applies_after_one_confirmation(
     assert "Tracks analyzed:  1" in analyze_stderr
     assert f"Preview: uv run settag preview {plan_path}" in analyze_stderr
     assert f"Apply:   uv run settag apply {plan_path}" in analyze_stderr
-    assert plan_text.startswith('{"schema":"settag.plan/v3","path":')
+    assert plan_text.startswith('{"schema":"settag.plan/v4","path":')
     assert "predictions" not in plan
     assert plan["file_genre"] == []
     assert plan["target_file_genre"] is None
@@ -493,6 +599,8 @@ def test_compact_plan_is_human_readable_and_applies_after_one_confirmation(
         "target_file_genre",
         "evidence",
         "selected",
+        "tasks",
+        "metadata",
         "metadata_format",
         "provenance",
         "changes",
@@ -542,7 +650,7 @@ def test_preview_renders_a_saved_plan_without_external_json_tools_or_writing(
     assert "SetTag model evidence" in captured.out
     assert "Electronic---Deep House  score 0.720  selected" in captured.out
     assert "Electronic---House       score 0.050  available" in captured.out
-    assert "SetTag analysis bundle (6 internal field changes)" in captured.out
+    assert "SetTag analysis bundle (7 internal field changes)" in captured.out
     assert "Genre labels: 0 → 2" in captured.out
     assert "This preview reads only the saved plan" in captured.out
     assert f"uv run settag apply {plan_path}" in captured.out
@@ -710,7 +818,7 @@ def test_batch_apply_rejects_a_partial_plan_with_analysis_errors(
     ]
 
     assert analyzed == 1
-    assert schemas == ["settag.plan-error/v1", "settag.plan/v3"]
+    assert schemas == ["settag.plan-error/v1", "settag.plan/v4"]
 
     applied = main(["apply", str(plan_path), "--yes"])
     stderr = capsys.readouterr().err
