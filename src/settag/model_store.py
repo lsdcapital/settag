@@ -30,7 +30,12 @@ def missing_files(
     model_dir: Path,
     spec: ModelSpec = DISCOGS519_MAEST,
 ) -> list[ModelFile]:
-    return [item for item in spec.files if not (model_dir / item.filename).is_file()]
+    return [
+        item
+        for item in spec.files
+        if not (path := model_dir / item.filename).is_file()
+        or sha256_file(path) != item.sha256
+    ]
 
 
 def require_models(
@@ -43,7 +48,7 @@ def require_models(
 
     names = ", ".join(item.filename for item in missing)
     raise MissingModelsError(
-        f"Missing model files in {model_dir}: {names}. "
+        f"Missing or invalid model files in {model_dir}: {names}. "
         f"Run `settag models download --model-dir {model_dir}`."
     )
 
@@ -71,7 +76,11 @@ def download_models(
 
     for item in spec.files:
         destination = model_dir / item.filename
-        if destination.is_file() and not force:
+        if (
+            destination.is_file()
+            and not force
+            and sha256_file(destination) == item.sha256
+        ):
             print(f"exists: {destination}", file=sys.stderr)
             continue
 
@@ -81,7 +90,13 @@ def download_models(
             with urlopen(item.url) as response, temporary.open("wb") as output:
                 while chunk := response.read(1024 * 1024):
                     output.write(chunk)
-            temporary.replace(destination)
+            actual = sha256_file(temporary)
+            if actual != item.sha256:
+                raise RuntimeError(
+                    f"SHA-256 mismatch for {item.filename}: "
+                    f"expected {item.sha256}, got {actual}"
+                )
+            os.replace(temporary, destination)
         except BaseException:
             temporary.unlink(missing_ok=True)
             raise
@@ -105,10 +120,12 @@ def installed_manifest(
     return {
         "schema": "settag.models/v1",
         "id": spec.id,
+        "license": spec.license,
         "files": {
             item.role: {
                 "name": item.filename,
-                "sha256": sha256_file(model_dir / item.filename),
+                "sha256": item.sha256,
+                "size_bytes": (model_dir / item.filename).stat().st_size,
                 "url": item.url,
             }
             for item in spec.files
@@ -182,7 +199,11 @@ def download_task_models(
 
     for item in files_by_name.values():
         destination = model_dir / item.filename
-        if destination.is_file() and not force:
+        if (
+            destination.is_file()
+            and not force
+            and sha256_file(destination) == item.sha256
+        ):
             print(f"exists: {destination}", file=sys.stderr)
             continue
         temporary = destination.with_suffix(destination.suffix + ".part")
@@ -191,7 +212,13 @@ def download_task_models(
             with urlopen(item.url) as response, temporary.open("wb") as output:
                 while chunk := response.read(1024 * 1024):
                     output.write(chunk)
-            temporary.replace(destination)
+            actual = sha256_file(temporary)
+            if actual != item.sha256:
+                raise RuntimeError(
+                    f"SHA-256 mismatch for {item.filename}: "
+                    f"expected {item.sha256}, got {actual}"
+                )
+            os.replace(temporary, destination)
         except BaseException:
             temporary.unlink(missing_ok=True)
             raise

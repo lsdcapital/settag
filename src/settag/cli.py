@@ -460,7 +460,7 @@ def _run_models(args: argparse.Namespace) -> int:
         if missing:
             print(f"tasks: {','.join(args.tasks)}")
             print(f"directory: {model_dir}")
-            print("status: missing")
+            print("status: missing or invalid")
             for task, files in missing.items():
                 for item in files:
                     print(f"missing[{task}]: {item.filename}")
