@@ -103,8 +103,7 @@ The review keys are:
 | `Space` | Include or exclude the current track from writing |
 | `A` | Toggle all changed tracks on or off |
 | `I` | Show or hide review candidates and staged changes |
-| `G` | Stage the standard-genre suggestion for this track |
-| `E` | Edit this track's standard genre |
+| `E` | Set this track's standard genre, clear it, or use the suggestion |
 | `S` | Save the included tracks as a reusable JSONL plan |
 | `Enter` / `W` | Preflight, confirm once, write, and verify |
 | `B` | Return to the metadata library to choose another analysis batch |
@@ -119,9 +118,9 @@ to preserve the empty genre; the `before → after` value remains visible in the
 list and inspector. If no candidate clears the review cutoff, the genre remains
 empty.
 
-The automatic default and `G` remove the Discogs parent prefix. For an explicit
-allowlist of House-family labels, they also roll the detailed child label up to
-the stable conventional genre `House`:
+The automatic default and the editor's `Use suggestion` action remove the
+Discogs parent prefix. For an explicit allowlist of House-family labels, they
+also roll the detailed child label up to the stable conventional genre `House`:
 
 ```text
 Electronic---Progressive House → House
@@ -131,8 +130,8 @@ Electronic---Tropical House    → House
 The inspector shows this transformation. Other model children keep their
 direct name; SetTag deliberately does not infer a family from a suffix alone
 (`Witch House` remains `Witch House`). Detailed labels and scores are unchanged
-in the SetTag evidence. Use `G` to restore the suggestion after opting out, or
-`E` to enter the exact value you want.
+in the SetTag evidence. Use `E` to open the genre screen, where you can restore
+the suggestion after opting out or enter the exact value you want.
 
 `W` runs a complete preflight and shows one batch confirmation. `Write` is the
 default focused action, so `Enter` confirms it; `Esc` returns to review. SetTag

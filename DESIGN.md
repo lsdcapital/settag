@@ -72,10 +72,10 @@ Changed tracks are checked for writing by default; `Space` checks or unchecks
 the highlighted track. After a new analysis, an empty conventional genre
 defaults to the conservative standard-genre suggestion; a non-empty genre is
 never replaced automatically. No candidate above the review cutoff means no
-default. `E` can change or clear the staged value, and `G` restores the
-suggestion. House-family children use an explicit allowlist to roll up to
-`House`; all other children retain their direct name. The inspector shows any
-roll-up, and every edit is shown as `before → after`.
+default. `E` opens one genre screen where the user can enter or clear a value,
+or explicitly use the model suggestion. House-family children use an explicit
+allowlist to roll up to `House`; all other children retain their direct name.
+The inspector shows any roll-up, and every edit is shown as `before → after`.
 
 Completed interactive analysis is persisted before review in a local SQLite
 workbench. On startup, a matching plan skips inference and opens as
@@ -92,7 +92,7 @@ footer changes with the current phase:
 ```text
 Choose: Space toggle · I details · A all/none · F filter · Enter/R analyze · Q quit
 Analyzing: Esc cancel after current track
-Review: Space toggle · A all/none · I details · G suggestion · E edit · S save · Enter/W write
+Review: Space toggle · A all/none · I details · E genre · S save · Enter/W write
 ```
 
 SetTag follows SetPath's Booth Compass palette so both DJ tools read as one

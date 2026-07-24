@@ -81,7 +81,6 @@ REVIEW_ACTIONS = frozenset(
         "toggle_all",
         "toggle_details",
         "library",
-        "use_suggestion",
         "edit_genre",
         "save",
         "write",
@@ -142,16 +141,16 @@ class GenreEditScreen(ModalScreen[str | None]):
         )
         suggestion = suggested_file_genre(self.item)
         with Vertical(id="genre-dialog"):
-            yield Label("Edit standard file genre", id="dialog-title")
+            yield Label("Set standard file genre", id="dialog-title")
             yield Static(
-                "This changes the conventional genre tag only for this track.\n"
-                "Leave the field empty to clear it.",
+                "Enter one or more genres, separated by commas.\n"
+                "An empty field clears the conventional genre tag.",
                 markup=False,
                 id="dialog-help",
             )
             yield Input(
                 value=", ".join(current),
-                placeholder=suggestion or "Genre",
+                placeholder="Genre",
                 id="genre-input",
             )
             if suggestion:
@@ -168,10 +167,16 @@ class GenreEditScreen(ModalScreen[str | None]):
                 )
             with Horizontal(classes="dialog-actions"):
                 yield Button("Cancel", id="cancel")
-                yield Button("Stage change", variant="primary", id="stage")
+                if suggestion:
+                    yield Button("Use suggestion", id="use-suggestion")
+                yield Button("Stage entered genre", variant="primary", id="stage")
 
     def on_mount(self) -> None:
+        self.set_class(self.size.width < 64, "narrow")
         self.query_one("#genre-input", Input).focus()
+
+    def on_resize(self, event: events.Resize) -> None:
+        self.set_class(event.size.width < 64, "narrow")
 
     @on(Input.Submitted)
     def submit_genre(self) -> None:
@@ -180,6 +185,12 @@ class GenreEditScreen(ModalScreen[str | None]):
     @on(Button.Pressed, "#stage")
     def stage_genre(self) -> None:
         self._submit()
+
+    @on(Button.Pressed, "#use-suggestion")
+    def use_suggestion(self) -> None:
+        suggestion = suggested_file_genre(self.item)
+        if suggestion is not None:
+            self.dismiss(suggestion)
 
     @on(Button.Pressed, "#cancel")
     def cancel_button(self) -> None:
@@ -291,8 +302,7 @@ class SetTagApp(App[TuiOutcome]):
         Binding("r", "analyze", "Analyze"),
         Binding("escape", "cancel_analysis", "Cancel"),
         Binding("b", "library", "Library"),
-        Binding("g", "use_suggestion", "Use suggestion"),
-        Binding("e", "edit_genre", "Edit genre"),
+        Binding("e", "edit_genre", "Genre"),
         Binding("s", "save", "Save plan"),
         Binding("w", "write", "Write"),
         Binding("q", "quit", "Quit"),
@@ -496,6 +506,12 @@ class SetTagApp(App[TuiOutcome]):
 
     .dialog-actions Button {
         margin-left: 1;
+    }
+
+    GenreEditScreen.narrow .dialog-actions {
+        height: 9;
+        layout: vertical;
+        align-horizontal: right;
     }
 
     #confirm-dialog #cancel {
@@ -1505,33 +1521,6 @@ class SetTagApp(App[TuiOutcome]):
         }
         self._show_library()
 
-    def action_use_suggestion(self) -> None:
-        if self.busy:
-            return
-        index = self._current_review_index()
-        if index is None:
-            return
-        item = self.entries[index].plan
-        assert item is not None
-        suggestion = suggested_file_genre(item)
-        if suggestion is None:
-            self.notify(
-                "No selected model label is available for this track.",
-                severity="warning",
-            )
-            return
-        self.entries[index].plan = stage_file_genre(item, (suggestion,))
-        self.write_selected.add(index)
-        self._persist(index)
-        self._refresh_row(index)
-        model_child = _suggested_label(item.selected)
-        source = (
-            f" from “{model_child}”"
-            if model_child and model_child != suggestion
-            else ""
-        )
-        self._update_status(f"Staged file genre “{suggestion}”{source}")
-
     def action_edit_genre(self) -> None:
         if self.busy:
             return
@@ -1571,7 +1560,8 @@ class SetTagApp(App[TuiOutcome]):
             self.write_selected.add(index)
         self._persist(index)
         self._refresh_row(index)
-        self._update_status("Standard file genre edit staged")
+        staged = ", ".join(genres) or "None"
+        self._update_status(f"Staged standard file genre: {staged}")
 
     def action_save(self) -> None:
         if self.busy:

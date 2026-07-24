@@ -496,7 +496,11 @@ def test_tui_defaults_empty_genre_to_suggestion_and_allows_opt_out(
             assert plan.target_file_genre is None
             assert plan.standard_genre_change is None
 
-            await pilot.press("g")
+            await pilot.press("e")
+            await pilot.pause()
+            assert isinstance(app.screen, GenreEditScreen)
+            await pilot.click("#use-suggestion")
+            await pilot.pause()
             plan = app.entries[0].plan
             assert plan is not None
             assert plan.target_file_genre == ("House",)
@@ -526,7 +530,7 @@ def test_tui_defaults_empty_genre_to_suggestion_and_allows_opt_out(
     assert WAVE(path).tags is None
 
 
-def test_tui_requires_g_before_replacing_an_existing_standard_genre(
+def test_tui_requires_genre_screen_before_replacing_an_existing_standard_genre(
     tmp_path: Path,
 ) -> None:
     path = tmp_path / "track.wav"
@@ -559,7 +563,11 @@ def test_tui_requires_g_before_replacing_an_existing_standard_genre(
             assert plan.file_genre == ("201705",)
             assert plan.target_file_genre is None
 
-            await pilot.press("g")
+            await pilot.press("e")
+            await pilot.pause()
+            assert isinstance(app.screen, GenreEditScreen)
+            await pilot.click("#use-suggestion")
+            await pilot.pause()
             plan = app.entries[0].plan
             assert plan is not None
             assert plan.target_file_genre == ("House",)
@@ -571,6 +579,39 @@ def test_tui_requires_g_before_replacing_an_existing_standard_genre(
     tags = WAVE(path).tags
     assert isinstance(tags, ID3)
     assert tags["TCON"].text == ["201705"]
+
+
+def test_tui_genre_screen_keeps_actions_visible_in_narrow_terminal(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "track.wav"
+    _silent_wav(path)
+    plan = _analysis_batch([path]).planned[0]
+    metadata = replace(
+        _metadata_track(path),
+        cached_plan=plan,
+        cache_status="ready",
+    )
+    app = SetTagApp(
+        source=path,
+        initial_metadata=MetadataBatch(tracks=(metadata,), failures=()),
+        analysis_loader=lambda paths, _progress, _cancel: _analysis_batch(paths),
+    )
+
+    async def exercise() -> None:
+        async with app.run_test(size=(50, 32)) as pilot:
+            await pilot.pause()
+            await pilot.press("e")
+            await pilot.pause()
+            assert isinstance(app.screen, GenreEditScreen)
+            buttons = list(app.screen.query(Button))
+            assert len({button.region.y for button in buttons}) == len(buttons)
+            assert all(
+                button.region.x + button.region.width <= app.size.width
+                for button in buttons
+            )
+
+    asyncio.run(exercise())
 
 
 def test_tui_restores_cached_plan_in_review_without_loading_analyzer(
