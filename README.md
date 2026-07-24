@@ -31,7 +31,7 @@ uv run settag models download
 The model command downloads weights and metadata directly from Essentia into
 `~/.cache/settag/models`. Models are not included in this repository.
 
-## Quick start: dry run
+## Quick start
 
 Run these commands from the repository root:
 
@@ -43,43 +43,37 @@ uv sync
 uv run settag models download
 ```
 
-Dry-run a single audio file:
+Then give SetTag a file or directory:
 
 ```sh
-uv run settag analyze "/path/to/track.flac"
+uv run settag "/path/to/track.flac"
+uv run settag "/path/to/music/library"
 ```
 
-Or recursively analyze every supported audio file in a directory and save a
-compact JSONL plan:
+The default command scans, analyzes, and presents a terminal summary without
+writing anything. In an interactive terminal it offers one small menu:
 
-```sh
-uv run settag analyze "/path/to/music/library" \
-  --plan settag-plan.jsonl
+```text
+[v] view  [w] write  [s] save plan  [q] quit
+Choice [q]:
 ```
 
-Analysis is a dry run by default. There is no `--dry-run` flag: audio files
-are changed only when `--write` is explicitly supplied or a write is confirmed
-in `--review` mode.
+Pressing Enter quits without writing. Choosing `w` runs a full preflight and
+then asks for one explicit confirmation before any SetTag-owned metadata is
+changed. Choosing `s` saves a timestamped reusable JSONL plan in the current
+directory.
 
-Pretty-print every track in the plan:
+When output is redirected or stdin is not interactive, `settag PATH` becomes a
+plain dry run: it prints the readable summary, never prompts, and never writes.
+Rich terminal color and progress are automatically disabled when unsuitable;
+`NO_COLOR` also disables color explicitly.
 
-```sh
-jq . settag-plan.jsonl
-```
-
-Then verify the whole plan and approve it once:
-
-```sh
-uv run settag apply settag-plan.jsonl
-```
-
-Useful selection options:
+Selection defaults can still be adjusted when needed:
 
 ```sh
-uv run settag analyze "/path/to/music/library" \
+uv run settag "/path/to/music/library" \
   --top 5 \
-  --threshold 0.10 \
-  --plan settag-plan.jsonl
+  --threshold 0.10
 ```
 
 Check whether the required models are installed:
@@ -103,6 +97,9 @@ The scanner recognizes `.mp3`, `.flac`, `.m4a`, `.m4b`, `.mp4`, `.aif`,
 for metadata writes even if Essentia could decode their audio.
 
 ## Analyze without changing files
+
+The `analyze` subcommand is the advanced non-interactive interface for audit
+files, scripts, and explicit plan paths:
 
 ```sh
 uv run settag analyze /path/to/music --output analysis.jsonl
@@ -157,22 +154,26 @@ uv run settag analyze /path/to/music --top 5 --threshold 0.10
 
 ## Batch plan and one-time approval
 
-For a directory, the recommended write workflow separates expensive analysis
-from approval:
+For automation, a named artifact, or review across separate sessions, split
+expensive analysis from approval explicitly:
 
 ```sh
 uv run settag analyze "/path/to/music/library" \
   --plan settag-plan.jsonl
 
-jq . settag-plan.jsonl
+uv run settag preview settag-plan.jsonl
 
 uv run settag apply settag-plan.jsonl
 ```
 
-JSONL keeps one track on each physical line. `jq .` expands those records for
-reading. Each compact plan record contains the file path and fingerprint, the
-existing file genre tag, ranked selected labels and scores, provenance, and
-plain-English metadata changes:
+JSONL keeps one track on each physical line as the durable machine-readable
+artifact. `settag preview` renders it for people; no external JSON tool is
+required. The preview shows each track's existing file genre tag, ranked
+selected labels and scores, plain-English metadata changes, model, and native
+metadata format. It ends with an aggregate summary and the exact apply command.
+
+The underlying compact plan record contains the same review data plus safety
+fingerprints:
 
 ```json
 {
@@ -214,8 +215,9 @@ plain-English metadata changes:
 
 The plan deliberately omits all 519 raw model activations and the duplicated
 native tag payload. Use `--output analysis.jsonl` when the complete audit
-record is also required; `--plan` is the smaller human-review artifact.
-The two options can be used together as long as they name different files.
+record is also required; `--plan` is the smaller review artifact and
+`preview` is its built-in human renderer. The two analysis output options can
+be used together as long as they name different files.
 
 `apply` performs a full preflight before showing one confirmation for the
 whole plan. It verifies every source SHA-256, existing file genre tag,

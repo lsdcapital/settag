@@ -8,8 +8,12 @@ import shlex
 import sys
 from collections.abc import Callable, Sequence
 from contextlib import ExitStack
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal, TextIO
+
+from rich.console import Console
+from rich.text import Text
 
 from settag import __version__
 from settag.analyzer import EssentiaGenreAnalyzer
@@ -34,6 +38,7 @@ from settag.records import analysis_record, config_record, error_record, source_
 from settag.scanner import scan_audio
 from settag.tags import (
     GenreState,
+    OwnedValues,
     TagPlan,
     apply_owned_tags,
     build_owned_values,
@@ -41,19 +46,49 @@ from settag.tags import (
     read_genre_state,
     read_owned_values,
 )
+from settag.terminal import (
+    analysis_progress,
+    confirm_guided_write,
+    print_guided_header,
+    print_guided_summary,
+    print_plan_details,
+    prompt_guided_action,
+    terminal_console,
+)
 
 LOGGER = logging.getLogger("settag")
 ReviewDecision = Literal["write", "decline", "quit", "interrupt"]
 ReviewPrompt = Callable[[Path], ReviewDecision]
 AnalyzeControl = Literal["continue", "quit", "interrupt"]
+COMMANDS = frozenset({"run", "models", "analyze", "inspect", "preview", "apply"})
+
+
+@dataclass(frozen=True)
+class PreparedTrack:
+    source: dict[str, object]
+    analyzed_at: str
+    config: dict[str, object]
+    predictions: list[Prediction]
+    selected: list[Prediction]
+    desired: OwnedValues
+    genre_state: GenreState
+    tag_plan: TagPlan
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="settag",
         description="Analyze audio genre metadata without changing files by default.",
+        epilog='Most users can run: settag "/path/to/music"',
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
+
+    guided = subparsers.add_parser(
+        "run",
+        help="Analyze a path in a guided, human-readable workflow.",
+    )
+    guided.add_argument("path", type=Path)
+    _add_analysis_options(guided)
 
     models = subparsers.add_parser("models", help="Manage Essentia model files.")
     model_commands = models.add_subparsers(dest="models_command", required=True)
@@ -80,19 +115,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="Analyze one supported audio file or a directory recursively.",
     )
     analyze.add_argument("path", type=Path)
-    _add_model_dir(analyze)
-    analyze.add_argument(
-        "--top",
-        type=_positive_int,
-        default=5,
-        help="Maximum selected genres per track (default: 5).",
-    )
-    analyze.add_argument(
-        "--threshold",
-        type=_unit_float,
-        default=0.10,
-        help="Minimum model activation required for selection (default: 0.10).",
-    )
+    _add_analysis_options(analyze)
     write_mode = analyze.add_mutually_exclusive_group()
     write_mode.add_argument(
         "--write",
@@ -121,6 +144,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     inspect.add_argument("path", type=Path)
 
+    preview = subparsers.add_parser(
+        "preview",
+        help="Display a saved JSONL plan in a human-readable form without writing.",
+    )
+    preview.add_argument("plan", type=Path)
+
     apply = subparsers.add_parser(
         "apply",
         help="Verify and apply a compact JSONL plan without rerunning analysis.",
@@ -143,6 +172,22 @@ def _add_model_dir(parser: argparse.ArgumentParser) -> None:
     )
 
 
+def _add_analysis_options(parser: argparse.ArgumentParser) -> None:
+    _add_model_dir(parser)
+    parser.add_argument(
+        "--top",
+        type=_positive_int,
+        default=5,
+        help="Maximum selected genres per track (default: 5).",
+    )
+    parser.add_argument(
+        "--threshold",
+        type=_unit_float,
+        default=0.10,
+        help="Minimum model activation required for selection (default: 0.10).",
+    )
+
+
 def _positive_int(value: str) -> int:
     parsed = int(value)
     if parsed < 1:
@@ -158,7 +203,7 @@ def _unit_float(value: str) -> float:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    args = build_parser().parse_args(argv)
+    args = build_parser().parse_args(_normalize_argv(argv))
     try:
         _configure_logging()
     except ValueError as error:
@@ -166,18 +211,29 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 2
 
     try:
+        if args.command == "run":
+            return _run_guided(args)
         if args.command == "models":
             return _run_models(args)
         if args.command == "analyze":
             return _run_analyze(args)
         if args.command == "inspect":
             return _run_inspect(args)
+        if args.command == "preview":
+            return _run_preview(args)
         if args.command == "apply":
             return _run_apply(args)
         raise AssertionError(f"Unhandled command: {args.command}")
     except KeyboardInterrupt:
         print("\nsettag: interrupted", file=sys.stderr)
         return 130
+
+
+def _normalize_argv(argv: Sequence[str] | None) -> list[str]:
+    values = list(sys.argv[1:] if argv is None else argv)
+    if values and not values[0].startswith("-") and values[0] not in COMMANDS:
+        return ["run", *values]
+    return values
 
 
 def _configure_logging() -> None:
@@ -193,6 +249,132 @@ def _configure_logging() -> None:
     LOGGER.addHandler(handler)
     LOGGER.setLevel(level)
     LOGGER.propagate = False
+
+
+def _run_guided(args: argparse.Namespace) -> int:
+    console = terminal_console()
+    try:
+        paths = scan_audio(args.path)
+        analyzer = EssentiaGenreAnalyzer(args.model_dir.expanduser().resolve())
+    except Exception as error:
+        console.print(Text(str(error), style="bold red"))
+        return 2
+
+    if not paths:
+        console.print("No supported audio files found.")
+        return 0
+
+    print_guided_header(console, args.path, len(paths))
+    planned: list[PlannedWrite] = []
+    plan_records: list[dict[str, object]] = []
+    failures: list[tuple[Path, str]] = []
+
+    if not console.is_terminal:
+        console.print(f"Analyzing {len(paths)} track{'s' if len(paths) != 1 else ''}…")
+
+    progress = analysis_progress(console, len(paths))
+    with progress:
+        task = progress.add_task("Preparing analysis", total=len(paths))
+        for path in paths:
+            progress.update(task, description=path.name)
+            try:
+                track = _prepare_track(
+                    path,
+                    analyzer=analyzer,
+                    top=args.top,
+                    threshold=args.threshold,
+                )
+                planned.append(_planned_write_for_track(track))
+                plan_records.append(_plan_record_for_track(track))
+            except Exception as error:
+                failures.append((path, f"{type(error).__name__}: {error}"))
+                plan_records.append(plan_error_record(path, error))
+            finally:
+                progress.advance(task)
+
+    print_guided_summary(console, planned, failures)
+    if len(planned) == 1:
+        print_plan_details(console, planned)
+
+    failure_status = 1 if failures else 0
+    if not sys.stdin.isatty():
+        console.print()
+        console.print("[dim]Non-interactive session: nothing was written.[/dim]")
+        return failure_status
+
+    can_write = not failures and any(item.readable_changes for item in planned)
+    if not can_write and not failures:
+        console.print()
+        console.print("[green]Everything is already up to date; nothing to write.[/green]")
+        return 0
+
+    while True:
+        action = prompt_guided_action(console, can_write=can_write)
+        if action == "view":
+            print_plan_details(console, planned)
+            continue
+        if action == "save":
+            try:
+                saved_path = _save_guided_plan(plan_records)
+            except OSError as error:
+                console.print(Text(f"Could not save plan: {error}", style="bold red"))
+                continue
+            console.print()
+            console.print("Plan saved:")
+            console.print(Text(str(saved_path), style="bold cyan"))
+            continue
+        if action == "quit":
+            console.print()
+            console.print("[dim]Nothing was written.[/dim]")
+            return failure_status
+
+        return _guided_write(planned, console)
+
+
+def _guided_write(planned: Sequence[PlannedWrite], console: Console) -> int:
+    try:
+        prepared = _preflight_plan(planned)
+    except (OSError, RuntimeError, ValueError) as error:
+        console.print(Text(f"Cannot write: {error}", style="bold red"))
+        console.print("[dim]No files were written.[/dim]")
+        return 2
+
+    write_count = sum(bool(tag_plan.changes) for _item, _state, tag_plan in prepared)
+    console.print()
+    console.print("[green]Every source and metadata plan passed preflight.[/green]")
+    if not confirm_guided_write(console, write_count):
+        console.print()
+        console.print("[dim]Cancelled; nothing written.[/dim]")
+        return 0
+
+    try:
+        prepared = _preflight_plan(planned)
+    except (OSError, RuntimeError, ValueError) as error:
+        console.print(Text(f"Plan became stale before writing: {error}", style="bold red"))
+        console.print("[dim]No files were written.[/dim]")
+        return 2
+
+    return _write_prepared(prepared, write_count, console=console)
+
+
+def _save_guided_plan(records: Sequence[dict[str, object]]) -> Path:
+    stamp = (
+        utc_now()
+        .replace("-", "")
+        .replace(":", "")
+        .replace("T", "-")
+        .removesuffix("Z")
+    )
+    candidate = Path.cwd() / f"settag-plan-{stamp}.jsonl"
+    suffix = 2
+    while candidate.exists():
+        candidate = Path.cwd() / f"settag-plan-{stamp}-{suffix}.jsonl"
+        suffix += 1
+
+    with candidate.open("x", encoding="utf-8") as output:
+        for record in records:
+            _emit_jsonl(output, record)
+    return candidate.resolve()
 
 
 def _run_models(args: argparse.Namespace) -> int:
@@ -315,7 +497,10 @@ def _print_saved_plan_summary(
     print(f"  Tracks analyzed:  {planned_count}", file=sys.stderr)
     print(f"  Analysis errors:  {failure_count}", file=sys.stderr)
     print(file=sys.stderr)
-    print(f"Preview: jq . {shlex.quote(str(plan_path))}", file=sys.stderr)
+    print(
+        f"Preview: uv run settag preview {shlex.quote(str(plan_path))}",
+        file=sys.stderr,
+    )
     if failure_count:
         print(
             "This plan cannot be applied until every track analyzes successfully.",
@@ -326,6 +511,89 @@ def _print_saved_plan_summary(
             f"Apply:   uv run settag apply {shlex.quote(str(plan_path))}",
             file=sys.stderr,
         )
+
+
+def _run_preview(args: argparse.Namespace) -> int:
+    plan_path = args.plan.expanduser().resolve()
+    try:
+        planned = load_plan(plan_path)
+    except (OSError, PlanError, ValueError) as error:
+        print(f"Cannot preview plan: {error}", file=sys.stderr)
+        return 2
+
+    _print_plan_preview(plan_path, planned)
+    return 0
+
+
+def _print_plan_preview(plan_path: Path, planned: Sequence[PlannedWrite]) -> None:
+    print("SetTag batch plan")
+    print(plan_path)
+    print()
+    print(f"{len(planned)} track{'s' if len(planned) != 1 else ''}")
+
+    for index, item in enumerate(planned, start=1):
+        print()
+        print(f"Track {index} of {len(planned)}")
+        print(item.path.name)
+        print(item.path.parent)
+        print()
+
+        print("File genre tag")
+        if item.file_genre:
+            print(f"  {', '.join(item.file_genre)} (will not be changed)")
+        else:
+            print("  None (will not be changed)")
+            if item.selected:
+                primary = item.selected[0]
+                print(
+                    f"  Suggested candidate: {primary.label} "
+                    f"(model score {primary.score:.3f})"
+                )
+                print("  Candidate only; SetTag will not write the file genre tag.")
+        print()
+
+        print("SetTag model evidence")
+        if item.selected:
+            width = max(len(prediction.label) for prediction in item.selected)
+            for rank, prediction in enumerate(item.selected, start=1):
+                print(
+                    f"  {rank:>2}. {prediction.label:<{width}}  "
+                    f"score {prediction.score:.3f}"
+                )
+        else:
+            print("  No labels met the selection threshold.")
+        print()
+
+        change_count = len(item.readable_changes)
+        noun = "change" if change_count == 1 else "changes"
+        print(f"Metadata {noun} ({change_count})")
+        if item.readable_changes:
+            for change in item.readable_changes:
+                print(f"  {change}")
+        else:
+            print("  None")
+        print()
+
+        model = item.desired["SETTAG_MODEL"]
+        analyzed_at = item.desired["SETTAG_ANALYZED_AT"]
+        print("Plan details")
+        print(f"  Metadata format: {item.metadata_format}")
+        print(f"  Model: {model[0] if model else 'not set'}")
+        print(f"  Analyzed: {analyzed_at[0] if analyzed_at else 'not set'}")
+
+    write_count = sum(bool(item.readable_changes) for item in planned)
+    selected_count = sum(len(item.selected) for item in planned)
+    empty_file_genres = sum(not item.file_genre for item in planned)
+    print()
+    print("Summary")
+    print(f"  Tracks reviewed:        {len(planned)}")
+    print(f"  Files to write:         {write_count}")
+    print(f"  Selected label scores:  {selected_count}")
+    print(f"  Empty file genre tags:  {empty_file_genres}")
+    print()
+    print("This preview reads only the saved plan; no audio files were checked or written.")
+    print("Apply verifies every source and asks once before writing:")
+    print(f"  uv run settag apply {shlex.quote(str(plan_path))}")
 
 
 def _run_inspect(args: argparse.Namespace) -> int:
@@ -383,9 +651,24 @@ def _run_apply(args: argparse.Namespace) -> int:
         print("No files were written.", file=sys.stderr)
         return 2
 
+    return _write_prepared(prepared, write_count)
+
+
+def _write_prepared(
+    prepared: Sequence[tuple[PlannedWrite, GenreState, TagPlan]],
+    write_count: int,
+    *,
+    console: Console | None = None,
+) -> int:
+    def output(message: str = "") -> None:
+        if console is None:
+            print(message, file=sys.stderr)
+        else:
+            console.print(Text(message))
+
     written = 0
-    print(file=sys.stderr)
-    print(f"Applying {write_count} file{'s' if write_count != 1 else ''}", file=sys.stderr)
+    output()
+    output(f"Applying {write_count} file{'s' if write_count != 1 else ''}")
     try:
         for item, genre_state, tag_plan in prepared:
             if not tag_plan.changes:
@@ -393,7 +676,7 @@ def _run_apply(args: argparse.Namespace) -> int:
             if sha256_file(item.path) != item.source_sha256:
                 raise RuntimeError(f"Source changed before its write: {item.path}")
             written += 1
-            print(f"  [{written}/{write_count}] {item.path}", file=sys.stderr)
+            output(f"  [{written}/{write_count}] {item.path}")
             applied = apply_owned_tags(
                 item.path,
                 item.desired,
@@ -404,23 +687,14 @@ def _run_apply(args: argparse.Namespace) -> int:
                 raise RuntimeError(f"Applied tag plan differed for {item.path}")
             _verify_file_genre_tag(item.path, genre_state.standard)
     except KeyboardInterrupt:
-        print(
-            f"\nInterrupted after {written} of {write_count} planned writes.",
-            file=sys.stderr,
-        )
+        output(f"\nInterrupted after {written} of {write_count} planned writes.")
         raise
     except Exception as error:
-        print(
-            f"\nStopped after {written} of {write_count} planned writes: {error}",
-            file=sys.stderr,
-        )
+        output(f"\nStopped after {written} of {write_count} planned writes: {error}")
         return 1
 
-    print(file=sys.stderr)
-    print(
-        f"Done. {written} file{'s' if written != 1 else ''} written and verified.",
-        file=sys.stderr,
-    )
+    output()
+    output(f"Done. {written} file{'s' if written != 1 else ''} written and verified.")
     return 0
 
 
@@ -498,6 +772,71 @@ def _prompt_for_batch_apply(write_count: int) -> bool:
         print("Please answer y or n.", file=sys.stderr)
 
 
+def _prepare_track(
+    path: Path,
+    *,
+    analyzer: EssentiaGenreAnalyzer,
+    top: int,
+    threshold: float,
+) -> PreparedTrack:
+    source = source_record(path)
+    analyzed_at = utc_now()
+    config = config_record(top=top, threshold=threshold)
+    predictions = analyzer.analyze(path)
+    selected = select_predictions(predictions, threshold=threshold, top=top)
+    desired = build_owned_values(
+        selected,
+        model_id=analyzer.spec.id,
+        analyzed_at=analyzed_at,
+        config_sha256=str(config["sha256"]),
+    )
+    genre_state = read_genre_state(path)
+    tag_plan = plan_owned_tags(path, desired)
+    return PreparedTrack(
+        source=source,
+        analyzed_at=analyzed_at,
+        config=config,
+        predictions=predictions,
+        selected=selected,
+        desired=desired,
+        genre_state=genre_state,
+        tag_plan=tag_plan,
+    )
+
+
+def _plan_record_for_track(track: PreparedTrack) -> dict[str, object]:
+    model_id = track.desired["SETTAG_MODEL"]
+    config_sha256 = track.desired["SETTAG_CONFIG_SHA256"]
+    settag_version = track.desired["SETTAG_VERSION"]
+    return plan_record(
+        source=track.source,
+        genre_state=track.genre_state,
+        selected=track.selected,
+        tag_plan=track.tag_plan,
+        readable_changes=[friendly_change(change) for change in track.tag_plan.changes],
+        model_id=model_id[0] if model_id else "unknown",
+        analyzed_at=track.analyzed_at,
+        settag_version=settag_version[0] if settag_version else __version__,
+        config_sha256=config_sha256[0] if config_sha256 else "unknown",
+    )
+
+
+def _planned_write_for_track(track: PreparedTrack) -> PlannedWrite:
+    return PlannedWrite(
+        path=Path(str(track.source["path"])),
+        source_sha256=str(track.source["sha256"]),
+        source_size=int(track.source["size"]),
+        source_mtime_ns=int(track.source["mtime_ns"]),
+        file_genre=track.genre_state.standard,
+        selected=tuple(track.selected),
+        desired=track.desired,
+        metadata_format=track.tag_plan.format,
+        readable_changes=tuple(
+            friendly_change(change) for change in track.tag_plan.changes
+        ),
+    )
+
+
 def _analyze_one(
     path: Path,
     *,
@@ -512,19 +851,20 @@ def _analyze_one(
     review_total: int = 1,
     prompt: ReviewPrompt | None = None,
 ) -> AnalyzeControl:
-    source = source_record(path)
-    analyzed_at = utc_now()
-    config = config_record(top=top, threshold=threshold)
-    predictions = analyzer.analyze(path)
-    selected = select_predictions(predictions, threshold=threshold, top=top)
-    desired = build_owned_values(
-        selected,
-        model_id=analyzer.spec.id,
-        analyzed_at=analyzed_at,
-        config_sha256=str(config["sha256"]),
+    track = _prepare_track(
+        path,
+        analyzer=analyzer,
+        top=top,
+        threshold=threshold,
     )
-    genre_state = read_genre_state(path)
-    tag_plan = plan_owned_tags(path, desired)
+    source = track.source
+    analyzed_at = track.analyzed_at
+    config = track.config
+    predictions = track.predictions
+    selected = track.selected
+    desired = track.desired
+    genre_state = track.genre_state
+    tag_plan = track.tag_plan
 
     control: AnalyzeControl = "continue"
     if write:
@@ -614,20 +954,7 @@ def _analyze_one(
         )
     _emit(output, record)
     if plan_output is not None:
-        _emit_jsonl(
-            plan_output,
-            plan_record(
-                source=source,
-                genre_state=genre_state,
-                selected=selected,
-                tag_plan=tag_plan,
-                readable_changes=[friendly_change(change) for change in tag_plan.changes],
-                model_id=analyzer.spec.id,
-                analyzed_at=analyzed_at,
-                settag_version=__version__,
-                config_sha256=str(config["sha256"]),
-            ),
-        )
+        _emit_jsonl(plan_output, _plan_record_for_track(track))
     return control
 
 

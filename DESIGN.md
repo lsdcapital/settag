@@ -14,9 +14,9 @@ tool.
 
 ## Safety invariants
 
-1. Analysis is the default; writing requires `--write`, an explicit per-track
-   confirmation in `--review` mode, or confirmation of a fully verified
-   `settag apply` plan.
+1. Analysis is the default; writing requires `--write`, explicit confirmation
+   in the guided or per-track review workflow, or confirmation of a fully
+   verified `settag apply` plan.
 2. Only formats with an approved SetTag metadata adapter are accepted.
 3. Only fields in SetTag's native namespace are changed.
 4. The conventional file genre tag—ID3 `TCON`, Vorbis `GENRE`, or MP4
@@ -44,6 +44,29 @@ scan → fingerprint → infer → select → plan → optionally review/apply �
 The model is loaded once per CLI invocation and reused for all tracks.
 Inference failures are isolated to the affected record so a directory scan can
 continue. A run exits non-zero when any track fails.
+
+### Guided default workflow
+
+When the first argument is a file or directory rather than a named subcommand,
+the CLI treats it as `run PATH`. This is the normal human workflow:
+
+```text
+scan → analyze with progress → summarize → view / write / save / quit
+```
+
+Rich provides adaptive color, tables, and progress display; `argparse` remains
+the command parser. Rich is a presentation dependency only and does not
+participate in analysis, plans, metadata adapters, or safety validation.
+
+The guided menu defaults to `quit`. `write` performs the same complete
+preflight used by saved plans, asks for explicit confirmation, runs the
+preflight again, then uses the shared verified write loop. `save` writes a
+timestamped `settag.plan/v1` JSONL file in the current directory and returns to
+the menu. Analysis errors disable writing but may still be viewed or saved.
+
+If stdin is not a TTY, the guided command is a dry run: it renders a plain
+summary, does not prompt, and never writes. Rich disables live progress and
+terminal styling when output is not a terminal; `NO_COLOR` is also honored.
 
 `--review` and `--write` are mutually exclusive. Review mode prompts only when
 the plan contains changes: `y` applies the displayed plan, `n` records a
@@ -73,6 +96,12 @@ writing metadata. A successful `settag.plan/v1` record contains:
 The compact plan omits the other model activations and native tag payload.
 `--output` remains the complete `settag.analysis/v1` audit stream and may be
 used alongside `--plan` when the paths differ.
+
+`preview PLAN` renders every saved track as a human-readable review screen,
+followed by an aggregate summary and the exact apply command. It does not
+inspect or modify the audio files. JSONL remains an implementation and
+interchange format; users do not need an external JSON formatter for the
+normal workflow.
 
 Every failed track produces a `settag.plan-error/v1` record. `apply` rejects
 the entire file if any such record is present; a partial analysis is not an

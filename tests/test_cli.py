@@ -10,7 +10,12 @@ import pytest
 from mutagen.id3 import ID3, TCON
 from mutagen.wave import WAVE
 
-from settag.cli import _analyze_one, _prompt_for_write, build_parser, main
+from settag.cli import (
+    _analyze_one,
+    _prompt_for_write,
+    build_parser,
+    main,
+)
 from settag.policy import Prediction
 from settag.records import config_record
 from settag.tags import apply_owned_tags, build_owned_values
@@ -340,6 +345,95 @@ def test_inspect_reads_existing_tags_without_running_the_model(tmp_path: Path, c
     assert "SetTag model: model/v1" in stderr
 
 
+def test_path_shorthand_runs_a_noninteractive_dry_run_without_writing(
+    tmp_path: Path,
+    monkeypatch,
+    capsys,
+) -> None:
+    path = tmp_path / "track.wav"
+    _silent_wav(path)
+    monkeypatch.setattr(sys, "stdin", StringIO(""))
+    monkeypatch.setattr("settag.cli.EssentiaGenreAnalyzer", lambda _model_dir: FakeAnalyzer())
+
+    result = main([str(path)])
+    captured = capsys.readouterr()
+
+    assert result == 0
+    assert "SetTag" in captured.err
+    assert "Analysis summary" in captured.err
+    assert "Electronic---Deep House" in captured.err
+    assert "Non-interactive session: nothing was written." in captured.err
+    assert "\x1b[" not in captured.err
+    assert WAVE(path).tags is None
+
+
+def test_guided_workflow_defaults_to_quit_without_writing(
+    tmp_path: Path,
+    monkeypatch,
+    capsys,
+) -> None:
+    path = tmp_path / "track.wav"
+    _silent_wav(path)
+    monkeypatch.setattr(sys, "stdin", TtyStringIO("\n"))
+    monkeypatch.setattr("settag.cli.EssentiaGenreAnalyzer", lambda _model_dir: FakeAnalyzer())
+
+    result = main([str(path)])
+    stderr = capsys.readouterr().err
+
+    assert result == 0
+    assert "[v] view  [w] write  [s] save plan  [q] quit" in stderr
+    assert "Choice [q]:" in stderr
+    assert "Nothing was written." in stderr
+    assert WAVE(path).tags is None
+
+
+def test_guided_workflow_writes_only_after_explicit_confirmation(
+    tmp_path: Path,
+    monkeypatch,
+    capsys,
+) -> None:
+    path = tmp_path / "track.wav"
+    _silent_wav(path)
+    monkeypatch.setattr(sys, "stdin", TtyStringIO("w\ny\n"))
+    monkeypatch.setattr("settag.cli.EssentiaGenreAnalyzer", lambda _model_dir: FakeAnalyzer())
+
+    result = main([str(path)])
+    stderr = capsys.readouterr().err
+    tags = WAVE(path).tags
+
+    assert result == 0
+    assert "Every source and metadata plan passed preflight." in stderr
+    assert "Write SetTag-owned metadata to 1 file? [y/N]" in stderr
+    assert "Done. 1 file written and verified." in stderr
+    assert tags is not None
+    assert tags["TXXX:SETTAG_GENRE"].text == ["Electronic---Deep House"]
+
+
+def test_guided_workflow_can_save_a_reusable_plan(
+    tmp_path: Path,
+    monkeypatch,
+    capsys,
+) -> None:
+    path = tmp_path / "track.wav"
+    _silent_wav(path)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(sys, "stdin", TtyStringIO("s\nq\n"))
+    monkeypatch.setattr("settag.cli.EssentiaGenreAnalyzer", lambda _model_dir: FakeAnalyzer())
+    monkeypatch.setattr("settag.cli.utc_now", lambda: "2026-07-24T10:20:30Z")
+
+    result = main([str(path)])
+    stderr = capsys.readouterr().err
+    plan_path = tmp_path / "settag-plan-20260724-102030.jsonl"
+    plan = json.loads(plan_path.read_text(encoding="utf-8"))
+
+    assert result == 0
+    assert "Plan saved:" in stderr
+    assert plan_path.name in stderr
+    assert plan["schema"] == "settag.plan/v1"
+    assert plan["path"] == str(path)
+    assert WAVE(path).tags is None
+
+
 def test_compact_plan_is_human_readable_and_applies_after_one_confirmation(
     tmp_path: Path,
     monkeypatch,
@@ -358,7 +452,7 @@ def test_compact_plan_is_human_readable_and_applies_after_one_confirmation(
     assert analyzed == 0
     assert "Review plan created" in analyze_stderr
     assert "Tracks analyzed:  1" in analyze_stderr
-    assert f"Preview: jq . {plan_path}" in analyze_stderr
+    assert f"Preview: uv run settag preview {plan_path}" in analyze_stderr
     assert f"Apply:   uv run settag apply {plan_path}" in analyze_stderr
     assert plan_text.startswith('{"schema":"settag.plan/v1","path":')
     assert "predictions" not in plan
@@ -390,6 +484,38 @@ def test_compact_plan_is_human_readable_and_applies_after_one_confirmation(
     assert "Done. 1 file written and verified." in stderr
     assert tags is not None
     assert tags["TXXX:SETTAG_GENRE"].text == ["Electronic---Deep House"]
+
+
+def test_preview_renders_a_saved_plan_without_external_json_tools_or_writing(
+    tmp_path: Path,
+    monkeypatch,
+    capsys,
+) -> None:
+    path = tmp_path / "track.wav"
+    plan_path = tmp_path / "plan.jsonl"
+    _silent_wav(path)
+    monkeypatch.setattr("settag.cli.EssentiaGenreAnalyzer", lambda _model_dir: FakeAnalyzer())
+
+    assert main(["analyze", str(path), "--plan", str(plan_path)]) == 0
+    capsys.readouterr()
+
+    result = main(["preview", str(plan_path)])
+    captured = capsys.readouterr()
+
+    assert result == 0
+    assert captured.err == ""
+    assert "SetTag batch plan" in captured.out
+    assert "Track 1 of 1" in captured.out
+    assert path.name in captured.out
+    assert "File genre tag\n  None (will not be changed)" in captured.out
+    assert "Suggested candidate: Electronic---Deep House (model score 0.720)" in captured.out
+    assert "SetTag model evidence" in captured.out
+    assert "Electronic---Deep House  score 0.720" in captured.out
+    assert "Metadata changes (6)" in captured.out
+    assert "Genre labels: 0 → 1" in captured.out
+    assert "This preview reads only the saved plan" in captured.out
+    assert f"uv run settag apply {plan_path}" in captured.out
+    assert WAVE(path).tags is None
 
 
 def test_batch_apply_aborts_all_writes_when_any_source_is_stale(

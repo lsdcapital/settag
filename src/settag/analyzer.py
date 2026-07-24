@@ -2,6 +2,12 @@ from __future__ import annotations
 
 import importlib.metadata
 import json
+import os
+import re
+import sys
+import tempfile
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
@@ -14,6 +20,23 @@ from settag.policy import Prediction, rank_predictions
 
 class AnalyzerError(RuntimeError):
     pass
+
+
+_TENSORFLOW_STARTUP_NOISE = (
+    re.compile(
+        rb"WARNING: All log messages before absl::InitializeLog\(\) is called "
+        rb"are written to STDERR\r?\n"
+    ),
+    re.compile(
+        rb"I\d{4} [^\r\n]*mlir_graph_optimization_pass\.cc:\d+\] "
+        rb"MLIR V1 optimization pass is not enabled"
+        rb"(?: in compiling SavedModel\.)?\r?\n"
+    ),
+    re.compile(
+        rb"\d{4}-\d{2}-\d{2} [^\r\n]*profile_utils/cpu_utils\.cc:\d+\] "
+        rb"Failed to get CPU frequency: 0 Hz\r?\n"
+    ),
+)
 
 
 class EssentiaGenreAnalyzer:
@@ -64,8 +87,17 @@ class EssentiaGenreAnalyzer:
         )
         self.model_manifest = installed_manifest(model_dir, spec)
         self.backend_version = _package_version("essentia-tensorflow")
+        self._tensorflow_startup_pending = True
 
     def analyze(self, path: Path) -> list[Prediction]:
+        if self._tensorflow_startup_pending:
+            with _filter_tensorflow_startup_stderr():
+                predictions = self._analyze(path)
+            self._tensorflow_startup_pending = False
+            return predictions
+        return self._analyze(path)
+
+    def _analyze(self, path: Path) -> list[Prediction]:
         audio = self._loader_type(
             filename=str(path),
             sampleRate=self.spec.sample_rate,
@@ -85,6 +117,30 @@ class EssentiaGenreAnalyzer:
 
         activations = raw.reshape(-1, len(self.labels)).mean(axis=0)
         return rank_predictions(self.labels, activations.tolist())
+
+
+@contextmanager
+def _filter_tensorflow_startup_stderr() -> Iterator[None]:
+    """Remove known harmless TensorFlow startup lines from native stderr."""
+    sys.stderr.flush()
+    saved_stderr = os.dup(2)
+    try:
+        with tempfile.TemporaryFile() as captured:
+            os.dup2(captured.fileno(), 2)
+            try:
+                yield
+            finally:
+                sys.stderr.flush()
+                os.dup2(saved_stderr, 2)
+                captured.seek(0)
+                output = captured.read()
+                for pattern in _TENSORFLOW_STARTUP_NOISE:
+                    output = pattern.sub(b"", output)
+                while output:
+                    written = os.write(saved_stderr, output)
+                    output = output[written:]
+    finally:
+        os.close(saved_stderr)
 
 
 def _package_version(name: str) -> str:

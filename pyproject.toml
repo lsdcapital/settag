@@ -17,6 +17,7 @@ dependencies = [
   "essentia-tensorflow>=2.1b6.dev1438; python_version >= '3.14'",
   "mutagen>=1.47,<2",
   "numpy>=1.26,<3",
+  "rich>=14,<15",
 ]
 
 [project.scripts]
