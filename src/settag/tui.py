@@ -9,7 +9,7 @@ from typing import Literal
 from textual import events, on, work
 from textual.app import App, ComposeResult
 from textual.binding import Binding
-from textual.containers import Horizontal, Vertical
+from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.coordinate import Coordinate
 from textual.css.query import NoMatches
 from textual.screen import ModalScreen
@@ -537,11 +537,23 @@ class SetTagApp(App[TuiOutcome]):
         text-style: bold;
     }
 
-    #inspector {
+    #inspector-scroll {
         height: 1fr;
         padding: 0 1;
         color: #c3cecb;
         overflow-y: auto;
+        border-left: solid #3a4744;
+        scrollbar-color: #3a4744;
+        scrollbar-color-hover: #8ea09b;
+        scrollbar-color-active: #d0794f;
+    }
+
+    #inspector-scroll:focus {
+        border-left: solid #d0794f;
+    }
+
+    #inspector {
+        width: 1fr;
     }
 
     #status {
@@ -735,8 +747,13 @@ class SetTagApp(App[TuiOutcome]):
                         id="tracks",
                     )
                 with Vertical(id="inspector-pane"):
-                    yield Static("Track details", markup=False, classes="section-title")
-                    yield Static("", markup=False, id="inspector")
+                    yield Static(
+                        "Track details · ↑↓ scroll · Tab library · I close",
+                        markup=False,
+                        classes="section-title",
+                    )
+                    with VerticalScroll(id="inspector-scroll"):
+                        yield Static("", markup=False, id="inspector")
             yield Static("", markup=False, id="status")
         yield Footer(compact=True)
 
@@ -1135,10 +1152,12 @@ class SetTagApp(App[TuiOutcome]):
             lines = self._review_inspector(entry, index)
         try:
             inspector = self.query_one("#inspector", Static)
+            inspector_scroll = self.query_one("#inspector-scroll", VerticalScroll)
         except NoMatches:
             # A queued row-highlight can arrive while the app screen is unmounting.
             return
         inspector.update("\n".join(lines))
+        inspector_scroll.scroll_home(animate=False)
 
     def _metadata_inspector(self, entry: TrackEntry, index: int) -> list[str]:
         lines = [entry.path.name, str(entry.path.parent), ""]
@@ -1276,13 +1295,9 @@ class SetTagApp(App[TuiOutcome]):
                 "SetTag analysis bundle",
                 f"  {evidence_count} ranked scores across {task_count} task"
                 f"{'s' if task_count != 1 else ''} with provenance",
-                f"  {len(item.owned_changes)} internal field changes",
+                f"  Analysis metadata: {len(item.owned_changes)} internal field changes",
             ]
         )
-        if item.readable_changes:
-            lines.extend(f"  • {change}" for change in item.readable_changes)
-        else:
-            lines.append("  None")
         lines.extend(
             [
                 "",
@@ -1480,11 +1495,17 @@ class SetTagApp(App[TuiOutcome]):
     def action_toggle_details(self) -> None:
         visible = not self.has_class("details-open")
         self.set_class(visible, "details-open")
+        table = self.query_one("#tracks", DataTable)
+        inspector_scroll = self.query_one("#inspector-scroll", VerticalScroll)
         index = self._current_index()
-        if visible and index is not None:
-            self._update_inspector(index)
-        self.query_one("#tracks", DataTable).focus()
+        if visible:
+            if index is not None:
+                self._update_inspector(index)
+        else:
+            table.focus()
         self.call_after_refresh(self._sync_table_columns)
+        if visible:
+            self.call_after_refresh(inspector_scroll.focus)
 
     def action_cycle_filter(self) -> None:
         if self.busy:

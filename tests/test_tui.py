@@ -8,6 +8,7 @@ from types import SimpleNamespace
 
 from mutagen.id3 import ID3, TCON
 from mutagen.wave import WAVE
+from textual.containers import VerticalScroll
 from textual.widgets import Button, DataTable, ProgressBar, Static
 
 from settag.policy import Prediction
@@ -266,6 +267,72 @@ def test_tui_analyzes_and_reviews_all_configured_tasks(tmp_path: Path) -> None:
             assert "energetic" in details
             assert "synthesizer" in details
             assert "6 ranked scores across 3 tasks with provenance" in details
+            assert "Analysis metadata: 11 internal field changes" in details
+            assert "• Genre labels:" not in details
+
+    asyncio.run(exercise())
+
+
+def test_tui_details_scroll_and_return_focus_to_track_table(tmp_path: Path) -> None:
+    first = tmp_path / "first.wav"
+    second = tmp_path / "second.wav"
+    for path in (first, second):
+        _silent_wav(path)
+    app = SetTagApp(
+        source=tmp_path,
+        initial_metadata=MetadataBatch(
+            tracks=(_metadata_track(first), _metadata_track(second)),
+            failures=(),
+        ),
+        analysis_loader=lambda paths, _progress, _cancel: _task_analysis_batch(paths),
+        analysis_tasks=("genre", "mood-theme", "instrument"),
+    )
+
+    async def exercise() -> None:
+        async with app.run_test(size=(100, 28)) as pilot:
+            await pilot.pause()
+            await pilot.press("r")
+            for _ in range(30):
+                await pilot.pause(0.05)
+                if app.phase == "review":
+                    break
+
+            assert app.phase == "review"
+            table = app.query_one("#tracks", DataTable)
+            inspector_pane = app.query_one("#inspector-pane")
+            inspector_scroll = app.query_one("#inspector-scroll", VerticalScroll)
+
+            await pilot.press("i")
+            await pilot.pause()
+            assert inspector_pane.display is True
+            assert app.focused is inspector_scroll
+            assert inspector_scroll.max_scroll_y > 0
+
+            await pilot.press("pagedown")
+            await pilot.pause()
+            assert inspector_scroll.scroll_y > 0
+
+            await pilot.press("end")
+            await pilot.pause()
+            assert inspector_scroll.scroll_y == inspector_scroll.max_scroll_y
+
+            await pilot.press("home")
+            await pilot.pause()
+            assert inspector_scroll.scroll_y == 0
+
+            inspector_scroll.scroll_end(animate=False, immediate=True)
+            assert inspector_scroll.scroll_y == inspector_scroll.max_scroll_y
+            await pilot.press("tab")
+            assert app.focused is table
+            await pilot.press("down")
+            await pilot.pause()
+            assert table.cursor_row == 1
+            assert inspector_scroll.scroll_y == 0
+
+            await pilot.press("i")
+            await pilot.pause()
+            assert inspector_pane.display is False
+            assert app.focused is table
 
     asyncio.run(exercise())
 
