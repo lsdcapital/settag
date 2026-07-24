@@ -26,7 +26,12 @@ from settag.plans import (
 from settag.policy import Prediction
 from settag.state import WorkbenchStore
 from settag.tags import apply_owned_tags, task_evidence_from_owned
-from settag.workflow import planned_write_for_track, prepare_track
+from settag.workflow import (
+    AnalysisBatch,
+    analyze_paths,
+    planned_write_for_track,
+    prepare_track,
+)
 
 
 class FakeAnalyzer:
@@ -379,7 +384,7 @@ def test_path_shorthand_runs_a_noninteractive_dry_run_without_writing(
     monkeypatch.setattr(sys, "stdin", StringIO(""))
     monkeypatch.setattr("settag.cli.EssentiaGenreAnalyzer", lambda _model_dir: FakeAnalyzer())
 
-    result = main([str(path)])
+    result = main([str(path), "--tasks", "genre"])
     captured = capsys.readouterr()
 
     assert result == 0
@@ -399,7 +404,7 @@ def test_no_tui_forces_the_plain_dry_run(
     _silent_wav(path)
     monkeypatch.setattr("settag.cli.EssentiaGenreAnalyzer", lambda _model_dir: FakeAnalyzer())
 
-    result = main(["run", str(path), "--no-tui"])
+    result = main(["run", str(path), "--no-tui", "--tasks", "genre"])
     stderr = capsys.readouterr().err
 
     assert result == 0
@@ -466,10 +471,36 @@ def test_interactive_run_uses_configured_tasks_and_task_analyzer(
         encoding="utf-8",
     )
     constructed_tasks = []
+    loader_started = False
+    loader_closed = False
 
     def construct_analyzer(_model_dir, tasks):
         constructed_tasks.append(tasks)
         return FakeInstrumentAnalyzer()
+
+    class FakeSubprocessAnalysisLoader:
+        def __init__(self, model_dir, tasks, *, top, threshold) -> None:
+            self.analyzer = construct_analyzer(model_dir, tasks)
+            self.top = top
+            self.threshold = threshold
+
+        def start(self) -> None:
+            nonlocal loader_started
+            loader_started = True
+
+        def __call__(self, paths, on_progress, should_cancel) -> AnalysisBatch:
+            return analyze_paths(
+                paths,
+                analyzer=self.analyzer,  # type: ignore[arg-type]
+                top=self.top,
+                threshold=self.threshold,
+                on_progress=on_progress,
+                should_cancel=should_cancel,
+            )
+
+        def close(self) -> None:
+            nonlocal loader_closed
+            loader_closed = True
 
     class FakeApp:
         def __init__(self, **kwargs) -> None:
@@ -477,6 +508,7 @@ def test_interactive_run_uses_configured_tasks_and_task_analyzer(
             self.analysis_loader = kwargs["analysis_loader"]
 
         def run(self):
+            assert loader_started is True
             batch = self.analysis_loader(
                 (path,),
                 lambda _completed, _total, _path: None,
@@ -492,13 +524,18 @@ def test_interactive_run_uses_configured_tasks_and_task_analyzer(
 
     monkeypatch.setattr(sys, "stdin", TtyStringIO())
     monkeypatch.setattr(sys, "stdout", TtyStringIO())
-    monkeypatch.setattr("settag.cli.EssentiaTaskAnalyzer", construct_analyzer)
+    monkeypatch.setattr(
+        "settag.cli.SubprocessAnalysisLoader",
+        FakeSubprocessAnalysisLoader,
+    )
     monkeypatch.setattr("settag.cli.SetTagApp", FakeApp)
 
     result = main(["run", str(path), "--config", str(config_path)])
 
     assert result == 0
     assert constructed_tasks == [("instrument",)]
+    assert loader_started is True
+    assert loader_closed is True
 
 
 def test_run_tasks_override_does_not_read_config(
@@ -580,6 +617,8 @@ def test_interactive_default_restores_ready_workbench_plan(
             str(state_path),
             "--score-cutoff",
             "0.80",
+            "--tasks",
+            "genre",
         ]
     )
 
@@ -622,7 +661,19 @@ def test_current_embedded_metadata_supersedes_workbench_plan(
     monkeypatch.setattr(sys, "stdout", TtyStringIO())
     monkeypatch.setattr("settag.cli.SetTagApp", FakeApp)
 
-    assert main(["run", str(path), "--state-db", str(state_path)]) == 0
+    assert (
+        main(
+            [
+                "run",
+                str(path),
+                "--state-db",
+                str(state_path),
+                "--tasks",
+                "genre",
+            ]
+        )
+        == 0
+    )
     model = plan.desired["SETTAG_MODEL"]
     config = plan.desired["SETTAG_CONFIG_SHA256"]
     assert model is not None

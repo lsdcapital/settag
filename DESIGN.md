@@ -183,8 +183,13 @@ scan → read tags → choose tracks → load model → infer → select → pla
                                     verify ← write ← confirm ← preflight
 ```
 
-The Textual workflow constructs the model lazily on the first analysis action
-and reuses it for later batches. The plain workflow constructs it immediately.
+The Textual workflow starts one lightweight spawned analyzer process before
+entering the terminal UI, then constructs the model there only on the first
+analysis action and reuses it for later batches. Starting before Textual takes
+over the terminal avoids platform-specific file-descriptor and thread hazards.
+The Textual thread worker waits only on IPC so native inference cannot block
+terminal rendering or input. The plain workflow constructs the model
+immediately in its own process.
 When MAEST and EffNet tasks are selected together, one 16 kHz decode feeds both
 stacks; mood/theme and instrument share a single EffNet embedding pass. Every
 required model artifact is verified against its pinned SHA-256 before the

@@ -12,6 +12,7 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any, TextIO
 
+from settag.analysis_worker import SubprocessAnalysisLoader
 from settag.analyzer import EssentiaGenreAnalyzer, EssentiaTaskAnalyzer
 from settag.catalog import MODEL_SPECS_BY_TASK
 from settag.config import DEFAULT_CONFIG_PATH, load_config
@@ -303,7 +304,7 @@ def _run_default(args: argparse.Namespace) -> int:
     model_dir = args.model_dir.expanduser().resolve()
     analyzer: EssentiaGenreAnalyzer | EssentiaTaskAnalyzer | None = None
 
-    def load_analysis(
+    def load_analysis_in_process(
         selected_paths: Sequence[Path],
         on_progress,
         should_cancel: CancelCallback,
@@ -395,23 +396,41 @@ def _run_default(args: argparse.Namespace) -> int:
                 )
             return replace(metadata, tracks=tuple(merged))
 
-        outcome = SetTagApp(
-            source=args.path,
-            metadata_loader=load_metadata,
-            analysis_loader=load_analysis,
-            persist_plan=store.save,
-            discard_plans=store.delete,
-            review_top=args.top,
-            score_cutoff=args.threshold,
-            analysis_tasks=tasks,
-        ).run()
+        analysis_loader = SubprocessAnalysisLoader(
+            model_dir,
+            tasks,
+            top=args.top,
+            threshold=args.threshold,
+        )
+        try:
+            try:
+                analysis_loader.start()
+            except Exception as error:
+                print(
+                    "Could not start the interactive analyzer: "
+                    f"{type(error).__name__}: {error}",
+                    file=sys.stderr,
+                )
+                return 2
+            outcome = SetTagApp(
+                source=args.path,
+                metadata_loader=load_metadata,
+                analysis_loader=analysis_loader,
+                persist_plan=store.save,
+                discard_plans=store.delete,
+                review_top=args.top,
+                score_cutoff=args.threshold,
+                analysis_tasks=tasks,
+            ).run()
+        finally:
+            analysis_loader.close()
         if outcome is None:
             return 0
         print(outcome.message, file=sys.stderr)
         return outcome.status
 
     try:
-        batch = load_analysis(
+        batch = load_analysis_in_process(
             paths,
             lambda index, total, path: LOGGER.info(
                 "[%d/%d] %s",
