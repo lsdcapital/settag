@@ -11,6 +11,7 @@ from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
 from textual.coordinate import Coordinate
+from textual.css.query import NoMatches
 from textual.screen import ModalScreen
 from textual.widgets import (
     Button,
@@ -30,6 +31,8 @@ from settag.plans import (
     suggested_file_genre,
 )
 from settag.policy import Prediction, select_predictions
+from settag.tags import OwnedValues, read_task_provenance, task_evidence_from_owned
+from settag.tasks import AnalysisTask, ordered_tasks
 from settag.workflow import (
     AnalysisBatch,
     AnalysisFailure,
@@ -93,6 +96,11 @@ STATUS_LABELS = {
     "current": "Up to date",
     "stale": "Reanalyze (model/config changed)",
     "invalid": "Incomplete metadata",
+}
+TASK_LABELS: dict[AnalysisTask, str] = {
+    "genre": "Genre",
+    "mood-theme": "Mood/theme",
+    "instrument": "Instrument",
 }
 
 
@@ -657,6 +665,7 @@ class SetTagApp(App[TuiOutcome]):
         discard_plans: PlanDiscarder | None = None,
         review_top: int = 5,
         score_cutoff: float = 0.10,
+        analysis_tasks: Sequence[AnalysisTask] = ("genre",),
     ) -> None:
         super().__init__()
         if metadata_loader is None and initial_metadata is None:
@@ -669,6 +678,9 @@ class SetTagApp(App[TuiOutcome]):
         self.discard_plans = discard_plans
         self.review_top = review_top
         self.score_cutoff = score_cutoff
+        self.analysis_tasks = ordered_tasks(analysis_tasks)
+        if not self.analysis_tasks:
+            raise ValueError("SetTagApp requires at least one analysis task")
         self.entries: list[TrackEntry] = []
         self.visible_indices: list[int] = []
         self.analysis_selected: set[int] = set()
@@ -973,13 +985,7 @@ class SetTagApp(App[TuiOutcome]):
             if self.phase == "choose"
             else index in self.write_selected
         )
-        predictions: Sequence[Prediction] = (
-            plan.selected
-            if plan is not None
-            else self._select_for_review(metadata.stored_predictions)
-            if metadata is not None
-            else ()
-        )
+        predictions = self._primary_review_predictions(entry)
         primary = predictions[0] if predictions else None
 
         if plan is not None:
@@ -1030,16 +1036,52 @@ class SetTagApp(App[TuiOutcome]):
 
     def _entry_analyzed_at(self, entry: TrackEntry) -> str:
         if entry.plan is not None:
-            values = entry.plan.desired["SETTAG_ANALYZED_AT"]
-            value = values[0] if values else None
+            value = self._latest_analyzed_at(entry.plan.desired)
         elif entry.metadata is not None and entry.metadata.cached_plan is not None:
-            values = entry.metadata.cached_plan.desired["SETTAG_ANALYZED_AT"]
-            value = values[0] if values else None
+            value = self._latest_analyzed_at(entry.metadata.cached_plan.desired)
         else:
             value = entry.metadata.analyzed_at if entry.metadata is not None else None
         return value[:10] if value else "—"
 
+    def _primary_review_predictions(
+        self,
+        entry: TrackEntry,
+    ) -> list[Prediction]:
+        owned: OwnedValues | None
+        if entry.plan is not None:
+            owned = entry.plan.desired
+        elif entry.metadata is not None:
+            owned = entry.metadata.owned
+        else:
+            owned = None
+        if owned is None:
+            return []
+
+        evidence_by_task = task_evidence_from_owned(owned)
+        for task in self.analysis_tasks:
+            evidence = evidence_by_task.get(task, ())
+            if not evidence and task == "genre" and entry.metadata is not None:
+                evidence = entry.metadata.stored_predictions
+            selected = self._select_for_review(evidence)
+            if selected:
+                return selected
+        return []
+
+    def _latest_analyzed_at(self, owned: OwnedValues) -> str | None:
+        provenance = read_task_provenance(owned)
+        values: list[str] = []
+        for task in self.analysis_tasks:
+            entry = provenance.get(task)
+            analyzed_at = entry.get("analyzed_at") if entry is not None else None
+            if isinstance(analyzed_at, str) and analyzed_at:
+                values.append(analyzed_at)
+        if values:
+            return max(values)
+        legacy = owned.get("SETTAG_ANALYZED_AT")
+        return legacy[0] if legacy and len(legacy) == 1 else None
+
     def _update_context(self) -> None:
+        task_text = ", ".join(TASK_LABELS[task] for task in self.analysis_tasks)
         if self.phase == "choose":
             needs = sum(entry.needs_analysis for entry in self.entries)
             errors = sum(entry.metadata_error is not None for entry in self.entries)
@@ -1050,6 +1092,7 @@ class SetTagApp(App[TuiOutcome]):
                 f"  ·  {needs} need analysis"
                 f"{ready_text}"
                 f"  ·  {errors} metadata error{'s' if errors != 1 else ''}"
+                f"  ·  Tasks: {task_text}"
                 f"  ·  Filter: {FILTER_LABELS[self.library_filter]}"
             )
         else:
@@ -1059,6 +1102,7 @@ class SetTagApp(App[TuiOutcome]):
             text = (
                 f"{self.source}  ·  {len(self.review_indices)} reviewed"
                 f"  ·  {failures} analysis error{'s' if failures != 1 else ''}"
+                f"  ·  Tasks: {task_text}"
                 "  ·  B returns to the library"
             )
         self.query_one("#context", Static).update(text)
@@ -1089,7 +1133,12 @@ class SetTagApp(App[TuiOutcome]):
             lines = self._metadata_inspector(entry, index)
         else:
             lines = self._review_inspector(entry, index)
-        self.query_one("#inspector", Static).update("\n".join(lines))
+        try:
+            inspector = self.query_one("#inspector", Static)
+        except NoMatches:
+            # A queued row-highlight can arrive while the app screen is unmounting.
+            return
+        inspector.update("\n".join(lines))
 
     def _metadata_inspector(self, entry: TrackEntry, index: int) -> list[str]:
         lines = [entry.path.name, str(entry.path.parent), ""]
@@ -1115,16 +1164,13 @@ class SetTagApp(App[TuiOutcome]):
                 else None
             )
         )
-        predictions: Sequence[Prediction] = (
-            entry.plan.evidence
+        evidence_owned = (
+            entry.plan.desired
             if entry.plan is not None
-            else (
-                cached_plan.evidence
-                if cached_plan is not None and metadata.cache_status == "stale"
-                else metadata.stored_predictions
-            )
+            else cached_plan.desired
+            if cached_plan is not None and metadata.cache_status == "stale"
+            else metadata.owned
         )
-        selected = self._select_for_review(predictions)
         lines.extend(
             [
                 "Current file metadata",
@@ -1143,14 +1189,12 @@ class SetTagApp(App[TuiOutcome]):
                 ),
             ]
         )
-        if predictions:
-            lines.extend(self._candidate_lines(predictions, selected))
-        elif metadata.genre_state.settag:
-            lines.extend(
-                f"  • {label} (score metadata unavailable)" for label in metadata.genre_state.settag
+        lines.extend(
+            self._task_candidate_sections(
+                evidence_owned,
+                fallback_genre=metadata.stored_predictions,
             )
-        else:
-            lines.append("  None")
+        )
 
         lines.extend(
             [
@@ -1177,11 +1221,9 @@ class SetTagApp(App[TuiOutcome]):
 
     def _full_analyzed_at(self, entry: TrackEntry) -> str:
         if entry.plan is not None:
-            values = entry.plan.desired["SETTAG_ANALYZED_AT"]
-            return values[0] if values else "Never"
+            return self._latest_analyzed_at(entry.plan.desired) or "Never"
         if entry.metadata is not None and entry.metadata.cached_plan is not None:
-            values = entry.metadata.cached_plan.desired["SETTAG_ANALYZED_AT"]
-            return values[0] if values else "Never"
+            return self._latest_analyzed_at(entry.metadata.cached_plan.desired) or "Never"
         if entry.metadata is not None:
             return entry.metadata.analyzed_at or "Never"
         return "Never"
@@ -1220,19 +1262,20 @@ class SetTagApp(App[TuiOutcome]):
                 genre_line,
                 *([rollup_line] if rollup_line else []),
                 "",
-                "Review candidates",
+                "Review candidates by task",
             ]
         )
-        if item.evidence:
-            lines.extend(self._candidate_lines(item.evidence, item.selected))
-        else:
-            lines.append("  No ranked evidence was returned by the model.")
+        lines.extend(self._task_candidate_sections(item.desired))
 
+        all_evidence = task_evidence_from_owned(item.desired)
+        evidence_count = sum(len(evidence) for evidence in all_evidence.values())
+        task_count = len(read_task_provenance(item.desired))
         lines.extend(
             [
                 "",
                 "SetTag analysis bundle",
-                f"  {len(item.evidence)} ranked scores with provenance",
+                f"  {evidence_count} ranked scores across {task_count} task"
+                f"{'s' if task_count != 1 else ''} with provenance",
                 f"  {len(item.owned_changes)} internal field changes",
             ]
         )
@@ -1248,6 +1291,35 @@ class SetTagApp(App[TuiOutcome]):
                 "The standard genre is a separate, editable staged change.",
             ]
         )
+        return lines
+
+    def _task_candidate_sections(
+        self,
+        owned: OwnedValues,
+        *,
+        fallback_genre: Sequence[Prediction] = (),
+    ) -> list[str]:
+        evidence_by_task = task_evidence_from_owned(owned)
+        provenance = read_task_provenance(owned)
+        lines: list[str] = []
+        for index, task in enumerate(self.analysis_tasks):
+            if index:
+                lines.append("")
+            lines.append(TASK_LABELS[task])
+            evidence = evidence_by_task.get(task, ())
+            if not evidence and task == "genre":
+                evidence = fallback_genre
+            if evidence:
+                lines.extend(
+                    self._candidate_lines(
+                        evidence,
+                        self._select_for_review(evidence),
+                    )
+                )
+            elif task in provenance:
+                lines.append("  No ranked evidence was returned by the model.")
+            else:
+                lines.append("  Not analyzed for this task.")
         return lines
 
     def _candidate_lines(
@@ -1806,7 +1878,11 @@ class SetTagApp(App[TuiOutcome]):
         self.busy = False
         track_count = len(self._pending_write)
         standard_count = sum(item.standard_genre_change is not None for item in self._pending_write)
-        evidence_count = sum(len(item.evidence) for item in self._pending_write)
+        evidence_count = sum(
+            len(evidence)
+            for item in self._pending_write
+            for evidence in task_evidence_from_owned(item.desired).values()
+        )
         self.push_screen(
             ConfirmWriteScreen(
                 track_count=track_count,
@@ -1904,8 +1980,9 @@ class SetTagApp(App[TuiOutcome]):
             index = by_path[item.path]
             entry = self.entries[index]
             if entry.metadata is not None:
-                analyzed_at_values = item.desired["SETTAG_ANALYZED_AT"]
-                analyzed_at = analyzed_at_values[0] if analyzed_at_values else None
+                analyzed_at = self._latest_analyzed_at(item.desired)
+                stored_by_task = task_evidence_from_owned(item.desired)
+                stored_genre = stored_by_task.get("genre", ())
                 standard_genre = (
                     item.target_file_genre
                     if item.target_file_genre is not None
@@ -1916,10 +1993,10 @@ class SetTagApp(App[TuiOutcome]):
                     genre_state=replace(
                         entry.metadata.genre_state,
                         standard=standard_genre,
-                        settag=tuple(prediction.label for prediction in item.selected),
+                        settag=tuple(prediction.label for prediction in stored_genre),
                     ),
                     owned=item.desired,
-                    stored_predictions=item.evidence,
+                    stored_predictions=stored_genre,
                     status="current",
                     analyzed_at=analyzed_at,
                     cached_plan=None,

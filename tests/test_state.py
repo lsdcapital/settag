@@ -20,6 +20,20 @@ class FakeAnalyzer:
         return [Prediction("Electronic---House", 0.72)]
 
 
+class FakeInstrumentAnalyzer:
+    backend_version = "test"
+    model_manifests = {
+        "instrument": {
+            "schema": "settag.models/v1",
+            "id": "model/instrument/v1",
+            "files": {},
+        }
+    }
+
+    def analyze_tasks(self, path: Path) -> dict[str, list[Prediction]]:
+        return {"instrument": [Prediction("synthesizer", 0.81)]}
+
+
 def _silent_wav(path: Path) -> None:
     with wave.open(str(path), "wb") as output:
         output.setnchannels(1)
@@ -32,6 +46,16 @@ def _plan(path: Path):
     track = prepare_track(
         path,
         analyzer=FakeAnalyzer(),  # type: ignore[arg-type]
+        top=5,
+        threshold=0.10,
+    )
+    return planned_write_for_track(track)
+
+
+def _instrument_plan(path: Path):
+    track = prepare_track(
+        path,
+        analyzer=FakeInstrumentAnalyzer(),  # type: ignore[arg-type]
         top=5,
         threshold=0.10,
     )
@@ -62,6 +86,51 @@ def test_workbench_save_and_load_round_trip(tmp_path: Path) -> None:
     assert entry.status == "ready"
     assert entry.reason is None
     assert entry.plan == plan
+
+
+def test_workbench_classifies_task_aware_effnet_plan(tmp_path: Path) -> None:
+    path = tmp_path / "track.wav"
+    _silent_wav(path)
+    plan = _instrument_plan(path)
+    store = WorkbenchStore(tmp_path / "state.sqlite3")
+    store.save(plan)
+    config_sha256 = str(
+        config_record(
+            top=5,
+            threshold=0.10,
+            tasks=("instrument",),
+        )["sha256"]
+    )
+
+    ready = store.load(
+        [path],
+        expected_model_ids={"instrument": "model/instrument/v1"},
+        expected_config_sha256=config_sha256,
+    )[path.resolve()]
+    combined_config = config_record(
+        top=5,
+        threshold=0.10,
+        tasks=("genre", "mood-theme", "instrument"),
+    )
+    ready_after_task_selection_change = store.load(
+        [path],
+        expected_model_ids={"instrument": "model/instrument/v1"},
+        expected_config_sha256=str(combined_config["sha256"]),
+        expected_config=combined_config,
+    )[path.resolve()]
+    changed_tasks = store.load(
+        [path],
+        expected_model_ids={
+            "genre": "model/genre/v1",
+            "instrument": "model/instrument/v1",
+        },
+        expected_config_sha256=config_sha256,
+    )[path.resolve()]
+
+    assert ready.status == "ready"
+    assert ready_after_task_selection_change.status == "ready"
+    assert changed_tasks.status == "stale"
+    assert changed_tasks.reason == "analysis tasks changed"
 
 
 def test_workbench_marks_changed_source_stale(tmp_path: Path) -> None:

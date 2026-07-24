@@ -4,7 +4,7 @@ import json
 import os
 import sqlite3
 import sys
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from contextlib import closing
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -17,6 +17,9 @@ from settag.plans import (
     planned_write_from_record,
     planned_write_record,
 )
+from settag.records import configs_match_for_task
+from settag.tags import read_task_provenance
+from settag.tasks import AnalysisTask
 
 STATE_SCHEMA_VERSION = 1
 CacheStatus = Literal["ready", "stale"]
@@ -101,12 +104,18 @@ class WorkbenchStore:
         self,
         paths: Sequence[Path],
         *,
-        expected_model_id: str,
         expected_config_sha256: str,
+        expected_config: Mapping[str, object] | None = None,
+        expected_model_id: str | None = None,
+        expected_model_ids: Mapping[AnalysisTask, str] | None = None,
     ) -> dict[Path, WorkbenchEntry]:
         resolved_paths = tuple(path.expanduser().resolve() for path in paths)
         if not resolved_paths:
             return {}
+        expected_models = _normalize_expected_models(
+            expected_model_id=expected_model_id,
+            expected_model_ids=expected_model_ids,
+        )
 
         entries: dict[Path, WorkbenchEntry] = {}
         with closing(self._connect()) as connection:
@@ -126,8 +135,9 @@ class WorkbenchStore:
                     plan = self._decode(str(row["plan_json"]), path)
                     entries[path] = _classify(
                         plan,
-                        expected_model_id=expected_model_id,
+                        expected_model_ids=expected_models,
                         expected_config_sha256=expected_config_sha256,
+                        expected_config=expected_config,
                     )
         return entries
 
@@ -182,8 +192,9 @@ class WorkbenchStore:
 def _classify(
     plan: PlannedWrite,
     *,
-    expected_model_id: str,
+    expected_model_ids: Mapping[AnalysisTask, str],
     expected_config_sha256: str,
+    expected_config: Mapping[str, object] | None = None,
 ) -> WorkbenchEntry:
     if not plan.path.is_file():
         return WorkbenchEntry(plan, "stale", "source file is missing")
@@ -192,22 +203,40 @@ def _classify(
     if stat.st_size != plan.source_size or stat.st_mtime_ns != plan.source_mtime_ns:
         return WorkbenchEntry(plan, "stale", "source file changed")
 
-    model = _single_value(plan, "SETTAG_MODEL")
-    if model != expected_model_id:
-        return WorkbenchEntry(plan, "stale", "analysis model changed")
-
-    config = _single_value(plan, "SETTAG_CONFIG_SHA256")
-    if config != expected_config_sha256:
-        return WorkbenchEntry(plan, "stale", "evidence settings changed")
+    provenance = read_task_provenance(plan.desired)
+    for task, expected_model_id in expected_model_ids.items():
+        task_provenance = provenance.get(task)
+        if task_provenance is None:
+            return WorkbenchEntry(plan, "stale", "analysis tasks changed")
+        model = task_provenance.get("model")
+        model_id = model.get("id") if isinstance(model, dict) else None
+        if model_id != expected_model_id:
+            return WorkbenchEntry(plan, "stale", "analysis model changed")
+        config = task_provenance.get("config")
+        config_sha256 = config.get("sha256") if isinstance(config, dict) else None
+        if (
+            config_sha256 != expected_config_sha256
+            and not configs_match_for_task(config, expected_config, task)
+        ):
+            return WorkbenchEntry(plan, "stale", "evidence settings changed")
 
     return WorkbenchEntry(plan, "ready")
 
 
-def _single_value(plan: PlannedWrite, field: str) -> str | None:
-    values = plan.desired[field]
-    if values is None or len(values) != 1:
-        return None
-    return values[0]
+def _normalize_expected_models(
+    *,
+    expected_model_id: str | None,
+    expected_model_ids: Mapping[AnalysisTask, str] | None,
+) -> dict[AnalysisTask, str]:
+    if expected_model_ids is not None:
+        if expected_model_id is not None:
+            raise ValueError("provide expected_model_id or expected_model_ids, not both")
+        if not expected_model_ids:
+            raise ValueError("at least one expected analysis model is required")
+        return dict(expected_model_ids)
+    if expected_model_id is None:
+        raise ValueError("an expected analysis model is required")
+    return {"genre": expected_model_id}
 
 
 def _utc_now() -> str:

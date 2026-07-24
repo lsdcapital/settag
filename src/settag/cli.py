@@ -13,7 +13,8 @@ from pathlib import Path
 from typing import Any, TextIO
 
 from settag.analyzer import EssentiaGenreAnalyzer, EssentiaTaskAnalyzer
-from settag.catalog import DISCOGS519_MAEST
+from settag.catalog import MODEL_SPECS_BY_TASK
+from settag.config import DEFAULT_CONFIG_PATH, load_config
 from settag.hashing import sha256_file
 from settag.model_store import (
     DEFAULT_MODEL_DIR,
@@ -73,6 +74,16 @@ def build_parser() -> argparse.ArgumentParser:
     )
     run.add_argument("path", type=Path)
     _add_analysis_options(run)
+    _add_tasks(run, default=None)
+    run.add_argument(
+        "--config",
+        type=Path,
+        default=DEFAULT_CONFIG_PATH,
+        help=(
+            "TOML config file used for TUI defaults "
+            f"(default: {DEFAULT_CONFIG_PATH})."
+        ),
+    )
     run.add_argument(
         "--no-tui",
         action="store_true",
@@ -189,15 +200,20 @@ def _add_analysis_options(parser: argparse.ArgumentParser) -> None:
     )
 
 
-def _add_tasks(parser: argparse.ArgumentParser) -> None:
+def _add_tasks(
+    parser: argparse.ArgumentParser,
+    *,
+    default: tuple[AnalysisTask, ...] | None = ("genre",),
+) -> None:
+    default_text = "genre" if default == ("genre",) else "config, then genre"
     parser.add_argument(
         "--tasks",
         type=_analysis_tasks,
-        default=("genre",),
+        default=default,
         metavar="TASKS",
         help=(
             "Comma-separated analysis tasks: genre,mood-theme,instrument "
-            "(default: genre)."
+            f"(default: {default_text})."
         ),
     )
 
@@ -274,6 +290,7 @@ def _configure_logging() -> None:
 
 def _run_default(args: argparse.Namespace) -> int:
     try:
+        tasks = args.tasks if args.tasks is not None else load_config(args.config).tasks
         paths = scan_audio(args.path)
     except Exception as error:
         print(str(error), file=sys.stderr)
@@ -284,7 +301,7 @@ def _run_default(args: argparse.Namespace) -> int:
         return 0
 
     model_dir = args.model_dir.expanduser().resolve()
-    analyzer: EssentiaGenreAnalyzer | None = None
+    analyzer: EssentiaGenreAnalyzer | EssentiaTaskAnalyzer | None = None
 
     def load_analysis(
         selected_paths: Sequence[Path],
@@ -293,7 +310,11 @@ def _run_default(args: argparse.Namespace) -> int:
     ) -> AnalysisBatch:
         nonlocal analyzer
         if analyzer is None:
-            analyzer = EssentiaGenreAnalyzer(model_dir)
+            analyzer = (
+                EssentiaGenreAnalyzer(model_dir)
+                if tasks == ("genre",)
+                else EssentiaTaskAnalyzer(model_dir, tasks)
+            )
         return analyze_paths(
             selected_paths,
             analyzer=analyzer,
@@ -308,15 +329,21 @@ def _run_default(args: argparse.Namespace) -> int:
         current_config = config_record(
             top=args.top,
             threshold=args.threshold,
+            tasks=tasks,
         )
         config_sha256 = str(current_config["sha256"])
+        expected_model_ids = {
+            task: MODEL_SPECS_BY_TASK[task].id
+            for task in tasks
+        }
         store = WorkbenchStore(args.state_db)
 
         def load_metadata(on_progress) -> MetadataBatch:
             metadata = inspect_paths(
                 paths,
-                expected_model_id=DISCOGS519_MAEST.id,
+                expected_model_ids=expected_model_ids,
                 expected_config_sha256=config_sha256,
+                expected_config=current_config,
                 on_progress=on_progress,
             )
             current_paths = [
@@ -332,8 +359,9 @@ def _run_default(args: argparse.Namespace) -> int:
                     for track in metadata.tracks
                     if track.status != "current"
                 ],
-                expected_model_id=DISCOGS519_MAEST.id,
+                expected_model_ids=expected_model_ids,
                 expected_config_sha256=config_sha256,
+                expected_config=current_config,
             )
             merged = []
             for track in metadata.tracks:
@@ -375,6 +403,7 @@ def _run_default(args: argparse.Namespace) -> int:
             discard_plans=store.delete,
             review_top=args.top,
             score_cutoff=args.threshold,
+            analysis_tasks=tasks,
         ).run()
         if outcome is None:
             return 0

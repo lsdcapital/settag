@@ -2,7 +2,13 @@ import wave
 from pathlib import Path
 
 from settag.policy import Prediction
-from settag.tags import apply_owned_tags, build_owned_values
+from settag.records import config_record
+from settag.tags import (
+    OWNED_DESCRIPTIONS,
+    apply_owned_tags,
+    build_owned_values,
+    build_task_owned_values,
+)
 from settag.workflow import inspect_paths
 
 
@@ -70,3 +76,94 @@ def test_metadata_inspection_classifies_current_stale_missing_and_invalid(
         (3, 4, stale),
         (4, 4, invalid),
     ]
+
+
+def test_metadata_inspection_is_task_aware_for_effnet_only_metadata(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "instrument.wav"
+    _silent_wav(path)
+    recorded_config = config_record(
+        top=5,
+        threshold=0.10,
+        tasks=("genre", "mood-theme", "instrument"),
+    )
+    instrument_config = config_record(
+        top=5,
+        threshold=0.10,
+        tasks=("instrument",),
+    )
+    desired = build_task_owned_values(
+        {field: None for field in OWNED_DESCRIPTIONS},
+        {"instrument": [Prediction("synthesizer", 0.81)]},
+        {
+            "instrument": {
+                "model": {
+                    "schema": "settag.models/v1",
+                    "id": "model/instrument/v1",
+                    "files": {},
+                },
+                "analyzed_at": "2026-07-24T12:00:00Z",
+                "config": recorded_config,
+            }
+        },
+    )
+    apply_owned_tags(path, desired)
+
+    current = inspect_paths(
+        (path,),
+        expected_model_ids={"instrument": "model/instrument/v1"},
+        expected_config_sha256=str(instrument_config["sha256"]),
+        expected_config=instrument_config,
+    ).tracks[0]
+    missing_genre = inspect_paths(
+        (path,),
+        expected_model_ids={
+            "genre": "model/genre/v1",
+            "instrument": "model/instrument/v1",
+        },
+        expected_config_sha256=str(instrument_config["sha256"]),
+        expected_config=instrument_config,
+    ).tracks[0]
+
+    assert current.status == "current"
+    assert current.analyzed_at == "2026-07-24T12:00:00Z"
+    assert current.stored_predictions == ()
+    assert missing_genre.status == "stale"
+
+
+def test_metadata_inspection_rejects_invalid_selected_task_evidence(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "instrument.wav"
+    _silent_wav(path)
+    config = config_record(
+        top=5,
+        threshold=0.10,
+        tasks=("instrument",),
+    )
+    desired = build_task_owned_values(
+        {field: None for field in OWNED_DESCRIPTIONS},
+        {"instrument": [Prediction("synthesizer", 0.81)]},
+        {
+            "instrument": {
+                "model": {
+                    "schema": "settag.models/v1",
+                    "id": "model/instrument/v1",
+                    "files": {},
+                },
+                "analyzed_at": "2026-07-24T12:00:00Z",
+                "config": config,
+            }
+        },
+    )
+    desired["SETTAG_INSTRUMENT_SCORES"] = ["not-json"]
+    apply_owned_tags(path, desired)
+
+    track = inspect_paths(
+        (path,),
+        expected_model_ids={"instrument": "model/instrument/v1"},
+        expected_config_sha256=str(config["sha256"]),
+    ).tracks[0]
+
+    assert track.status == "invalid"

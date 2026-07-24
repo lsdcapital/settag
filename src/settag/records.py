@@ -36,6 +36,39 @@ def config_record(
     }
 
 
+def configs_match_for_task(
+    recorded_config: object,
+    expected_config: object,
+    task: AnalysisTask,
+) -> bool:
+    """Compare evidence settings while allowing a task to move between task groups."""
+    if not isinstance(recorded_config, dict) or not isinstance(expected_config, dict):
+        return False
+    recorded_evidence = recorded_config.get("evidence")
+    expected_evidence = expected_config.get("evidence")
+    if not isinstance(recorded_evidence, dict) or not isinstance(expected_evidence, dict):
+        return False
+    recorded_tasks = recorded_evidence.get("tasks")
+    expected_tasks = expected_evidence.get("tasks")
+    recorded_settings = {
+        key: value
+        for key, value in recorded_evidence.items()
+        if key != "tasks"
+    }
+    expected_settings = {
+        key: value
+        for key, value in expected_evidence.items()
+        if key != "tasks"
+    }
+    return (
+        recorded_settings == expected_settings
+        and isinstance(recorded_tasks, list)
+        and isinstance(expected_tasks, list)
+        and task in recorded_tasks
+        and task in expected_tasks
+    )
+
+
 def source_record(path: Path) -> dict[str, object]:
     stat = path.stat()
     return {

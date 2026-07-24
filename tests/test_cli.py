@@ -25,7 +25,7 @@ from settag.plans import (
 )
 from settag.policy import Prediction
 from settag.state import WorkbenchStore
-from settag.tags import apply_owned_tags
+from settag.tags import apply_owned_tags, task_evidence_from_owned
 from settag.workflow import planned_write_for_track, prepare_track
 
 
@@ -452,6 +452,81 @@ def test_interactive_default_reads_metadata_without_constructing_analyzer(
     assert result == 0
     assert inspected_paths == [path]
     assert analyzer_constructed is False
+
+
+def test_interactive_run_uses_configured_tasks_and_task_analyzer(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    path = tmp_path / "track.wav"
+    config_path = tmp_path / "config.toml"
+    _silent_wav(path)
+    config_path.write_text(
+        '[analysis]\ntasks = ["instrument"]\n',
+        encoding="utf-8",
+    )
+    constructed_tasks = []
+
+    def construct_analyzer(_model_dir, tasks):
+        constructed_tasks.append(tasks)
+        return FakeInstrumentAnalyzer()
+
+    class FakeApp:
+        def __init__(self, **kwargs) -> None:
+            assert kwargs["analysis_tasks"] == ("instrument",)
+            self.analysis_loader = kwargs["analysis_loader"]
+
+        def run(self):
+            batch = self.analysis_loader(
+                (path,),
+                lambda _completed, _total, _path: None,
+                lambda: False,
+            )
+            assert len(batch.planned) == 1
+            evidence = task_evidence_from_owned(batch.planned[0].desired)
+            assert [item.label for item in evidence["instrument"]] == [
+                "synthesizer",
+                "drummachine",
+            ]
+            return SimpleNamespace(status=0, message="Nothing was written.")
+
+    monkeypatch.setattr(sys, "stdin", TtyStringIO())
+    monkeypatch.setattr(sys, "stdout", TtyStringIO())
+    monkeypatch.setattr("settag.cli.EssentiaTaskAnalyzer", construct_analyzer)
+    monkeypatch.setattr("settag.cli.SetTagApp", FakeApp)
+
+    result = main(["run", str(path), "--config", str(config_path)])
+
+    assert result == 0
+    assert constructed_tasks == [("instrument",)]
+
+
+def test_run_tasks_override_does_not_read_config(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    path = tmp_path / "track.wav"
+    config_path = tmp_path / "broken.toml"
+    _silent_wav(path)
+    config_path.write_text("[analysis\n", encoding="utf-8")
+    monkeypatch.setattr(
+        "settag.cli.EssentiaGenreAnalyzer",
+        lambda _model_dir: FakeAnalyzer(),
+    )
+
+    result = main(
+        [
+            "run",
+            str(path),
+            "--no-tui",
+            "--tasks",
+            "genre",
+            "--config",
+            str(config_path),
+        ]
+    )
+
+    assert result == 0
 
 
 def test_interactive_default_restores_ready_workbench_plan(

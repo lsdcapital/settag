@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal, Protocol
@@ -14,7 +14,7 @@ from settag.plans import (
     planned_write_record,
 )
 from settag.policy import Prediction, collect_evidence, select_predictions
-from settag.records import config_record, source_record, utc_now
+from settag.records import config_record, configs_match_for_task, source_record, utc_now
 from settag.tags import (
     GenreState,
     OwnedValues,
@@ -26,9 +26,10 @@ from settag.tags import (
     plan_standard_genres,
     read_genre_state,
     read_owned_values,
+    read_task_provenance,
     task_evidence_from_owned,
 )
-from settag.tasks import AnalysisTask, ordered_tasks
+from settag.tasks import TASK_FIELDS, AnalysisTask, ordered_tasks
 
 
 class GenreAnalyzer(Protocol):
@@ -280,10 +281,16 @@ def analyze_paths(
 def inspect_paths(
     paths: Sequence[Path],
     *,
-    expected_model_id: str,
     expected_config_sha256: str,
+    expected_config: Mapping[str, object] | None = None,
+    expected_model_id: str | None = None,
+    expected_model_ids: Mapping[AnalysisTask, str] | None = None,
     on_progress: ProgressCallback | None = None,
 ) -> MetadataBatch:
+    expected_models = _normalize_expected_models(
+        expected_model_id=expected_model_id,
+        expected_model_ids=expected_model_ids,
+    )
     tracks: list[MetadataTrack] = []
     failures: list[AnalysisFailure] = []
     total = len(paths)
@@ -292,8 +299,9 @@ def inspect_paths(
             tracks.append(
                 inspect_track(
                     path,
-                    expected_model_id=expected_model_id,
+                    expected_model_ids=expected_models,
                     expected_config_sha256=expected_config_sha256,
+                    expected_config=expected_config,
                 )
             )
         except Exception as error:
@@ -313,9 +321,15 @@ def inspect_paths(
 def inspect_track(
     path: Path,
     *,
-    expected_model_id: str,
     expected_config_sha256: str,
+    expected_config: Mapping[str, object] | None = None,
+    expected_model_id: str | None = None,
+    expected_model_ids: Mapping[AnalysisTask, str] | None = None,
 ) -> MetadataTrack:
+    expected_models = _normalize_expected_models(
+        expected_model_id=expected_model_id,
+        expected_model_ids=expected_model_ids,
+    )
     genre_state = read_genre_state(path)
     owned = read_owned_values(path)
     has_settag_metadata = any(values is not None for values in owned.values())
@@ -329,20 +343,51 @@ def inspect_track(
             analyzed_at=None,
         )
 
-    stored_predictions, evidence_valid = _stored_predictions(genre_state, owned)
-    model = _single_owned_value(owned, "SETTAG_MODEL")
-    config = _single_owned_value(owned, "SETTAG_CONFIG_SHA256")
-    analyzed_at = _single_owned_value(owned, "SETTAG_ANALYZED_AT")
-    version = _single_owned_value(owned, "SETTAG_VERSION")
-    provenance_valid = all(
-        value is not None for value in (model, config, analyzed_at, version)
+    stored_by_task = task_evidence_from_owned(owned)
+    stored_predictions = stored_by_task.get("genre", ())
+    evidence_valid = all(
+        _task_evidence_valid(task, owned, stored_by_task)
+        for task in expected_models
     )
-    if not evidence_valid or not provenance_valid:
+    provenance = read_task_provenance(owned)
+    version = _single_owned_value(owned, "SETTAG_VERSION")
+    provenance_invalid = False
+    provenance_missing = False
+    provenance_stale = False
+    analyzed_at_values: list[str] = []
+    for task, expected_model_id in expected_models.items():
+        task_provenance = provenance.get(task)
+        if task_provenance is None:
+            provenance_missing = True
+            continue
+        model = task_provenance.get("model")
+        config = task_provenance.get("config")
+        model_id = model.get("id") if isinstance(model, dict) else None
+        config_sha256 = config.get("sha256") if isinstance(config, dict) else None
+        analyzed_at = task_provenance.get("analyzed_at")
+        if not all(
+            isinstance(value, str) and value
+            for value in (model_id, config_sha256, analyzed_at)
+        ):
+            provenance_invalid = True
+            continue
+        analyzed_at_values.append(analyzed_at)
+        if (
+            model_id != expected_model_id
+            or (
+                config_sha256 != expected_config_sha256
+                and not configs_match_for_task(config, expected_config, task)
+            )
+        ):
+            provenance_stale = True
+
+    if not evidence_valid or provenance_invalid or version is None:
         status: MetadataStatus = "invalid"
-    elif model != expected_model_id or config != expected_config_sha256:
+    elif provenance_missing or provenance_stale:
         status = "stale"
     else:
         status = "current"
+    analyzed_at = max(analyzed_at_values, default=None)
 
     return MetadataTrack(
         path=path,
@@ -352,6 +397,39 @@ def inspect_track(
         status=status,
         analyzed_at=analyzed_at,
     )
+
+
+def _task_evidence_valid(
+    task: AnalysisTask,
+    owned: OwnedValues,
+    stored_by_task: Mapping[AnalysisTask, tuple[Prediction, ...]],
+) -> bool:
+    label_field, score_field = TASK_FIELDS[task]
+    labels = owned.get(label_field)
+    scores = owned.get(score_field)
+    if not labels:
+        return scores is None
+    predictions = stored_by_task.get(task)
+    return (
+        predictions is not None
+        and tuple(prediction.label for prediction in predictions) == tuple(labels)
+    )
+
+
+def _normalize_expected_models(
+    *,
+    expected_model_id: str | None,
+    expected_model_ids: Mapping[AnalysisTask, str] | None,
+) -> dict[AnalysisTask, str]:
+    if expected_model_ids is not None:
+        if expected_model_id is not None:
+            raise ValueError("provide expected_model_id or expected_model_ids, not both")
+        if not expected_model_ids:
+            raise ValueError("at least one expected analysis model is required")
+        return dict(expected_model_ids)
+    if expected_model_id is None:
+        raise ValueError("an expected analysis model is required")
+    return {"genre": expected_model_id}
 
 
 def _stored_predictions(

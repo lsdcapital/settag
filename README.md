@@ -30,6 +30,26 @@ uv run settag models download --tasks genre,mood-theme,instrument
 uv run settag analyze "/path/to/music" --tasks genre,mood-theme,instrument
 ```
 
+The interactive app reads its default tasks from
+`~/.config/settag/config.toml`:
+
+```toml
+[analysis]
+tasks = ["genre", "mood-theme", "instrument"]
+```
+
+The config file is optional. `--tasks` overrides it for one TUI run:
+
+```sh
+uv run settag "/path/to/music" --tasks instrument
+uv run settag "/path/to/music" --tasks mood-theme,instrument
+uv run settag "/path/to/music" --tasks genre,mood-theme,instrument
+```
+
+Set `SETTAG_CONFIG` or pass `--config /path/to/config.toml` to use another
+config file. Task precedence is `--tasks`, then the config file, then the
+`genre` default.
+
 Models are downloaded once into `~/.cache/settag/models`. They are not bundled
 with this repository or its Python distributions. Downloads and installed
 files must match the SHA-256 digests pinned in SetTag's model catalogue before
@@ -64,10 +84,12 @@ open, the library looks like this:
 ```
 
 SetTag first scans existing metadata only. Tracks with no analysis, incomplete
-metadata, or a changed model/config are selected by default. Up-to-date tracks
-remain visible but unselected. Adjust the selection, then press `R` to load the
-model and analyze only the selected tracks visible in the current filter.
-Selections in other filtered views are not included.
+metadata for any configured task, or a changed task model/config are selected
+by default. Up-to-date tracks remain visible but unselected. The active task
+families are shown in the library context line. Adjust the selection, then
+press `R` to load MAEST, EffNet, or both and analyze only the selected tracks
+visible in the current filter. Selections in other filtered views are not
+included.
 
 Analysis runs serially in a background worker. The selected batch is fixed when
 the job starts, but the interface remains available for navigation, filtering,
@@ -468,7 +490,7 @@ run model inference. A real-audio smoke test requires downloaded models:
 ```sh
 uv run settag models status
 uv run settag models status --tasks genre,mood-theme,instrument
-uv run settag "/path/to/track.flac"
+uv run settag analyze "/path/to/track.flac" --tasks genre,mood-theme,instrument
 ```
 
 Architecture and safety contracts are documented in [DESIGN.md](DESIGN.md).

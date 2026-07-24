@@ -27,6 +27,9 @@ def test_tensorflow_startup_noise_is_filtered_but_other_stderr_survives(capfd) -
         b"2026-07-24 07:28:10.984456: W "
         b"external/local_xla/xla/tsl/platform/profile_utils/cpu_utils.cc:145] "
         b"Failed to get CPU frequency: 0 Hz\n"
+        b'W0000 00:00:1784910231.731010 25260253 op_level_cost_estimator.cc:743] '
+        b'Invalid device specifications for CPU: type: "CPU" model: "0" '
+        b"num_cores: 12\n"
         b"real native diagnostic\n"
     )
 

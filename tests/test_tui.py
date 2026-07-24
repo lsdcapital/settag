@@ -11,7 +11,7 @@ from mutagen.wave import WAVE
 from textual.widgets import Button, DataTable, ProgressBar, Static
 
 from settag.policy import Prediction
-from settag.tags import OWNED_DESCRIPTIONS, GenreState
+from settag.tags import OWNED_DESCRIPTIONS, GenreState, task_evidence_from_owned
 from settag.tui import ConfirmWriteScreen, GenreEditScreen, SetTagApp
 from settag.workflow import (
     AnalysisBatch,
@@ -35,6 +35,34 @@ class FakeAnalyzer:
         ]
 
 
+class FakeTaskAnalyzer:
+    backend_version = "test"
+    model_manifests = {
+        task: {
+            "schema": "settag.models/v1",
+            "id": f"model/{task}/v1",
+            "files": {},
+        }
+        for task in ("genre", "mood-theme", "instrument")
+    }
+
+    def analyze_tasks(self, path: Path) -> dict[str, list[Prediction]]:
+        return {
+            "genre": [
+                Prediction("Electronic---Progressive House", 0.664),
+                Prediction("Electronic---Techno", 0.269),
+            ],
+            "mood-theme": [
+                Prediction("energetic", 0.83),
+                Prediction("party", 0.72),
+            ],
+            "instrument": [
+                Prediction("synthesizer", 0.81),
+                Prediction("drummachine", 0.62),
+            ],
+        }
+
+
 def _silent_wav(path: Path) -> None:
     with wave.open(str(path), "wb") as output:
         output.setnchannels(1)
@@ -56,6 +84,20 @@ def _analysis_batch(
             analyzer=FakeAnalyzer(),  # type: ignore[arg-type]
             top=top,
             threshold=threshold,
+        )
+        planned.append(planned_write_for_track(track))
+    return AnalysisBatch(planned=tuple(planned), failures=())
+
+
+def _task_analysis_batch(paths: Sequence[Path]) -> AnalysisBatch:
+    planned = []
+    analyzer = FakeTaskAnalyzer()
+    for path in paths:
+        track = prepare_track(
+            path,
+            analyzer=analyzer,  # type: ignore[arg-type]
+            top=5,
+            threshold=0.10,
         )
         planned.append(planned_write_for_track(track))
     return AnalysisBatch(planned=tuple(planned), failures=())
@@ -185,6 +227,47 @@ def test_tui_reads_metadata_before_loading_model_and_analyzes_only_selection(
     assert WAVE(fresh).tags is None
     assert WAVE(stale).tags is None
     assert WAVE(current).tags is None
+
+
+def test_tui_analyzes_and_reviews_all_configured_tasks(tmp_path: Path) -> None:
+    path = tmp_path / "track.wav"
+    _silent_wav(path)
+    app = SetTagApp(
+        source=path,
+        initial_metadata=MetadataBatch(
+            tracks=(_metadata_track(path),),
+            failures=(),
+        ),
+        analysis_loader=lambda paths, _progress, _cancel: _task_analysis_batch(paths),
+        analysis_tasks=("genre", "mood-theme", "instrument"),
+    )
+
+    async def exercise() -> None:
+        async with app.run_test(size=(150, 48)) as pilot:
+            await pilot.pause()
+            context = app.query_one("#context", Static)
+            assert "Tasks: Genre, Mood/theme, Instrument" in str(context.render())
+
+            await pilot.press("r")
+            for _ in range(30):
+                await pilot.pause(0.05)
+                if app.phase == "review":
+                    break
+
+            assert app.phase == "review"
+            plan = app.entries[0].plan
+            assert plan is not None
+            evidence = task_evidence_from_owned(plan.desired)
+            assert set(evidence) == {"genre", "mood-theme", "instrument"}
+
+            details = str(app.query_one("#inspector", Static).render())
+            assert "Review candidates by task" in details
+            assert "Electronic---Progressive House" in details
+            assert "energetic" in details
+            assert "synthesizer" in details
+            assert "6 ranked scores across 3 tasks with provenance" in details
+
+    asyncio.run(exercise())
 
 
 def test_a_toggles_all_visible_tracks_and_n_is_unbound(tmp_path: Path) -> None:

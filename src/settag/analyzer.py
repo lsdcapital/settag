@@ -43,6 +43,10 @@ _TENSORFLOW_STARTUP_NOISE = (
         rb"\d{4}-\d{2}-\d{2} [^\r\n]*profile_utils/cpu_utils\.cc:\d+\] "
         rb"Failed to get CPU frequency: 0 Hz\r?\n"
     ),
+    re.compile(
+        rb"W\d{4} [^\r\n]*op_level_cost_estimator\.cc:\d+\] "
+        rb"Invalid device specifications for CPU:[^\r\n]*\r?\n"
+    ),
 )
 
 
