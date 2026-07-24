@@ -9,7 +9,7 @@ from typing import Any
 import mutagen
 from mutagen.aiff import AIFF
 from mutagen.flac import FLAC
-from mutagen.id3 import ID3, TXXX
+from mutagen.id3 import ID3, TCON, TXXX
 from mutagen.mp3 import MP3
 from mutagen.mp4 import MP4, AtomDataType, MP4FreeForm
 from mutagen.wave import WAVE
@@ -117,15 +117,41 @@ class OwnedTagStore(ABC):
         )
         return TagPlan(format=self.format_name, changes=changes)
 
-    def apply(self, desired: OwnedValues) -> TagPlan:
+    def apply(
+        self,
+        desired: OwnedValues,
+        *,
+        standard_genres: tuple[str, ...] | None = None,
+    ) -> TagPlan:
         plan = self.plan(desired)
-        if not plan.changes:
+        standard_change = (
+            self.plan_standard_genres(standard_genres)
+            if standard_genres is not None
+            else None
+        )
+        if not plan.changes and standard_change is None:
             return plan
 
         for description, values in desired.items():
             self.write_value(description, values)
+        if standard_genres is not None:
+            self.write_standard_genres(list(standard_genres))
         self.audio.save()
         return plan
+
+    def plan_standard_genres(
+        self,
+        desired: tuple[str, ...],
+    ) -> TagChange | None:
+        before = self.read_standard_genres()
+        after = list(desired)
+        if before == after:
+            return None
+        return TagChange(
+            field=self.standard_genre_field_name(),
+            before=before or None,
+            after=after or None,
+        )
 
     def ensure_tags(self) -> Any:
         if self.audio.tags is None:
@@ -146,6 +172,14 @@ class OwnedTagStore(ABC):
 
     @abstractmethod
     def read_standard_genres(self) -> list[str]:
+        pass
+
+    @abstractmethod
+    def standard_genre_field_name(self) -> str:
+        pass
+
+    @abstractmethod
+    def write_standard_genres(self, values: list[str]) -> None:
         pass
 
     @abstractmethod
@@ -170,6 +204,17 @@ class Id3OwnedTagStore(OwnedTagStore):
         if not isinstance(tags, ID3):
             raise UnsupportedTagFormatError(f"Expected ID3 metadata in {self.path}")
         return [str(value) for frame in tags.getall("TCON") for value in frame.genres]
+
+    def standard_genre_field_name(self) -> str:
+        return "TCON"
+
+    def write_standard_genres(self, values: list[str]) -> None:
+        tags = self.ensure_tags()
+        if not isinstance(tags, ID3):
+            raise UnsupportedTagFormatError(f"Expected ID3 metadata in {self.path}")
+        tags.delall("TCON")
+        if values:
+            tags.add(TCON(encoding=ENCODING_UTF8, text=values))
 
     def read_value(self, description: str) -> list[str] | None:
         tags = self.audio.tags
@@ -210,6 +255,17 @@ class VorbisOwnedTagStore(OwnedTagStore):
             for value in values
         ]
 
+    def standard_genre_field_name(self) -> str:
+        return "GENRE"
+
+    def write_standard_genres(self, values: list[str]) -> None:
+        tags = self.ensure_tags()
+        for key in list(tags):
+            if str(key).casefold() == "genre":
+                del tags[key]
+        if values:
+            tags["GENRE"] = values
+
     def read_value(self, description: str) -> list[str] | None:
         tags = self.audio.tags
         if tags is None or description not in tags:
@@ -238,6 +294,16 @@ class Mp4OwnedTagStore(OwnedTagStore):
         if tags is None:
             return []
         return [str(value) for value in tags.get("\xa9gen", ())]
+
+    def standard_genre_field_name(self) -> str:
+        return "\xa9gen"
+
+    def write_standard_genres(self, values: list[str]) -> None:
+        tags = self.ensure_tags()
+        if "\xa9gen" in tags:
+            del tags["\xa9gen"]
+        if values:
+            tags["\xa9gen"] = values
 
     def read_value(self, description: str) -> list[str] | None:
         tags = self.audio.tags
@@ -292,6 +358,10 @@ def plan_owned_tags(path: Path, desired: OwnedValues) -> TagPlan:
     return owned_tag_store(path).plan(desired)
 
 
+def plan_standard_genres(path: Path, desired: tuple[str, ...]) -> TagChange | None:
+    return owned_tag_store(path).plan_standard_genres(desired)
+
+
 def read_genre_state(path: Path) -> GenreState:
     return owned_tag_store(path).genre_state()
 
@@ -308,21 +378,54 @@ def apply_owned_tags(
     expected_plan: TagPlan | None = None,
     expected_standard: tuple[str, ...] | None = None,
 ) -> TagPlan:
+    return apply_metadata_tags(
+        path,
+        desired,
+        expected_plan=expected_plan,
+        expected_standard=expected_standard,
+    )
+
+
+def apply_metadata_tags(
+    path: Path,
+    desired: OwnedValues,
+    *,
+    standard_genres: tuple[str, ...] | None = None,
+    expected_plan: TagPlan | None = None,
+    expected_standard: tuple[str, ...] | None = None,
+    expected_standard_change: TagChange | None = None,
+) -> TagPlan:
+    """Apply one verified metadata transaction to a single file.
+
+    SetTag-owned evidence and an explicitly staged conventional genre edit are
+    written through the same parsed metadata container and saved once.
+    """
     store = owned_tag_store(path)
     current_plan = store.plan(desired)
+    current_standard = store.genre_state().standard
+    current_standard_change = (
+        store.plan_standard_genres(standard_genres)
+        if standard_genres is not None
+        else None
+    )
     if expected_plan is not None and current_plan != expected_plan:
         raise TagStateChangedError(f"Tag state changed after planning and before writing {path}")
-    if expected_standard is not None and store.genre_state().standard != expected_standard:
+    if expected_standard is not None and current_standard != expected_standard:
         raise TagStateChangedError(
             f"File genre tag changed after planning and before writing {path}"
         )
+    if current_standard_change != expected_standard_change:
+        raise TagStateChangedError(
+            f"Staged file genre change changed after planning and before writing {path}"
+        )
 
-    plan = store.apply(desired)
-    if not plan.changes:
-        return plan
-
+    plan = store.apply(desired, standard_genres=standard_genres)
     remaining = owned_tag_store(path).plan(desired)
     if remaining.changes:
         fields = ", ".join(change.field for change in remaining.changes)
         raise TagVerificationError(f"SetTag metadata verification failed for {path}: {fields}")
+    if standard_genres is not None:
+        after = owned_tag_store(path).genre_state().standard
+        if after != standard_genres:
+            raise TagVerificationError(f"File genre tag verification failed for {path}")
     return plan

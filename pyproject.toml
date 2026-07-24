@@ -8,6 +8,7 @@ version = "0.1.0"
 description = "A safe, analysis-first Essentia genre tagger for DJ libraries"
 readme = "README.md"
 license = "AGPL-3.0-only"
+license-files = ["LICENSE", "THIRD_PARTY_NOTICES.md"]
 requires-python = ">=3.10,<3.15"
 authors = [
   { name = "LSD Capital" },
@@ -17,7 +18,7 @@ dependencies = [
   "essentia-tensorflow>=2.1b6.dev1438; python_version >= '3.14'",
   "mutagen>=1.47,<2",
   "numpy>=1.26,<3",
-  "rich>=14,<15",
+  "textual>=8,<9",
 ]
 
 [project.scripts]

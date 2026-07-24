@@ -3,282 +3,216 @@
 ## Product boundary
 
 ```text
-audio files → settag analysis/change plan → optional format-native SetTag metadata
-                                                    ↓
-                                           any metadata consumer
+audio files → analysis → staged plan → verified native metadata write
+                   │            │
+                   ├─ Textual UI┤
+                   └─ plain CLI ┘
 ```
 
-`settag` is independent from SetPath. SetPath should remain a read-only
-metadata consumer and should not install, invoke, bundle, or depend on this
-tool.
+SetTag is independent from SetPath. SetPath may consume the resulting metadata
+but should not install, invoke, bundle, or write through SetTag.
+
+## One workflow, two presentations
+
+`src/settag/workflow.py` owns the reusable application operations:
+
+- prepare a track and its evidence
+- build a batch while isolating analysis errors
+- preflight saved or in-memory plans
+- apply and verify prepared writes
+- persist compact plans
+
+The Textual app and plain CLI are presentation and input adapters over those
+operations. Metadata policy does not live in either UI.
+
+When the first argument is a file or directory, it is normalized to
+`run PATH`.
+
+- If stdin and stdout are TTYs, `run` opens `SetTagApp`.
+- If either is not a TTY, `run` is a plain dry run.
+- `run --no-tui` explicitly selects the plain dry run.
+- Named `analyze`, `inspect`, `preview`, and `apply` commands are always plain.
+
+There is no second interactive menu or per-track prompt workflow. Textual is
+the single interactive product.
+
+## Interactive state model
+
+The app has three distinct layers of state:
+
+1. immutable ranked model evidence;
+2. track inclusion in the pending batch;
+3. an optional explicit standard-genre target for each track.
+
+Including a track allows its SetTag evidence changes to be written. Inclusion
+alone never stages a standard genre edit. `G` stages the primary model child
+label directly, and `E`/`Enter` stages exact user input. Both edits are shown
+as `before → after`.
+
+The app keeps the track table primary and a persistent inspector secondary.
+All write-affecting shortcuts are visible in the footer:
+
+```text
+Space include · A all · N none · G suggestion · E edit · S save · W write · Q quit
+```
+
+`W` performs preflight, opens one confirmation screen, performs preflight
+again, then writes and verifies. Analysis errors disable batch writing.
 
 ## Safety invariants
 
-1. Analysis is the default; writing requires `--write`, explicit confirmation
-   in the guided or per-track review workflow, or confirmation of a fully
-   verified `settag apply` plan.
-2. Only formats with an approved SetTag metadata adapter are accepted.
-3. Only fields in SetTag's native namespace are changed.
-4. The conventional file genre tag—ID3 `TCON`, Vorbis `GENRE`, or MP4
-   `©gen`—is never changed.
-5. Predictions below the configured threshold are never selected merely to
-   ensure a non-empty result.
-6. Existing multi-value fields, artwork, and logical metadata owned by other
-   software are preserved.
-7. Every result states the model files, their SHA-256 digests, the analysis
-   time, and a hash of the selection configuration.
-8. Every attempted input produces either an analysis record or an error
-   record; complete records are persisted with `--output` or exposed through
-   debug logging.
-9. A completed metadata write is reopened and verified against every
-   SetTag-owned value; the file genre tag is also confirmed unchanged.
+1. Analysis and the default plain mode never write.
+2. Interactive writes require `W` plus a batch confirmation.
+3. Plain writes require `analyze --write`, confirmed `apply`, or `apply --yes`.
+4. `apply --yes` bypasses only confirmation, never validation.
+5. Only formats with an approved native metadata adapter are writable.
+6. Ranked evidence is immutable in review and always written to SetTag-owned
+   fields.
+7. A conventional genre changes only when a separate target is explicitly
+   staged for that track.
+8. Selecting all tracks never creates standard-genre targets.
+9. Predictions below the threshold are never selected merely to force a
+   result.
+10. Artwork, titles, artists, comments, and metadata owned by other tools are
+    preserved.
+11. Every completed write is reopened and verified against all SetTag values
+    and the expected conventional genre.
+12. Every input produces an analysis or error record when an output stream is
+    requested.
 
 ## Pipeline
 
 ```text
-scan → fingerprint → infer → select → plan → optionally review/apply → verify
-                                                                         ↓
-                                                               summarize/JSONL
+scan → fingerprint → infer → select → plan → stage → preflight → confirm
+                                                       ↑           │
+                                                       └───────────┘
+                                                                   ↓
+                                                            write → verify
 ```
 
-The model is loaded once per CLI invocation and reused for all tracks.
-Inference failures are isolated to the affected record so a directory scan can
-continue. A run exits non-zero when any track fails.
+The model is constructed once per invocation and reused across tracks.
+Failures are isolated during analysis. A run returns non-zero if any input
+fails.
 
-### Guided default workflow
+Preflight verifies for every included track:
 
-When the first argument is a file or directory rather than a named subcommand,
-the CLI treats it as `run PATH`. This is the normal human workflow:
+- the source exists and its SHA-256 matches
+- the observed conventional genre still matches
+- the parsed metadata adapter still matches
+- reconstructed SetTag-owned changes match the plan
+- any staged conventional genre change matches the plan
 
-```text
-scan → analyze with progress → summarize → view / write / save / quit
-```
+Preflight is all-or-nothing. Native files cannot form one transaction across a
+directory, so a failure after writes begin stops immediately and reports the
+number already completed.
 
-Rich provides adaptive color, tables, and progress display; `argparse` remains
-the command parser. Rich is a presentation dependency only and does not
-participate in analysis, plans, metadata adapters, or safety validation.
+## Metadata adapters
 
-The guided menu defaults to `quit`. `write` performs the same complete
-preflight used by saved plans, asks for explicit confirmation, runs the
-preflight again, then uses the shared verified write loop. `save` writes a
-timestamped `settag.plan/v1` JSONL file in the current directory and returns to
-the menu. Analysis errors disable writing but may still be viewed or saved.
+| Adapter | Files | SetTag evidence | Standard genre |
+|---|---|---|---|
+| `id3` | MP3, AIFF, WAV | `TXXX:SETTAG_*` | `TCON` |
+| `vorbis-comments` | FLAC | `SETTAG_*` comments | `GENRE` |
+| `mp4-freeform` | M4A, M4B, MP4 | `----:com.lsdcapital.settag:*` | `©gen` |
 
-If stdin is not a TTY, the guided command is a dry run: it renders a plain
-summary, does not prompt, and never writes. Rich disables live progress and
-terminal styling when output is not a terminal; `NO_COLOR` is also honored.
+A combined write loads one native container, validates both planned layers,
+updates SetTag fields plus the optional conventional genre, saves once, and
+reopens the file for verification.
 
-`--review` and `--write` are mutually exclusive. Review mode prompts only when
-the plan contains changes: `y` applies the displayed plan, `n` records a
-decline and continues, and `q` records a cancellation and ends the run. It
-requires a TTY. `Ctrl-C` at the prompt records an interruption, writes nothing
-for the current track, and exits with status 130. Human editing of predictions
-is deliberately excluded because SetTag fields represent model evidence rather
-than curated genre metadata.
+The scanner accepts `.mp3`, `.flac`, `.m4a`, `.m4b`, `.mp4`, `.aif`, `.aiff`,
+`.wav`, and `.wave`. A recognized extension whose parsed metadata container is
+unsupported remains unwritable.
 
-When a track has no file genre tag, review mode may identify the highest-ranked
-selected Discogs519 label as a display-only candidate. The write boundary does
-not change: SetTag never copies that candidate into the file genre tag.
-Canonical taxonomy mapping, authority decisions, and human acceptance belong
-to a downstream consumer such as SetPath.
+## SetTag evidence contract
 
-### Batch plan and apply
+The owned logical fields are:
 
-`analyze --plan PATH` saves a compact, review-oriented JSONL artifact without
-writing metadata. A successful `settag.plan/v1` record contains:
+- `SETTAG_GENRE`: selected Discogs519 labels in ranked order
+- `SETTAG_GENRE_SCORES`: compact JSON with the same labels, order, and scores
+- `SETTAG_VERSION`: SetTag version
+- `SETTAG_MODEL`: model-pair identifier
+- `SETTAG_ANALYZED_AT`: UTC analysis time
+- `SETTAG_CONFIG_SHA256`: selection-configuration fingerprint
 
-- the absolute audio path and pre-analysis SHA-256, size, and modification time
-- the existing file genre tag
-- only the ranked labels and scores selected by the configured threshold
-- the metadata adapter and analysis provenance
-- concise human-readable descriptions of the proposed SetTag changes
+The full 519-label prediction vector is retained in `settag.analysis/v1`
+output and debug logging. Only selected labels and scores are embedded in
+audio metadata.
 
-The compact plan omits the other model activations and native tag payload.
-`--output` remains the complete `settag.analysis/v1` audit stream and may be
-used alongside `--plan` when the paths differ.
+When reanalysis selects no label, stale `SETTAG_GENRE` and
+`SETTAG_GENRE_SCORES` values are removed. Provenance fields are still updated.
 
-`preview PLAN` renders every saved track as a human-readable review screen,
-followed by an aggregate summary and the exact apply command. It does not
-inspect or modify the audio files. JSONL remains an implementation and
-interchange format; users do not need an external JSON formatter for the
-normal workflow.
+Scores are mean sigmoid activations across audio patches. They are suitable
+for ranking and thresholding but are not demonstrated calibrated
+probabilities.
 
-Every failed track produces a `settag.plan-error/v1` record. `apply` rejects
-the entire file if any such record is present; a partial analysis is not an
-applicable plan.
+## Complete analysis record
 
-`apply` validates the complete plan before asking for one batch confirmation.
-For every track it verifies the source SHA-256, file genre tag, detected
-metadata format, and reconstructed change descriptions. Desired native values
-are deterministically reconstructed from the reviewed selected evidence and
-provenance; Essentia is not loaded or rerun.
+`settag.analysis/v1` records the source fingerprint, analysis time, backend,
+exact model files and SHA-256 values, selection configuration, full
+predictions, selected evidence, native SetTag plan, and write result.
 
-After confirmation, the complete preflight runs again. The source hash is also
-checked immediately before each individual write, and every completed write is
-reopened and verified. `--yes` suppresses only the prompt, not validation.
+The immediate `analyze --write` path remains evidence-only. It does not stage
+or write a conventional genre.
 
-Preflight is all-or-nothing, but the format writers cannot provide a
-transaction across multiple files. If a source changes or a write fails after
-the loop begins, processing stops immediately and reports the number of
-earlier files already written.
+Failed records use `settag.error/v1` and never claim analysis or writing
+succeeded.
 
-Normal `INFO` logging contains a compact per-track summary. The complete record
-is written as JSONL when `--output` is supplied and is also logged when
-`LOG_LEVEL=DEBUG`. JSONL is an audit/data format rather than routine console
-noise.
+## Compact plan record
 
-Essentia decoding and metadata writing are separate capabilities. The scanner
-currently admits MP3, FLAC, M4A/M4B/MP4, AIFF, and WAV. After analysis, Mutagen
-detects the actual metadata container and selects an approved adapter. A file
-whose extension is recognized but whose metadata container is not cannot be
-written.
-
-## JSONL record
-
-Successful records use `schema: "settag.analysis/v1"`:
+Current compact plans use `settag.plan/v2`:
 
 ```json
 {
-  "schema": "settag.analysis/v1",
-  "source": {
-    "path": "/absolute/path/track.mp3",
-    "size": 12345678,
-    "mtime_ns": 1750000000000000000,
-    "sha256": "..."
-  },
-  "analyzed_at": "2026-07-23T12:34:56Z",
-  "analyzer": {
-    "name": "settag",
-    "version": "0.1.0",
-    "backend": "essentia-tensorflow",
-    "backend_version": "..."
-  },
-  "model": {
-    "id": "essentia/genre-discogs519-maest/v1",
-    "files": {
-      "embedding": {"name": "...pb", "sha256": "..."},
-      "classifier": {"name": "...pb", "sha256": "..."},
-      "classifier_metadata": {"name": "...json", "sha256": "..."}
-    }
-  },
-  "config": {
-    "top": 5,
-    "threshold": 0.1,
-    "sha256": "..."
-  },
-  "predictions": [
-    {"label": "Electronic---Deep House", "score": 0.72}
-  ],
-  "selected": [
-    {"label": "Electronic---Deep House", "score": 0.72}
-  ],
-  "tag_plan": {
-    "format": "id3",
-    "changes": [
-      {
-        "field": "TXXX:SETTAG_GENRE",
-        "before": null,
-        "after": ["Electronic---Deep House"]
-      }
-    ]
-  },
-  "write": {
-    "requested": false,
-    "status": "not_requested"
-  }
-}
-```
-
-Failed records use `schema: "settag.error/v1"` and contain the source path,
-error type, and message. They never claim that analysis or writing succeeded.
-Interactive review additionally uses `write.status` values `declined` and
-`cancelled` when no write was approved, or `interrupted` when the prompt
-received `Ctrl-C`.
-
-Paths are absolute because records may be imported from a different working
-directory. Each recorded score is the mean class-wise sigmoid activation
-across the analyzed audio patches. It is a model confidence score suitable for
-ranking and thresholding, not a demonstrated calibrated probability.
-
-`source.sha256` fingerprints the file before any requested write. Written
-records also contain `write.result_sha256`, which fingerprints the resulting
-file after the native metadata update and verification.
-
-## Batch plan JSONL
-
-Successful review-plan records use `schema: "settag.plan/v1"`:
-
-```json
-{
-  "schema": "settag.plan/v1",
+  "schema": "settag.plan/v2",
   "path": "/absolute/path/track.mp3",
   "source": {
     "sha256": "...",
     "size": 12345678,
     "mtime_ns": 1750000000000000000
   },
-  "file_genre": ["House"],
+  "file_genre": [],
+  "target_file_genre": ["Progressive House"],
   "selected": [
-    {"label": "Electronic---House", "score": 0.72}
+    {
+      "label": "Electronic---Progressive House",
+      "score": 0.664
+    }
   ],
   "metadata_format": "id3",
   "provenance": {
     "settag_version": "0.1.0",
     "model": "essentia/genre-discogs519-maest/v1",
-    "analyzed_at": "2026-07-23T12:34:56Z",
+    "analyzed_at": "2026-07-24T12:34:56Z",
     "config_sha256": "..."
   },
-  "changes": [
-    "Genre labels: 0 → 1",
-    "Ranked score data: add"
-  ]
+  "changes": {
+    "settag": [
+      "Genre labels: 0 → 1",
+      "Ranked score data: add"
+    ],
+    "file_genre": "File genre: None → Progressive House"
+  }
 }
 ```
 
-Failed tracks use `schema: "settag.plan-error/v1"` with the absolute path and
-error message. Plan records are one physical line each; pretty-printing is a
-presentation concern and does not change the JSONL contract.
+`file_genre` is the observed safety precondition.
+`target_file_genre` is either `null` (preserve it), an array of desired values,
+or an empty array (explicitly clear it). SetTag and conventional changes are
+serialized separately.
 
-## Tag contract
+`analyze --plan` writes v2 with a null target. The Textual app may save an
+explicit target. `load_plan` remains compatible with evidence-only
+`settag.plan/v1` files.
 
-`SETTAG_GENRE` is a multi-value list containing only selected Discogs519
-labels. `SETTAG_GENRE_SCORES` is compact JSON containing the selected label
-and activation pairs in exactly the same membership and order.
-`SETTAG_VERSION` identifies the SetTag software version.
-`SETTAG_MODEL` identifies the analysis model pair.
-`SETTAG_ANALYZED_AT` is UTC. `SETTAG_CONFIG_SHA256` identifies the selection
-configuration.
-
-The native representations are:
-
-| Adapter | Files | Representation |
-|---|---|---|
-| `id3` | MP3, AIFF, WAV | `TXXX:SETTAG_*` |
-| `vorbis-comments` | FLAC | `SETTAG_*` comments |
-| `mp4-freeform` | M4A, M4B, MP4 | `----:com.lsdcapital.settag:*` |
-
-For MP4, the logical `SETTAG_` prefix is represented by the
-`com.lsdcapital.settag` freeform namespace, so `SETTAG_MODEL` becomes
-`----:com.lsdcapital.settag:MODEL`.
-
-The full prediction ranking remains in JSONL and debug logging rather than
-being embedded in the audio file or printed during a normal run.
-
-If reanalysis selects no genres, an existing `SETTAG_GENRE` and
-`SETTAG_GENRE_SCORES` are removed. Provenance fields are still updated. This
-prevents stale settag output from masquerading as a current result while
-leaving all non-settag metadata alone.
+Failed tracks use `settag.plan-error/v1`. A file containing any error record
+cannot be applied.
 
 ## Deferred work
 
-- analysis cache and resume support
-- Ogg Vorbis and Opus comments
+- analysis cache and resume
+- concurrent decoding with controlled model lifecycle
+- Ogg Vorbis and Opus
 - APEv2 formats such as WavPack, Monkey's Audio, and Musepack
-- ASF/WMA attributes
-- analysis-only support for decodable but non-writable containers
+- ASF/WMA
+- analysis-only support for decodable but unwritable containers
 - mood/theme models
-- explicit opt-in support for filling an empty file genre tag
-- concurrency and worker model lifecycle
-
-These should be added only after the format-native genre contract is exercised
-on a real DJ library.
+- curated taxonomy search and aliases beyond direct user input

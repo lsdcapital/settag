@@ -2,14 +2,15 @@ from __future__ import annotations
 
 import json
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
 from settag.policy import Prediction
 from settag.tags import GenreState, OwnedValues, TagChange, TagPlan
 
-PLAN_SCHEMA = "settag.plan/v1"
+PLAN_SCHEMA = "settag.plan/v2"
+LEGACY_PLAN_SCHEMA = "settag.plan/v1"
 PLAN_ERROR_SCHEMA = "settag.plan-error/v1"
 
 
@@ -27,7 +28,38 @@ class PlannedWrite:
     selected: tuple[Prediction, ...]
     desired: OwnedValues
     metadata_format: str
-    readable_changes: tuple[str, ...]
+    owned_changes: tuple[str, ...]
+    target_file_genre: tuple[str, ...] | None = None
+
+    @property
+    def readable_changes(self) -> tuple[str, ...]:
+        standard_change = self.standard_genre_change
+        if standard_change is None:
+            return self.owned_changes
+        return (*self.owned_changes, friendly_standard_genre_change(standard_change))
+
+    @property
+    def standard_genre_change(self) -> TagChange | None:
+        if self.target_file_genre is None or self.target_file_genre == self.file_genre:
+            return None
+        return TagChange(
+            field=_standard_genre_field(self.metadata_format),
+            before=list(self.file_genre) or None,
+            after=list(self.target_file_genre) or None,
+        )
+
+
+def stage_file_genre(
+    item: PlannedWrite,
+    genres: tuple[str, ...] | None,
+) -> PlannedWrite:
+    """Return a plan with an explicit conventional genre edit staged.
+
+    ``None`` preserves the original file genre. An empty tuple explicitly
+    removes it. Staging the original value collapses back to no edit.
+    """
+    target = None if genres is None or genres == item.file_genre else genres
+    return replace(item, target_file_genre=target)
 
 
 def plan_record(
@@ -41,7 +73,17 @@ def plan_record(
     analyzed_at: str,
     settag_version: str,
     config_sha256: str,
+    target_file_genre: tuple[str, ...] | None = None,
 ) -> dict[str, object]:
+    standard_change = (
+        TagChange(
+            field=_standard_genre_field(tag_plan.format),
+            before=list(genre_state.standard) or None,
+            after=list(target_file_genre) or None,
+        )
+        if target_file_genre is not None and target_file_genre != genre_state.standard
+        else None
+    )
     return {
         "schema": PLAN_SCHEMA,
         "path": source["path"],
@@ -51,6 +93,9 @@ def plan_record(
             "mtime_ns": source["mtime_ns"],
         },
         "file_genre": list(genre_state.standard),
+        "target_file_genre": (
+            list(target_file_genre) if target_file_genre is not None else None
+        ),
         "selected": [item.to_dict() for item in selected],
         "metadata_format": tag_plan.format,
         "provenance": {
@@ -59,7 +104,52 @@ def plan_record(
             "analyzed_at": analyzed_at,
             "config_sha256": config_sha256,
         },
-        "changes": readable_changes,
+        "changes": {
+            "settag": readable_changes,
+            "file_genre": (
+                friendly_standard_genre_change(standard_change)
+                if standard_change is not None
+                else None
+            ),
+        },
+    }
+
+
+def planned_write_record(item: PlannedWrite) -> dict[str, object]:
+    model = item.desired["SETTAG_MODEL"]
+    analyzed_at = item.desired["SETTAG_ANALYZED_AT"]
+    version = item.desired["SETTAG_VERSION"]
+    config = item.desired["SETTAG_CONFIG_SHA256"]
+    return {
+        "schema": PLAN_SCHEMA,
+        "path": str(item.path),
+        "source": {
+            "sha256": item.source_sha256,
+            "size": item.source_size,
+            "mtime_ns": item.source_mtime_ns,
+        },
+        "file_genre": list(item.file_genre),
+        "target_file_genre": (
+            list(item.target_file_genre)
+            if item.target_file_genre is not None
+            else None
+        ),
+        "selected": [prediction.to_dict() for prediction in item.selected],
+        "metadata_format": item.metadata_format,
+        "provenance": {
+            "settag_version": version[0] if version else "unknown",
+            "model": model[0] if model else "unknown",
+            "analyzed_at": analyzed_at[0] if analyzed_at else "unknown",
+            "config_sha256": config[0] if config else "unknown",
+        },
+        "changes": {
+            "settag": list(item.owned_changes),
+            "file_genre": (
+                friendly_standard_genre_change(item.standard_genre_change)
+                if item.standard_genre_change is not None
+                else None
+            ),
+        },
     }
 
 
@@ -92,11 +182,17 @@ def load_plan(path: Path) -> list[PlannedWrite]:
         if schema == PLAN_ERROR_SCHEMA:
             message = _string(record.get("error"), f"{resolved}:{line_number}.error")
             raise PlanError(f"{resolved}:{line_number}: plan contains an analysis error: {message}")
-        if schema != PLAN_SCHEMA:
+        if schema not in {PLAN_SCHEMA, LEGACY_PLAN_SCHEMA}:
             raise PlanError(
-                f"{resolved}:{line_number}: unsupported schema {schema!r}; expected {PLAN_SCHEMA!r}"
+                f"{resolved}:{line_number}: unsupported schema {schema!r}; "
+                f"expected {PLAN_SCHEMA!r}"
             )
-        item = _planned_write(record, resolved=resolved, line_number=line_number)
+        item = _planned_write(
+            record,
+            resolved=resolved,
+            line_number=line_number,
+            schema=schema,
+        )
         if item.path in seen_paths:
             raise PlanError(f"{resolved}:{line_number}: duplicate path {item.path}")
         seen_paths.add(item.path)
@@ -112,6 +208,7 @@ def _planned_write(
     *,
     resolved: Path,
     line_number: int,
+    schema: str,
 ) -> PlannedWrite:
     location = f"{resolved}:{line_number}"
     file_path = Path(_string(record.get("path"), f"{location}.path"))
@@ -129,6 +226,16 @@ def _planned_write(
     source_mtime_ns = _non_negative_int(source.get("mtime_ns"), f"{location}.source.mtime_ns")
 
     file_genre = tuple(_string_list(record.get("file_genre"), f"{location}.file_genre"))
+    target_file_genre: tuple[str, ...] | None
+    if schema == LEGACY_PLAN_SCHEMA:
+        target_file_genre = None
+    else:
+        target_value = record.get("target_file_genre")
+        target_file_genre = (
+            None
+            if target_value is None
+            else tuple(_string_list(target_value, f"{location}.target_file_genre"))
+        )
     selected = tuple(_predictions(record.get("selected"), f"{location}.selected"))
     metadata_format = _string(
         record.get("metadata_format"),
@@ -148,7 +255,21 @@ def _planned_write(
         provenance.get("config_sha256"),
         f"{location}.provenance.config_sha256",
     )
-    readable_changes = tuple(_string_list(record.get("changes"), f"{location}.changes"))
+    changes_value = record.get("changes")
+    if schema == LEGACY_PLAN_SCHEMA:
+        owned_changes = tuple(_string_list(changes_value, f"{location}.changes"))
+        recorded_standard_change = None
+    else:
+        changes = _mapping(changes_value, f"{location}.changes")
+        owned_changes = tuple(
+            _string_list(changes.get("settag"), f"{location}.changes.settag")
+        )
+        recorded_standard_change = changes.get("file_genre")
+        if recorded_standard_change is not None:
+            recorded_standard_change = _string(
+                recorded_standard_change,
+                f"{location}.changes.file_genre",
+            )
     genres = [item.label for item in selected] or None
     scores = (
         [
@@ -170,7 +291,7 @@ def _planned_write(
         "SETTAG_CONFIG_SHA256": [config_sha256],
     }
 
-    return PlannedWrite(
+    planned = PlannedWrite(
         path=file_path,
         source_sha256=source_sha256,
         source_size=source_size,
@@ -179,8 +300,20 @@ def _planned_write(
         selected=selected,
         desired=desired,
         metadata_format=metadata_format,
-        readable_changes=readable_changes,
+        owned_changes=owned_changes,
+        target_file_genre=target_file_genre,
     )
+    expected_standard_change = planned.standard_genre_change
+    expected_description = (
+        friendly_standard_genre_change(expected_standard_change)
+        if expected_standard_change is not None
+        else None
+    )
+    if recorded_standard_change != expected_description:
+        raise PlanError(
+            f"{location}.changes.file_genre: does not match the staged file genre"
+        )
+    return planned
 
 
 def _predictions(value: object, location: str) -> list[Prediction]:
@@ -218,6 +351,29 @@ def friendly_change(change: TagChange) -> str:
     }
     label = labels.get(logical, logical)
     return f"{label}: {_friendly_values(change.before)} → {_friendly_values(change.after)}"
+
+
+def friendly_standard_genre_change(change: TagChange) -> str:
+    return (
+        f"File genre: {_friendly_genres(change.before)} "
+        f"→ {_friendly_genres(change.after)}"
+    )
+
+
+def _friendly_genres(values: list[str] | None) -> str:
+    return ", ".join(values) if values else "None"
+
+
+def _standard_genre_field(metadata_format: str) -> str:
+    fields = {
+        "id3": "TCON",
+        "vorbis-comments": "GENRE",
+        "mp4-freeform": "\xa9gen",
+    }
+    try:
+        return fields[metadata_format]
+    except KeyError as error:
+        raise PlanError(f"Unsupported metadata format: {metadata_format}") from error
 
 
 def _logical_field(native_field: str) -> str:

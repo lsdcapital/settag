@@ -19,9 +19,11 @@ from settag.tags import (
     TagStateChangedError,
     UnsupportedTagFormatError,
     VorbisOwnedTagStore,
+    apply_metadata_tags,
     apply_owned_tags,
     build_owned_values,
     plan_owned_tags,
+    plan_standard_genres,
     read_genre_state,
 )
 
@@ -191,6 +193,67 @@ def test_id3_write_preserves_standard_and_unowned_tags(tmp_path: Path) -> None:
     assert tags["TXXX:SETTAG_GENRE"].text == ["Electronic---Deep House"]
     assert tags["TXXX:SETTAG_VERSION"].text == [__version__]
     assert tags["TXXX:SETTAG_MODEL"].text == ["model/v1"]
+
+
+def test_explicit_id3_genre_edit_is_planned_written_and_verified(tmp_path: Path) -> None:
+    path = tmp_path / "track.wav"
+    _tagged_wav(path)
+    desired = _desired()
+    owned_plan = plan_owned_tags(path, desired)
+    standard_plan = plan_standard_genres(path, ("Deep House",))
+
+    applied = apply_metadata_tags(
+        path,
+        desired,
+        standard_genres=("Deep House",),
+        expected_plan=owned_plan,
+        expected_standard=("Existing genre",),
+        expected_standard_change=standard_plan,
+    )
+    tags = WAVE(path).tags
+
+    assert applied == owned_plan
+    assert read_genre_state(path) == GenreState(
+        standard=("Deep House",),
+        settag=("Electronic---Deep House",),
+    )
+    assert standard_plan is not None
+    assert standard_plan.field == "TCON"
+    assert tags is not None
+    assert tags["TIT2"].text == ["Original title"]
+    assert tags["TXXX:OTHER_TOOL"].text == ["keep me"]
+    assert tags.getall("APIC:")[0].data == b"original artwork"
+
+
+@pytest.mark.parametrize(
+    ("fixture", "expected_field"),
+    [
+        ("tagged.flac", "GENRE"),
+        ("tagged.m4a", "\xa9gen"),
+    ],
+)
+def test_explicit_genre_edit_uses_the_native_container_field(
+    tmp_path: Path,
+    fixture: str,
+    expected_field: str,
+) -> None:
+    path = _copy_fixture(fixture, tmp_path)
+    desired = _desired()
+    owned_plan = plan_owned_tags(path, desired)
+    standard_plan = plan_standard_genres(path, ("Deep House",))
+
+    apply_metadata_tags(
+        path,
+        desired,
+        standard_genres=("Deep House",),
+        expected_plan=owned_plan,
+        expected_standard=("Existing genre",),
+        expected_standard_change=standard_plan,
+    )
+
+    assert standard_plan is not None
+    assert standard_plan.field == expected_field
+    assert read_genre_state(path).standard == ("Deep House",)
 
 
 def test_empty_result_removes_only_stale_owned_genre(tmp_path: Path) -> None:
