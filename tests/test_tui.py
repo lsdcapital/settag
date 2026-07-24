@@ -149,6 +149,7 @@ def test_tui_reads_metadata_before_loading_model_and_analyzes_only_selection(
             }
             assert "analyze" in choose_actions
             assert "toggle_details" in choose_actions
+            assert "review" not in choose_actions
             assert "write" not in choose_actions
 
             await pilot.press("i")
@@ -601,6 +602,7 @@ def test_tui_genre_screen_keeps_actions_visible_in_narrow_terminal(
     async def exercise() -> None:
         async with app.run_test(size=(50, 32)) as pilot:
             await pilot.pause()
+            await pilot.press("v")
             await pilot.press("e")
             await pilot.pause()
             assert isinstance(app.screen, GenreEditScreen)
@@ -614,7 +616,7 @@ def test_tui_genre_screen_keeps_actions_visible_in_narrow_terminal(
     asyncio.run(exercise())
 
 
-def test_tui_restores_cached_plan_in_review_without_loading_analyzer(
+def test_tui_restores_cached_plan_in_library_and_opens_review_on_request(
     tmp_path: Path,
 ) -> None:
     path = tmp_path / "track.wav"
@@ -642,13 +644,27 @@ def test_tui_restores_cached_plan_in_review_without_loading_analyzer(
             await pilot.pause()
             table = app.query_one("#tracks", DataTable)
             status = app.query_one("#status", Static)
-            assert app.phase == "review"
+            inspector = app.query_one("#inspector", Static)
+            assert app.phase == "choose"
             assert app.review_indices == {0}
             assert app.write_selected == {0}
             assert app.analysis_selected == set()
             assert table.get_row_at(0)[3].startswith("Ready · ")
             assert "Restored 1 ready-to-review track" in str(status.render())
+            assert "Press V to review" in str(status.render())
+            assert "Local result ready to review" in str(inspector.render())
+            assert "Press V to review this saved result." in str(
+                inspector.render()
+            )
+            active_actions = {
+                active.binding.action
+                for active in app.screen.active_bindings.values()
+            }
+            assert "review" in active_actions
+            assert "write" not in active_actions
 
+            await pilot.press("v")
+            assert app.phase == "review"
             app._genre_edited(0, "House, Techno")
             assert persisted[-1].target_file_genre == ("House", "Techno")
 

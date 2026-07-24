@@ -78,10 +78,11 @@ allowlist to roll up to `House`; all other children retain their direct name.
 The inspector shows any roll-up, and every edit is shown as `before → after`.
 
 Completed interactive analysis is persisted before review in a local SQLite
-workbench. On startup, a matching plan skips inference and opens as
-`Ready · date`; a mismatched plan appears as `Reanalyze · date`. Returning to
-the library does not preselect ready plans, though the user may select one for
-deliberate reanalysis.
+workbench. On startup, the library remains the default view: a matching plan
+skips inference and appears as `Ready · date`, with `V` available to open saved
+results in review. A mismatched plan appears as `Reanalyze · date`. Returning
+to the library does not preselect ready plans, though the user may select one
+for deliberate reanalysis.
 
 The app keeps the track table primary at full terminal width. The inspector is
 secondary, hidden by default, and toggled with `I` without changing the cursor
@@ -90,7 +91,7 @@ followed by a count of additional ranked scores retained for importers. The
 footer changes with the current phase:
 
 ```text
-Choose: Space toggle · I details · A all/none · F filter · Enter/R analyze · Q quit
+Choose: Space toggle · I details · A all/none · F filter · V review (when ready) · Enter/R analyze · Q quit
 Analyzing: Esc cancel after current track
 Review: Space toggle · A all/none · I details · E genre · S save · Enter/W write
 ```

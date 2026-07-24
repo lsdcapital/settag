@@ -70,6 +70,7 @@ The library keys are:
 | `A` | Toggle all eligible tracks in the current view on or off |
 | `I` | Show or hide details for the highlighted track |
 | `F` | Cycle All, Needs analysis, Missing genre, and Up to date views |
+| `V` | Open saved results that are ready to review, when available |
 | `Enter` / `R` | Analyze the selected tracks |
 | `Esc` | Stop after the track currently being analyzed |
 | `Q` | Quit |
@@ -148,9 +149,9 @@ analysis batch before pressing `Q`.
 
 The app saves each completed analysis and staged genre edit to a small local
 SQLite workbench. If you quit before writing, opening the same track or
-directory resumes directly in review and shows the result as `Ready · date`.
-The model is not rerun. Press `B` to return to the full metadata library or
-reanalyze a track deliberately.
+directory opens in the library and shows the saved result as `Ready · date`.
+The model is not rerun. Press `V` to review saved results, or select a ready
+track in the library to reanalyze it deliberately.
 
 The workbench is private application state, not portable music metadata:
 

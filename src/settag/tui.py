@@ -71,6 +71,7 @@ CHOOSE_ACTIONS = frozenset(
         "toggle_all",
         "toggle_details",
         "cycle_filter",
+        "review",
         "analyze",
         "quit",
     }
@@ -301,6 +302,7 @@ class SetTagApp(App[TuiOutcome]):
         Binding("f", "cycle_filter", "Filter"),
         Binding("r", "analyze", "Analyze"),
         Binding("escape", "cancel_analysis", "Cancel"),
+        Binding("v", "review", "Review"),
         Binding("b", "library", "Library"),
         Binding("e", "edit_genre", "Genre"),
         Binding("s", "save", "Save plan"),
@@ -661,6 +663,12 @@ class SetTagApp(App[TuiOutcome]):
             if not self.busy or not self._pending_analysis_indices:
                 return False
             return None if self._analysis_cancel_requested.is_set() else True
+        if action == "review":
+            return (
+                self.phase == "choose"
+                and not self.busy
+                and bool(self.review_indices)
+            )
         phase_actions = CHOOSE_ACTIONS if self.phase == "choose" else REVIEW_ACTIONS
         if action in CHOOSE_ACTIONS | REVIEW_ACTIONS:
             return action in phase_actions
@@ -741,15 +749,14 @@ class SetTagApp(App[TuiOutcome]):
         }
         self.query_one("#loading").display = False
         self.query_one("#main").display = True
+        self._show_library()
         if self.review_indices:
             restored = len(self.review_indices)
-            self._show_review()
             self._update_status(
                 f"Restored {restored} ready-to-review track"
                 f"{'s' if restored != 1 else ''} from the local workbench"
+                "  ·  Press V to review"
             )
-        else:
-            self._show_library()
 
     def _ready_cached_plan(self, track: MetadataTrack) -> PlannedWrite | None:
         if track.cache_status != "ready" or track.cached_plan is None:
@@ -929,9 +936,12 @@ class SetTagApp(App[TuiOutcome]):
         if self.phase == "choose":
             needs = sum(entry.needs_analysis for entry in self.entries)
             errors = sum(entry.metadata_error is not None for entry in self.entries)
+            ready = len(self.review_indices)
+            ready_text = f"  ·  {ready} ready to review" if ready else ""
             text = (
                 f"{self.source}  ·  {len(self.entries)} tracks"
                 f"  ·  {needs} need analysis"
+                f"{ready_text}"
                 f"  ·  {errors} metadata error{'s' if errors != 1 else ''}"
                 f"  ·  Filter: {FILTER_LABELS[self.library_filter]}"
             )
@@ -991,14 +1001,22 @@ class SetTagApp(App[TuiOutcome]):
         genre = ", ".join(metadata.genre_state.standard) or "None"
         cached_plan = metadata.cached_plan
         cache_status = (
-            f"Local result needs reanalysis ({metadata.cache_reason})"
-            if metadata.cache_status == "stale"
-            else None
+            "Local result ready to review"
+            if entry.plan is not None
+            else (
+                f"Local result needs reanalysis ({metadata.cache_reason})"
+                if metadata.cache_status == "stale"
+                else None
+            )
         )
         predictions: Sequence[Prediction] = (
-            cached_plan.evidence
-            if cached_plan is not None and metadata.cache_status == "stale"
-            else metadata.stored_predictions
+            entry.plan.evidence
+            if entry.plan is not None
+            else (
+                cached_plan.evidence
+                if cached_plan is not None and metadata.cache_status == "stale"
+                else metadata.stored_predictions
+            )
         )
         selected = self._select_for_review(predictions)
         lines.extend(
@@ -1011,7 +1029,11 @@ class SetTagApp(App[TuiOutcome]):
                 (
                     "Local review candidates (stale)"
                     if metadata.cache_status == "stale"
-                    else "Review candidates from stored evidence"
+                    else (
+                        "Local review candidates (ready)"
+                        if entry.plan is not None
+                        else "Review candidates from stored evidence"
+                    )
                 ),
             ]
         )
@@ -1041,6 +1063,11 @@ class SetTagApp(App[TuiOutcome]):
                     "Selected for analysis."
                     if index in self.analysis_selected
                     else "Not selected for analysis."
+                ),
+                *(
+                    ["Press V to review this saved result."]
+                    if entry.plan is not None
+                    else []
                 ),
                 "The audio model has not been loaded.",
             ]
@@ -1191,9 +1218,15 @@ class SetTagApp(App[TuiOutcome]):
                 index in self.analysis_selected
                 for index in self.visible_indices
             )
+            review_hint = (
+                f"  ·  V review {len(self.review_indices)} ready"
+                if self.review_indices
+                else ""
+            )
             base = (
                 f"{selected} selected in this view"
                 f"  ·  Filter: {FILTER_LABELS[self.library_filter]}"
+                f"{review_hint}"
                 "  ·  Space toggle  ·  Enter/R analyze selected"
             )
         else:
@@ -1316,6 +1349,14 @@ class SetTagApp(App[TuiOutcome]):
         self._show_analysis_activity()
         self._update_status()
         self._analyze_selected(indices)
+
+    def action_review(self) -> None:
+        if self.busy or self.phase != "choose":
+            return
+        if not self.review_indices:
+            self.notify("There are no analyzed tracks ready to review.")
+            return
+        self._show_review()
 
     def action_cancel_analysis(self) -> None:
         if not self.busy or not self._pending_analysis_indices:
