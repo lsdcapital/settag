@@ -1,11 +1,13 @@
 import json
+import shutil
 import wave
 from pathlib import Path
 from typing import Any
 
 import pytest
+from mutagen.flac import FLAC
 from mutagen.id3 import APIC, ID3, TCON, TIT2, TXXX
-from mutagen.mp4 import MP4FreeForm
+from mutagen.mp4 import MP4, MP4FreeForm
 from mutagen.wave import WAVE
 
 from settag import __version__
@@ -14,6 +16,7 @@ from settag.tags import (
     MP4_MEAN,
     GenreState,
     Mp4OwnedTagStore,
+    TagStateChangedError,
     UnsupportedTagFormatError,
     VorbisOwnedTagStore,
     apply_owned_tags,
@@ -21,6 +24,8 @@ from settag.tags import (
     plan_owned_tags,
     read_genre_state,
 )
+
+FIXTURES = Path(__file__).parent / "fixtures"
 
 
 class FakeAudio:
@@ -71,6 +76,12 @@ def _desired(
     )
 
 
+def _copy_fixture(name: str, tmp_path: Path) -> Path:
+    path = tmp_path / name
+    shutil.copyfile(FIXTURES / name, path)
+    return path
+
+
 def test_owned_genres_and_scores_have_identical_membership_and_order() -> None:
     selected = [
         Prediction("Electronic---Deep House", 0.72),
@@ -84,6 +95,74 @@ def test_owned_genres_and_scores_have_identical_membership_and_order() -> None:
     assert [item["label"] for item in scores] == desired["SETTAG_GENRE"]
     assert [item["score"] for item in scores] == [item.score for item in selected]
     assert desired["SETTAG_VERSION"] == [__version__]
+
+
+def test_real_flac_round_trip_preserves_standard_tags_and_value_order(tmp_path: Path) -> None:
+    path = _copy_fixture("tagged.flac", tmp_path)
+    selected = [
+        Prediction("Electronic---Deep House", 0.72),
+        Prediction("Electronic---House", 0.51),
+    ]
+    desired = _desired(selected)
+    before = FLAC(path)
+    before_stream = (before.info.sample_rate, before.info.channels, before.info.total_samples)
+
+    assert read_genre_state(path) == GenreState(
+        standard=("Existing genre",),
+        settag=(),
+    )
+    planned = plan_owned_tags(path, desired)
+    applied = apply_owned_tags(path, desired)
+    audio = FLAC(path)
+
+    assert applied == planned
+    assert planned.format == "vorbis-comments"
+    assert len(planned.changes) == 6
+    assert audio["title"] == ["Original title"]
+    assert audio["genre"] == ["Existing genre"]
+    assert audio["SETTAG_GENRE"] == [item.label for item in selected]
+    assert audio["SETTAG_VERSION"] == [__version__]
+    assert audio["SETTAG_MODEL"] == ["model/v1"]
+    scores = json.loads(audio["SETTAG_GENRE_SCORES"][0])
+    assert [item["label"] for item in scores] == audio["SETTAG_GENRE"]
+    assert (audio.info.sample_rate, audio.info.channels, audio.info.total_samples) == before_stream
+
+
+def test_real_mp4_round_trip_preserves_standard_tags_and_value_order(tmp_path: Path) -> None:
+    path = _copy_fixture("tagged.m4a", tmp_path)
+    selected = [
+        Prediction("Electronic---Deep House", 0.72),
+        Prediction("Electronic---House", 0.51),
+    ]
+    desired = _desired(selected)
+    before = MP4(path)
+    before_stream = (before.info.sample_rate, before.info.channels, before.info.length)
+
+    assert read_genre_state(path) == GenreState(
+        standard=("Existing genre",),
+        settag=(),
+    )
+    planned = plan_owned_tags(path, desired)
+    applied = apply_owned_tags(path, desired)
+    audio = MP4(path)
+    assert audio.tags is not None
+    genre_key = f"----:{MP4_MEAN}:GENRE"
+    scores_key = f"----:{MP4_MEAN}:GENRE_SCORES"
+    version_key = f"----:{MP4_MEAN}:VERSION"
+    model_key = f"----:{MP4_MEAN}:MODEL"
+
+    assert applied == planned
+    assert planned.format == "mp4-freeform"
+    assert len(planned.changes) == 6
+    assert audio.tags["\xa9nam"] == ["Original title"]
+    assert audio.tags["\xa9gen"] == ["Existing genre"]
+    genres = [bytes(item).decode() for item in audio.tags[genre_key]]
+    assert genres == [item.label for item in selected]
+    assert [bytes(item).decode() for item in audio.tags[version_key]] == [__version__]
+    assert [bytes(item).decode() for item in audio.tags[model_key]] == ["model/v1"]
+    scores = json.loads(bytes(audio.tags[scores_key][0]).decode())
+    assert [item["label"] for item in scores] == genres
+    assert (audio.info.sample_rate, audio.info.channels, audio.info.length) == before_stream
 
 
 def test_id3_write_preserves_standard_and_unowned_tags(tmp_path: Path) -> None:
@@ -195,6 +274,31 @@ def test_unchanged_owned_values_do_not_rewrite_file(tmp_path: Path) -> None:
 
     assert plan.changes == ()
     assert audio.save_count == 0
+
+
+def test_expected_state_is_checked_before_writing(tmp_path: Path) -> None:
+    path = tmp_path / "track.wav"
+    _silent_wav(path)
+    desired = _desired()
+    planned = plan_owned_tags(path, desired)
+
+    audio = WAVE(path)
+    audio.add_tags()
+    assert isinstance(audio.tags, ID3)
+    audio.tags.add(TCON(encoding=3, text=["Changed elsewhere"]))
+    audio.save()
+
+    with pytest.raises(TagStateChangedError, match="File genre tag changed"):
+        apply_owned_tags(
+            path,
+            desired,
+            expected_plan=planned,
+            expected_standard=(),
+        )
+
+    tags = WAVE(path).tags
+    assert tags is not None
+    assert tags.get("TXXX:SETTAG_GENRE") is None
 
 
 def test_unrecognized_container_is_rejected(tmp_path: Path) -> None:

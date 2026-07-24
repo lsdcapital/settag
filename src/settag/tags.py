@@ -19,11 +19,27 @@ from settag.policy import Prediction
 
 ENCODING_UTF8 = 3
 MP4_MEAN = "com.lsdcapital.settag"
+OWNED_DESCRIPTIONS = (
+    "SETTAG_GENRE",
+    "SETTAG_GENRE_SCORES",
+    "SETTAG_VERSION",
+    "SETTAG_MODEL",
+    "SETTAG_ANALYZED_AT",
+    "SETTAG_CONFIG_SHA256",
+)
 
 OwnedValues = dict[str, list[str] | None]
 
 
 class UnsupportedTagFormatError(ValueError):
+    pass
+
+
+class TagVerificationError(RuntimeError):
+    pass
+
+
+class TagStateChangedError(RuntimeError):
     pass
 
 
@@ -280,5 +296,33 @@ def read_genre_state(path: Path) -> GenreState:
     return owned_tag_store(path).genre_state()
 
 
-def apply_owned_tags(path: Path, desired: OwnedValues) -> TagPlan:
-    return owned_tag_store(path).apply(desired)
+def read_owned_values(path: Path) -> OwnedValues:
+    store = owned_tag_store(path)
+    return {description: store.read_value(description) for description in OWNED_DESCRIPTIONS}
+
+
+def apply_owned_tags(
+    path: Path,
+    desired: OwnedValues,
+    *,
+    expected_plan: TagPlan | None = None,
+    expected_standard: tuple[str, ...] | None = None,
+) -> TagPlan:
+    store = owned_tag_store(path)
+    current_plan = store.plan(desired)
+    if expected_plan is not None and current_plan != expected_plan:
+        raise TagStateChangedError(f"Tag state changed after planning and before writing {path}")
+    if expected_standard is not None and store.genre_state().standard != expected_standard:
+        raise TagStateChangedError(
+            f"File genre tag changed after planning and before writing {path}"
+        )
+
+    plan = store.apply(desired)
+    if not plan.changes:
+        return plan
+
+    remaining = owned_tag_store(path).plan(desired)
+    if remaining.changes:
+        fields = ", ".join(change.field for change in remaining.changes)
+        raise TagVerificationError(f"SetTag metadata verification failed for {path}: {fields}")
+    return plan

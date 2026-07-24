@@ -2,8 +2,9 @@
 
 `settag` is a small, analysis-first genre tagger for DJ music libraries. It
 analyzes audio with Essentia's 2025 Discogs519 MAEST models, displays a compact
-change-plan summary, and can save the complete result as JSONL. It changes an
-audio file only when `--write` is supplied.
+change-plan summary, and can save either a compact review plan or the complete
+analysis as JSONL. It changes an audio file only through explicit writing,
+interactive review, or confirmation of a verified batch plan.
 
 The first release is intentionally narrow:
 
@@ -12,10 +13,11 @@ The first release is intentionally narrow:
 - the 519-label Discogs taxonomy
 - concise console output with optional complete JSONL records
 - namespaced, format-native SetTag metadata only
-- no interactive mode, watcher, daemon, web UI, or SetPath integration
+- no watcher, daemon, web UI, or SetPath integration
 
-It never writes or replaces standard genre fields such as ID3 `TCON`, Vorbis
-`GENRE`, or MP4 `©gen`.
+It never writes or replaces the conventional file genre tag: ID3 `TCON`,
+Vorbis `GENRE`, or MP4 `©gen`. These are standard metadata locations, not a
+standardized genre vocabulary.
 
 ## Install
 
@@ -47,21 +49,28 @@ Dry-run a single audio file:
 uv run settag analyze "/path/to/track.flac"
 ```
 
-Or recursively analyze every supported audio file in a directory and save the
-JSONL plan:
+Or recursively analyze every supported audio file in a directory and save a
+compact JSONL plan:
 
 ```sh
 uv run settag analyze "/path/to/music/library" \
-  --output analysis.jsonl
+  --plan settag-plan.jsonl
 ```
 
 Analysis is a dry run by default. There is no `--dry-run` flag: audio files
-are changed only when `--write` is explicitly supplied.
+are changed only when `--write` is explicitly supplied or a write is confirmed
+in `--review` mode.
 
-Review a saved plan with:
+Pretty-print every track in the plan:
 
 ```sh
-jq . analysis.jsonl
+jq . settag-plan.jsonl
+```
+
+Then verify the whole plan and approve it once:
+
+```sh
+uv run settag apply settag-plan.jsonl
 ```
 
 Useful selection options:
@@ -70,7 +79,7 @@ Useful selection options:
 uv run settag analyze "/path/to/music/library" \
   --top 5 \
   --threshold 0.10 \
-  --output analysis.jsonl
+  --plan settag-plan.jsonl
 ```
 
 Check whether the required models are installed:
@@ -109,12 +118,16 @@ The default `INFO` output shows the path, selected genres, scores, and number
 of planned SetTag changes. It also makes the preservation boundary explicit:
 
 ```text
-INFO   standard genre: House (unchanged)
-INFO   SetTag genres: none -> Electronic---Tropical House 58.4%, Electronic---House 54.6%
+INFO   file genre tag: House (unchanged)
+INFO   SetTag genres: none -> Electronic---Tropical House score 0.584, Electronic---House score 0.546
 INFO   dry run: 6 SetTag fields would change; nothing written
 ```
 
 It does not print all 519 model activations.
+
+Each displayed score is the mean sigmoid activation across the analyzed audio
+patches. Scores are useful for ranking and thresholding, but they are not
+calibrated probabilities and do not need to sum to `1`.
 
 Use `--output` for a complete, machine-readable JSONL audit record:
 
@@ -142,9 +155,155 @@ Predictions must meet the threshold. `settag` does not force a top prediction:
 uv run settag analyze /path/to/music --top 5 --threshold 0.10
 ```
 
+## Batch plan and one-time approval
+
+For a directory, the recommended write workflow separates expensive analysis
+from approval:
+
+```sh
+uv run settag analyze "/path/to/music/library" \
+  --plan settag-plan.jsonl
+
+jq . settag-plan.jsonl
+
+uv run settag apply settag-plan.jsonl
+```
+
+JSONL keeps one track on each physical line. `jq .` expands those records for
+reading. Each compact plan record contains the file path and fingerprint, the
+existing file genre tag, ranked selected labels and scores, provenance, and
+plain-English metadata changes:
+
+```json
+{
+  "schema": "settag.plan/v1",
+  "path": "/path/to/music/track.mp3",
+  "source": {
+    "sha256": "b7b118125b3289157da76212b54c2e1f91b4db2c3c0ff1bca4094c4d0046ed23",
+    "size": 12605465,
+    "mtime_ns": 1633515033000000000
+  },
+  "file_genre": [
+    "House"
+  ],
+  "selected": [
+    {
+      "label": "Electronic---House",
+      "score": 0.765
+    },
+    {
+      "label": "Electronic---Deep House",
+      "score": 0.564
+    }
+  ],
+  "metadata_format": "id3",
+  "provenance": {
+    "settag_version": "0.1.0",
+    "model": "essentia/genre-discogs519-maest/v1",
+    "analyzed_at": "2026-07-23T16:22:53Z",
+    "config_sha256": "3935b3e0c51c85b750ee8cffc471b7a8e0a5a4cec60b336dde42fd321d40b5e6"
+  },
+  "changes": [
+    "Genre labels: 0 → 2",
+    "Ranked score data: add",
+    "SetTag version: not set → 0.1.0",
+    "Analysis model: not set → essentia/genre-d…"
+  ]
+}
+```
+
+The plan deliberately omits all 519 raw model activations and the duplicated
+native tag payload. Use `--output analysis.jsonl` when the complete audit
+record is also required; `--plan` is the smaller human-review artifact.
+The two options can be used together as long as they name different files.
+
+`apply` performs a full preflight before showing one confirmation for the
+whole plan. It verifies every source SHA-256, existing file genre tag,
+metadata format, and proposed SetTag change. It then performs the preflight
+again after confirmation and writes the exact saved evidence without rerunning
+Essentia:
+
+```text
+Batch write plan
+/path/to/settag-plan.jsonl
+
+  Tracks reviewed:        13
+  Files to write:         13
+  SetTag field changes:   78
+  Selected label scores:  65
+  Empty file genre tags:  4
+
+Every source SHA-256 and metadata plan matches the reviewed file.
+File genre tags and unrelated metadata will remain unchanged.
+
+Apply this exact plan to 13 files? [y] yes  [n] no >
+```
+
+If any planned file changed after analysis, nothing is written during
+preflight. A plan containing an analysis-error record is also rejected in
+full. Once writing starts, cross-file writes cannot be transactional: an
+unexpected change or write failure stops the run and reports how many earlier
+files were already written and verified.
+
+For deliberate non-interactive use, skip the single prompt with:
+
+```sh
+uv run settag apply settag-plan.jsonl --yes
+```
+
+## Review and confirm each write
+
+Interactive review analyzes each track once, displays the proposed SetTag
+evidence, and waits for a decision:
+
+```sh
+uv run settag analyze "/path/to/music" --review
+```
+
+Review mode uses a plain decision screen rather than log-formatted summaries:
+
+```text
+Review 1 of 1
+track.mp3
+/path/to/music
+
+File genre tag
+  House (will not be changed)
+
+SetTag model evidence
+   1. Electronic---Progressive House  score 0.664
+   2. Electronic---Neo Trance         score 0.391
+
+Metadata change (1)
+  Analysis time: 2026-07-22T12:00:00Z → 2026-07-23T12:00:00Z
+
+Write this SetTag metadata? [y] write  [n] skip  [q] quit >
+```
+
+If the file genre tag is empty, the screen identifies the highest-ranked
+selected label as a suggested candidate. It remains display-only: SetTag does
+not copy a Discogs519 prediction into the file genre tag. Canonical
+taxonomy mapping and human acceptance belong downstream.
+
+The prompt accepts:
+
+- `y`: write and verify this track's SetTag-owned fields
+- `n`: decline this track and continue
+- `q`: leave this track unchanged and end the run
+- `Ctrl-C`: interrupt the run cleanly with nothing written for the current track
+
+`--review` requires an interactive terminal, so it cannot silently wait for
+input in a pipeline. Tracks whose write is accepted are reopened immediately
+to verify all SetTag-owned values and confirm that the file genre tag is
+unchanged.
+
+When `--output` is also supplied, each JSONL record reports `written`,
+`declined`, `cancelled`, `interrupted`, or `unchanged` as appropriate.
+
 ## Write settag-owned fields
 
-Review the JSONL plan first, then repeat with the explicit write flag:
+Use `--write` when immediate non-interactive analysis and writing is preferred
+to saving and approving a reusable plan:
 
 ```sh
 uv run settag analyze /path/to/music \
@@ -167,9 +326,24 @@ comments, and `----:com.lsdcapital.settag:GENRE` in MP4.
 `SETTAG_GENRE` and the decoded `SETTAG_GENRE_SCORES` entries always contain
 the same selected labels in the same order.
 
-Existing title, artist, album, standard genre, comments, artwork, and fields
+Existing title, artist, album, file genre tag, comments, artwork, and fields
 owned by other tools are left untouched. Reanalysis may replace or remove
 SetTag-owned fields so they continue to describe the current result.
+
+`--write` and `--review` are mutually exclusive.
+
+## Inspect existing tags
+
+Inspect the file genre tag and SetTag-owned metadata without loading the model
+or analyzing the audio:
+
+```sh
+uv run settag inspect "/path/to/track.mp3"
+uv run settag inspect "/path/to/music"
+```
+
+This shows stored genre scores and the SetTag version, model, analysis time,
+and configuration hash. It does not change files.
 
 ## Model
 

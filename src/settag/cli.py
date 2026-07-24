@@ -4,12 +4,14 @@ import argparse
 import json
 import logging
 import os
+import shlex
 import sys
-from collections.abc import Sequence
-from contextlib import nullcontext
+from collections.abc import Callable, Sequence
+from contextlib import ExitStack
 from pathlib import Path
-from typing import TextIO
+from typing import Literal, TextIO
 
+from settag import __version__
 from settag.analyzer import EssentiaGenreAnalyzer
 from settag.catalog import DISCOGS519_MAEST
 from settag.hashing import sha256_file
@@ -19,18 +21,31 @@ from settag.model_store import (
     installed_manifest,
     missing_files,
 )
+from settag.plans import (
+    PlanError,
+    PlannedWrite,
+    friendly_change,
+    load_plan,
+    plan_error_record,
+    plan_record,
+)
 from settag.policy import Prediction, select_predictions
 from settag.records import analysis_record, config_record, error_record, source_record, utc_now
 from settag.scanner import scan_audio
 from settag.tags import (
     GenreState,
+    TagPlan,
     apply_owned_tags,
     build_owned_values,
     plan_owned_tags,
     read_genre_state,
+    read_owned_values,
 )
 
 LOGGER = logging.getLogger("settag")
+ReviewDecision = Literal["write", "decline", "quit", "interrupt"]
+ReviewPrompt = Callable[[Path], ReviewDecision]
+AnalyzeControl = Literal["continue", "quit", "interrupt"]
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -78,15 +93,43 @@ def build_parser() -> argparse.ArgumentParser:
         default=0.10,
         help="Minimum model activation required for selection (default: 0.10).",
     )
-    analyze.add_argument(
+    write_mode = analyze.add_mutually_exclusive_group()
+    write_mode.add_argument(
         "--write",
         action="store_true",
-        help="Apply the displayed plan to SetTag-owned metadata fields.",
+        help="Apply every displayed plan without prompting.",
+    )
+    write_mode.add_argument(
+        "--review",
+        action="store_true",
+        help="Review each displayed plan and confirm before writing.",
     )
     analyze.add_argument(
         "--output",
         type=Path,
         help="Write the complete JSONL analysis record to this file.",
+    )
+    analyze.add_argument(
+        "--plan",
+        type=Path,
+        help="Write a compact JSONL plan that can be reviewed and applied later.",
+    )
+
+    inspect = subparsers.add_parser(
+        "inspect",
+        help="Show the existing file genre tag and SetTag metadata without analysis.",
+    )
+    inspect.add_argument("path", type=Path)
+
+    apply = subparsers.add_parser(
+        "apply",
+        help="Verify and apply a compact JSONL plan without rerunning analysis.",
+    )
+    apply.add_argument("plan", type=Path)
+    apply.add_argument(
+        "--yes",
+        action="store_true",
+        help="Apply a valid plan without the single confirmation prompt.",
     )
     return parser
 
@@ -122,11 +165,19 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(f"settag: {error}", file=sys.stderr)
         return 2
 
-    if args.command == "models":
-        return _run_models(args)
-    if args.command == "analyze":
-        return _run_analyze(args)
-    raise AssertionError(f"Unhandled command: {args.command}")
+    try:
+        if args.command == "models":
+            return _run_models(args)
+        if args.command == "analyze":
+            return _run_analyze(args)
+        if args.command == "inspect":
+            return _run_inspect(args)
+        if args.command == "apply":
+            return _run_apply(args)
+        raise AssertionError(f"Unhandled command: {args.command}")
+    except KeyboardInterrupt:
+        print("\nsettag: interrupted", file=sys.stderr)
+        return 130
 
 
 def _configure_logging() -> None:
@@ -167,6 +218,23 @@ def _run_models(args: argparse.Namespace) -> int:
 
 
 def _run_analyze(args: argparse.Namespace) -> int:
+    if args.plan and (args.write or args.review):
+        print(
+            "settag: --plan is a dry-run artifact and cannot be combined with writing",
+            file=sys.stderr,
+        )
+        return 2
+    if args.review and not sys.stdin.isatty():
+        print("settag: --review requires an interactive terminal", file=sys.stderr)
+        return 2
+    if (
+        args.plan
+        and args.output
+        and args.plan.expanduser().resolve() == args.output.expanduser().resolve()
+    ):
+        print("settag: --plan and --output must use different files", file=sys.stderr)
+        return 2
+
     try:
         paths = scan_audio(args.path)
         analyzer = EssentiaGenreAnalyzer(args.model_dir.expanduser().resolve())
@@ -178,35 +246,256 @@ def _run_analyze(args: argparse.Namespace) -> int:
         print("No supported audio files found.", file=sys.stderr)
         return 0
 
-    try:
-        output_context = (
-            args.output.expanduser().resolve().open("w", encoding="utf-8")
-            if args.output
-            else nullcontext(None)
-        )
-    except OSError as error:
-        print(f"Cannot open output: {error}", file=sys.stderr)
-        return 2
-
     failures = 0
-    with output_context as output:
+    planned_count = 0
+    control: AnalyzeControl = "continue"
+    with ExitStack() as stack:
+        try:
+            output = (
+                stack.enter_context(args.output.expanduser().resolve().open("w", encoding="utf-8"))
+                if args.output
+                else None
+            )
+            plan_output = (
+                stack.enter_context(args.plan.expanduser().resolve().open("w", encoding="utf-8"))
+                if args.plan
+                else None
+            )
+        except OSError as error:
+            print(f"Cannot open output: {error}", file=sys.stderr)
+            return 2
+
         for index, path in enumerate(paths, start=1):
-            LOGGER.info("[%d/%d] %s", index, len(paths), path)
+            if not args.review:
+                LOGGER.info("[%d/%d] %s", index, len(paths), path)
             try:
-                _analyze_one(
+                control = _analyze_one(
                     path,
                     analyzer=analyzer,
                     top=args.top,
                     threshold=args.threshold,
                     write=args.write,
+                    review=args.review,
+                    review_index=index,
+                    review_total=len(paths),
                     output=output,
+                    plan_output=plan_output,
                 )
+                if plan_output is not None:
+                    planned_count += 1
             except Exception as error:
                 failures += 1
                 _emit(output, error_record(path, error))
+                _emit_jsonl(plan_output, plan_error_record(path, error))
                 LOGGER.error("%s: %s", path, error)
+            if control != "continue":
+                break
 
+    if args.plan:
+        resolved_plan = args.plan.expanduser().resolve()
+        _print_saved_plan_summary(
+            resolved_plan,
+            planned_count,
+            failures,
+        )
+    if control == "interrupt":
+        return 130
     return 1 if failures else 0
+
+
+def _print_saved_plan_summary(
+    plan_path: Path,
+    planned_count: int,
+    failure_count: int,
+) -> None:
+    print(file=sys.stderr)
+    print("Review plan created", file=sys.stderr)
+    print(plan_path, file=sys.stderr)
+    print(file=sys.stderr)
+    print(f"  Tracks analyzed:  {planned_count}", file=sys.stderr)
+    print(f"  Analysis errors:  {failure_count}", file=sys.stderr)
+    print(file=sys.stderr)
+    print(f"Preview: jq . {shlex.quote(str(plan_path))}", file=sys.stderr)
+    if failure_count:
+        print(
+            "This plan cannot be applied until every track analyzes successfully.",
+            file=sys.stderr,
+        )
+    else:
+        print(
+            f"Apply:   uv run settag apply {shlex.quote(str(plan_path))}",
+            file=sys.stderr,
+        )
+
+
+def _run_inspect(args: argparse.Namespace) -> int:
+    try:
+        paths = scan_audio(args.path)
+    except Exception as error:
+        print(str(error), file=sys.stderr)
+        return 2
+
+    if not paths:
+        print("No supported audio files found.", file=sys.stderr)
+        return 0
+
+    failures = 0
+    for index, path in enumerate(paths, start=1):
+        LOGGER.info("[%d/%d] %s", index, len(paths), path)
+        try:
+            genre_state = read_genre_state(path)
+            owned = read_owned_values(path)
+            _log_inspection(genre_state, owned)
+        except Exception as error:
+            failures += 1
+            LOGGER.error("%s: %s", path, error)
+    return 1 if failures else 0
+
+
+def _run_apply(args: argparse.Namespace) -> int:
+    plan_path = args.plan.expanduser().resolve()
+    try:
+        planned = load_plan(plan_path)
+        prepared = _preflight_plan(planned)
+    except (OSError, PlanError, RuntimeError, ValueError) as error:
+        print(f"Cannot apply plan: {error}", file=sys.stderr)
+        print("No files were written.", file=sys.stderr)
+        return 2
+
+    write_count = sum(bool(tag_plan.changes) for _item, _state, tag_plan in prepared)
+    _print_batch_plan_summary(plan_path, prepared, write_count)
+    if write_count == 0:
+        print("Everything in this plan is already up to date.", file=sys.stderr)
+        return 0
+
+    if not args.yes:
+        if not sys.stdin.isatty():
+            print("settag: apply requires an interactive terminal or --yes", file=sys.stderr)
+            return 2
+        if not _prompt_for_batch_apply(write_count):
+            print("Cancelled; nothing written.", file=sys.stderr)
+            return 0
+
+    try:
+        prepared = _preflight_plan(planned)
+    except (OSError, RuntimeError, ValueError) as error:
+        print(f"Plan became stale before writing: {error}", file=sys.stderr)
+        print("No files were written.", file=sys.stderr)
+        return 2
+
+    written = 0
+    print(file=sys.stderr)
+    print(f"Applying {write_count} file{'s' if write_count != 1 else ''}", file=sys.stderr)
+    try:
+        for item, genre_state, tag_plan in prepared:
+            if not tag_plan.changes:
+                continue
+            if sha256_file(item.path) != item.source_sha256:
+                raise RuntimeError(f"Source changed before its write: {item.path}")
+            written += 1
+            print(f"  [{written}/{write_count}] {item.path}", file=sys.stderr)
+            applied = apply_owned_tags(
+                item.path,
+                item.desired,
+                expected_plan=tag_plan,
+                expected_standard=genre_state.standard,
+            )
+            if applied != tag_plan:
+                raise RuntimeError(f"Applied tag plan differed for {item.path}")
+            _verify_file_genre_tag(item.path, genre_state.standard)
+    except KeyboardInterrupt:
+        print(
+            f"\nInterrupted after {written} of {write_count} planned writes.",
+            file=sys.stderr,
+        )
+        raise
+    except Exception as error:
+        print(
+            f"\nStopped after {written} of {write_count} planned writes: {error}",
+            file=sys.stderr,
+        )
+        return 1
+
+    print(file=sys.stderr)
+    print(
+        f"Done. {written} file{'s' if written != 1 else ''} written and verified.",
+        file=sys.stderr,
+    )
+    return 0
+
+
+def _preflight_plan(
+    planned: Sequence[PlannedWrite],
+) -> list[tuple[PlannedWrite, GenreState, TagPlan]]:
+    prepared: list[tuple[PlannedWrite, GenreState, TagPlan]] = []
+    errors: list[str] = []
+    for item in planned:
+        try:
+            if not item.path.is_file():
+                raise RuntimeError(f"file is missing: {item.path}")
+            if sha256_file(item.path) != item.source_sha256:
+                raise RuntimeError(f"source SHA-256 changed: {item.path}")
+            genre_state = read_genre_state(item.path)
+            if genre_state.standard != item.file_genre:
+                raise RuntimeError(f"file genre tag changed: {item.path}")
+            current_plan = plan_owned_tags(item.path, item.desired)
+            if current_plan.format != item.metadata_format:
+                raise RuntimeError(f"metadata format changed: {item.path}")
+            readable_changes = tuple(friendly_change(change) for change in current_plan.changes)
+            if readable_changes != item.readable_changes:
+                raise RuntimeError(f"planned metadata changes do not match: {item.path}")
+            prepared.append((item, genre_state, current_plan))
+        except Exception as error:
+            errors.append(str(error))
+    if errors:
+        details = "\n  ".join(errors)
+        raise RuntimeError(f"{len(errors)} stale or invalid track(s):\n  {details}")
+    return prepared
+
+
+def _print_batch_plan_summary(
+    plan_path: Path,
+    prepared: Sequence[tuple[PlannedWrite, GenreState, TagPlan]],
+    write_count: int,
+) -> None:
+    field_changes = sum(len(tag_plan.changes) for _item, _state, tag_plan in prepared)
+    empty_file_genres = sum(not item.file_genre for item, _state, _plan in prepared)
+    selected_labels = sum(len(item.selected) for item, _state, _plan in prepared)
+
+    print(file=sys.stderr)
+    print("Batch write plan", file=sys.stderr)
+    print(plan_path, file=sys.stderr)
+    print(file=sys.stderr)
+    print(f"  Tracks reviewed:        {len(prepared)}", file=sys.stderr)
+    print(f"  Files to write:         {write_count}", file=sys.stderr)
+    print(f"  SetTag field changes:   {field_changes}", file=sys.stderr)
+    print(f"  Selected label scores:  {selected_labels}", file=sys.stderr)
+    print(f"  Empty file genre tags:  {empty_file_genres}", file=sys.stderr)
+    print(file=sys.stderr)
+    print("Every source SHA-256 and metadata plan matches the reviewed file.", file=sys.stderr)
+    print("File genre tags and unrelated metadata will remain unchanged.", file=sys.stderr)
+    print(file=sys.stderr)
+
+
+def _prompt_for_batch_apply(write_count: int) -> bool:
+    while True:
+        print(
+            f"Apply this exact plan to {write_count} file"
+            f"{'s' if write_count != 1 else ''}? [y] yes  [n] no > ",
+            end="",
+            file=sys.stderr,
+            flush=True,
+        )
+        answer = sys.stdin.readline()
+        if answer == "":
+            print(file=sys.stderr)
+            return False
+        normalized = answer.strip().casefold()
+        if normalized in {"y", "yes"}:
+            return True
+        if normalized in {"n", "no"}:
+            return False
+        print("Please answer y or n.", file=sys.stderr)
 
 
 def _analyze_one(
@@ -217,7 +506,12 @@ def _analyze_one(
     threshold: float,
     write: bool,
     output: TextIO | None,
-) -> None:
+    plan_output: TextIO | None = None,
+    review: bool = False,
+    review_index: int = 1,
+    review_total: int = 1,
+    prompt: ReviewPrompt | None = None,
+) -> AnalyzeControl:
     source = source_record(path)
     analyzed_at = utc_now()
     config = config_record(top=top, threshold=threshold)
@@ -232,14 +526,70 @@ def _analyze_one(
     genre_state = read_genre_state(path)
     tag_plan = plan_owned_tags(path, desired)
 
+    control: AnalyzeControl = "continue"
     if write:
-        applied_plan = apply_owned_tags(path, desired)
+        applied_plan = apply_owned_tags(
+            path,
+            desired,
+            expected_plan=tag_plan,
+            expected_standard=genre_state.standard,
+        )
         if applied_plan != tag_plan:
-            raise RuntimeError("Tag state changed between planning and writing")
+            raise RuntimeError("Applied tag plan did not match the displayed plan")
+        _verify_file_genre_tag(path, genre_state.standard)
         write_status = "written" if tag_plan.changes else "unchanged"
+        write_requested = True
         result_sha256 = sha256_file(path)
+    elif review:
+        _print_review_header(review_index, review_total, path)
+        if tag_plan.changes:
+            _print_review_plan(
+                genre_state=genre_state,
+                selected=selected,
+                tag_plan=tag_plan,
+            )
+            decision = (prompt or _prompt_for_write)(path)
+            if decision == "write":
+                applied_plan = apply_owned_tags(
+                    path,
+                    desired,
+                    expected_plan=tag_plan,
+                    expected_standard=genre_state.standard,
+                )
+                if applied_plan != tag_plan:
+                    raise RuntimeError("Applied tag plan did not match the displayed plan")
+                _verify_file_genre_tag(path, genre_state.standard)
+                write_status = "written"
+                write_requested = True
+                result_sha256 = sha256_file(path)
+                _print_review_result("Written and verified.")
+            else:
+                write_requested = False
+                result_sha256 = None
+                if decision == "decline":
+                    write_status = "declined"
+                    _print_review_result("Skipped; nothing written.")
+                elif decision == "quit":
+                    write_status = "cancelled"
+                    control = "quit"
+                    _print_review_result("Review ended; nothing written.")
+                else:
+                    write_status = "interrupted"
+                    control = "interrupt"
+                    _print_review_result("Interrupted; nothing written.")
+        else:
+            write_status = "unchanged"
+            write_requested = True
+            result_sha256 = sha256_file(path)
+            _print_review_plan(
+                genre_state=genre_state,
+                selected=selected,
+                tag_plan=tag_plan,
+            )
+            _print_review_result("Already up to date; nothing written.")
     else:
         write_status = "not_requested"
+        write_requested = False
         result_sha256 = None
 
     record = analysis_record(
@@ -251,17 +601,175 @@ def _analyze_one(
         predictions=predictions,
         selected=selected,
         tag_plan=tag_plan,
-        write_requested=write,
+        write_requested=write_requested,
         write_status=write_status,
         result_sha256=result_sha256,
     )
-    _log_summary(
-        genre_state=genre_state,
-        selected=selected,
-        change_count=len(tag_plan.changes),
-        write_status=write_status,
-    )
+    if not review:
+        _log_summary(
+            genre_state=genre_state,
+            selected=selected,
+            change_count=len(tag_plan.changes),
+            write_status=write_status,
+        )
     _emit(output, record)
+    if plan_output is not None:
+        _emit_jsonl(
+            plan_output,
+            plan_record(
+                source=source,
+                genre_state=genre_state,
+                selected=selected,
+                tag_plan=tag_plan,
+                readable_changes=[friendly_change(change) for change in tag_plan.changes],
+                model_id=analyzer.spec.id,
+                analyzed_at=analyzed_at,
+                settag_version=__version__,
+                config_sha256=str(config["sha256"]),
+            ),
+        )
+    return control
+
+
+def _print_review_header(index: int, total: int, path: Path) -> None:
+    print(file=sys.stderr)
+    print(f"Review {index} of {total}", file=sys.stderr)
+    print(path.name, file=sys.stderr)
+    print(path.parent, file=sys.stderr)
+    print(file=sys.stderr)
+
+
+def _print_review_plan(
+    *,
+    genre_state: GenreState,
+    selected: Sequence[Prediction],
+    tag_plan: TagPlan,
+) -> None:
+    print("File genre tag", file=sys.stderr)
+    if genre_state.standard:
+        print(f"  {', '.join(genre_state.standard)} (will not be changed)", file=sys.stderr)
+    else:
+        print("  None", file=sys.stderr)
+        if selected:
+            primary = selected[0]
+            print(
+                f"  Suggested candidate: {primary.label} (model score {primary.score:.3f})",
+                file=sys.stderr,
+            )
+        else:
+            print("  No selected model candidate.", file=sys.stderr)
+        print("  Candidate only; SetTag will not write the file genre tag.", file=sys.stderr)
+    print(file=sys.stderr)
+
+    print("SetTag model evidence", file=sys.stderr)
+    if selected:
+        width = max(len(item.label) for item in selected)
+        for index, item in enumerate(selected, start=1):
+            print(
+                f"  {index:>2}. {item.label:<{width}}  score {item.score:.3f}",
+                file=sys.stderr,
+            )
+    else:
+        print("  No labels met the selection threshold.", file=sys.stderr)
+
+    desired_labels = tuple(item.label for item in selected)
+    if genre_state.settag == desired_labels:
+        print("  These ranked labels are already stored.", file=sys.stderr)
+    elif genre_state.settag:
+        print(f"  Replaces {len(genre_state.settag)} existing SetTag label(s).", file=sys.stderr)
+    else:
+        print("  No SetTag labels are currently stored.", file=sys.stderr)
+    print(file=sys.stderr)
+
+    count = len(tag_plan.changes)
+    noun = "change" if count == 1 else "changes"
+    print(f"Metadata {noun} ({count})", file=sys.stderr)
+    if tag_plan.changes:
+        for change in tag_plan.changes:
+            print(f"  {friendly_change(change)}", file=sys.stderr)
+    else:
+        print("  None", file=sys.stderr)
+    print(file=sys.stderr)
+    print(
+        "Only SetTag-owned metadata can change; "
+        "the file genre tag and unrelated tags are preserved.",
+        file=sys.stderr,
+    )
+    print(file=sys.stderr)
+
+
+def _print_review_result(message: str) -> None:
+    print(file=sys.stderr)
+    print(message, file=sys.stderr)
+
+
+def _prompt_for_write(path: Path) -> ReviewDecision:
+    while True:
+        print(
+            "Write this SetTag metadata? [y] write  [n] skip  [q] quit > ",
+            end="",
+            file=sys.stderr,
+            flush=True,
+        )
+        try:
+            answer = sys.stdin.readline()
+        except KeyboardInterrupt:
+            print(file=sys.stderr)
+            return "interrupt"
+        if answer == "":
+            print(file=sys.stderr)
+            return "quit"
+        normalized = answer.strip().casefold()
+        if normalized in {"y", "yes"}:
+            return "write"
+        if normalized in {"n", "no"}:
+            return "decline"
+        if normalized in {"q", "quit"}:
+            return "quit"
+        print(f"Please answer y, n, or q for {path.name}.", file=sys.stderr)
+
+
+def _verify_file_genre_tag(path: Path, expected: tuple[str, ...]) -> None:
+    after = read_genre_state(path)
+    if after.standard != expected:
+        raise RuntimeError(f"File genre tag changed unexpectedly while writing {path}")
+
+
+def _log_inspection(genre_state: GenreState, owned: dict[str, list[str] | None]) -> None:
+    standard = ", ".join(genre_state.standard) or "none"
+    LOGGER.info("  file genre tag: %s", standard)
+    LOGGER.info("  SetTag genres: %s", _format_owned_genres(genre_state, owned))
+
+    provenance = (
+        ("version", "SETTAG_VERSION"),
+        ("model", "SETTAG_MODEL"),
+        ("analyzed", "SETTAG_ANALYZED_AT"),
+        ("config", "SETTAG_CONFIG_SHA256"),
+    )
+    for label, field in provenance:
+        values = owned[field]
+        LOGGER.info("  SetTag %s: %s", label, ", ".join(values) if values else "none")
+
+
+def _format_owned_genres(
+    genre_state: GenreState,
+    owned: dict[str, list[str] | None],
+) -> str:
+    serialized = owned["SETTAG_GENRE_SCORES"]
+    if serialized:
+        try:
+            scores = json.loads(serialized[0])
+            if isinstance(scores, list):
+                formatted = [
+                    f"{item['label']} score {float(item['score']):.3f}"
+                    for item in scores
+                    if isinstance(item, dict) and "label" in item and "score" in item
+                ]
+                if formatted:
+                    return ", ".join(formatted)
+        except (KeyError, TypeError, ValueError, json.JSONDecodeError):
+            LOGGER.warning("  SetTag score metadata is invalid; showing labels only")
+    return ", ".join(genre_state.settag) or "none"
 
 
 def _log_summary(
@@ -274,9 +782,11 @@ def _log_summary(
     standard = ", ".join(genre_state.standard) or "none"
     existing_settag = ", ".join(genre_state.settag) or "none"
     desired_labels = tuple(item.label for item in selected)
-    desired_settag = ", ".join(f"{item.label} {item.score:.1%}" for item in selected) or "none"
+    desired_settag = (
+        ", ".join(f"{item.label} score {item.score:.3f}" for item in selected) or "none"
+    )
 
-    LOGGER.info("  standard genre: %s (unchanged)", standard)
+    LOGGER.info("  file genre tag: %s (unchanged)", standard)
     if genre_state.settag == desired_labels:
         LOGGER.info("  SetTag genres: %s (unchanged)", desired_settag)
     else:
@@ -286,7 +796,7 @@ def _log_summary(
     if write_status == "not_requested":
         action = f"dry run: {fields} would change; nothing written"
     elif write_status == "written":
-        action = f"write: {fields} changed"
+        action = f"write: {fields} changed and verified"
     else:
         action = "write: SetTag fields already up to date"
 
@@ -303,3 +813,14 @@ def _emit(output: TextIO | None, record: dict[str, object]) -> None:
     if output is not None:
         print(serialized, file=output, flush=True)
     LOGGER.debug("%s", serialized)
+
+
+def _emit_jsonl(output: TextIO | None, record: dict[str, object]) -> None:
+    if output is None:
+        return
+    serialized = json.dumps(
+        record,
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+    print(serialized, file=output, flush=True)
