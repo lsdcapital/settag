@@ -8,6 +8,7 @@ import shlex
 import sys
 from collections.abc import Sequence
 from contextlib import ExitStack
+from dataclasses import replace
 from pathlib import Path
 from typing import TextIO
 
@@ -26,9 +27,10 @@ from settag.plans import (
     load_plan,
     plan_error_record,
 )
-from settag.policy import Prediction
-from settag.records import analysis_record, error_record
+from settag.policy import Prediction, select_predictions
+from settag.records import analysis_record, config_record, error_record
 from settag.scanner import scan_audio
+from settag.state import DEFAULT_STATE_DB, WorkbenchStore
 from settag.tags import (
     GenreState,
     apply_owned_tags,
@@ -38,10 +40,13 @@ from settag.tags import (
 from settag.tui import SetTagApp
 from settag.workflow import (
     AnalysisBatch,
+    CancelCallback,
+    MetadataBatch,
     PartialWriteError,
     PreparedWrite,
     analyze_paths,
     apply_prepared,
+    inspect_paths,
     plan_record_for_track,
     preflight_plan,
     prepare_track,
@@ -69,6 +74,12 @@ def build_parser() -> argparse.ArgumentParser:
         "--no-tui",
         action="store_true",
         help="Print a plain dry-run summary instead of opening the app.",
+    )
+    run.add_argument(
+        "--state-db",
+        type=Path,
+        default=DEFAULT_STATE_DB,
+        help=f"Local TUI workbench database (default: {DEFAULT_STATE_DB}).",
     )
 
     models = subparsers.add_parser("models", help="Manage Essentia model files.")
@@ -100,7 +111,7 @@ def build_parser() -> argparse.ArgumentParser:
     analyze.add_argument(
         "--write",
         action="store_true",
-        help="Apply every displayed plan without prompting.",
+        help="Write each SetTag analysis bundle without prompting.",
     )
     analyze.add_argument(
         "--output",
@@ -153,13 +164,22 @@ def _add_analysis_options(parser: argparse.ArgumentParser) -> None:
         "--top",
         type=_positive_int,
         default=5,
-        help="Maximum selected genres per track (default: 5).",
+        help=(
+            "Maximum candidates marked for SetTag review per track; stored evidence "
+            "is unaffected (default: 5)."
+        ),
     )
     parser.add_argument(
+        "--score-cutoff",
         "--threshold",
+        dest="threshold",
+        metavar="SCORE",
         type=_unit_float,
         default=0.10,
-        help="Minimum model activation required for selection (default: 0.10).",
+        help=(
+            "Minimum model score marked for review or used as a suggestion; "
+            "stored evidence is unaffected (default: 0.10)."
+        ),
     )
 
 
@@ -238,33 +258,113 @@ def _run_default(args: argparse.Namespace) -> int:
         return 0
 
     model_dir = args.model_dir.expanduser().resolve()
+    analyzer: EssentiaGenreAnalyzer | None = None
 
-    def load_batch(on_progress) -> AnalysisBatch:
-        analyzer = EssentiaGenreAnalyzer(model_dir)
+    def load_analysis(
+        selected_paths: Sequence[Path],
+        on_progress,
+        should_cancel: CancelCallback,
+    ) -> AnalysisBatch:
+        nonlocal analyzer
+        if analyzer is None:
+            analyzer = EssentiaGenreAnalyzer(model_dir)
         return analyze_paths(
-            paths,
+            selected_paths,
             analyzer=analyzer,
             top=args.top,
             threshold=args.threshold,
             on_progress=on_progress,
+            should_cancel=should_cancel,
         )
 
     interactive = sys.stdin.isatty() and sys.stdout.isatty()
     if interactive and not args.no_tui:
-        outcome = SetTagApp(source=args.path, loader=load_batch).run()
+        current_config = config_record(
+            top=args.top,
+            threshold=args.threshold,
+        )
+        config_sha256 = str(current_config["sha256"])
+        store = WorkbenchStore(args.state_db)
+
+        def load_metadata(on_progress) -> MetadataBatch:
+            metadata = inspect_paths(
+                paths,
+                expected_model_id=DISCOGS519_MAEST.id,
+                expected_config_sha256=config_sha256,
+                on_progress=on_progress,
+            )
+            current_paths = [
+                track.path
+                for track in metadata.tracks
+                if track.status == "current"
+            ]
+            if current_paths:
+                store.delete(current_paths)
+            cached = store.load(
+                [
+                    track.path
+                    for track in metadata.tracks
+                    if track.status != "current"
+                ],
+                expected_model_id=DISCOGS519_MAEST.id,
+                expected_config_sha256=config_sha256,
+            )
+            merged = []
+            for track in metadata.tracks:
+                entry = cached.get(track.path.expanduser().resolve())
+                if entry is None:
+                    merged.append(track)
+                    continue
+
+                cached_plan = replace(
+                    entry.plan,
+                    selected=tuple(
+                        select_predictions(
+                            entry.plan.evidence,
+                            threshold=args.threshold,
+                            top=args.top,
+                        )
+                    ),
+                )
+                cache_status = entry.status
+                cache_reason = entry.reason
+                if cached_plan.file_genre != track.genre_state.standard:
+                    cache_status = "stale"
+                    cache_reason = "file genre tag changed"
+                merged.append(
+                    replace(
+                        track,
+                        cached_plan=cached_plan,
+                        cache_status=cache_status,
+                        cache_reason=cache_reason,
+                    )
+                )
+            return replace(metadata, tracks=tuple(merged))
+
+        outcome = SetTagApp(
+            source=args.path,
+            metadata_loader=load_metadata,
+            analysis_loader=load_analysis,
+            persist_plan=store.save,
+            discard_plans=store.delete,
+            review_top=args.top,
+            score_cutoff=args.threshold,
+        ).run()
         if outcome is None:
             return 0
         print(outcome.message, file=sys.stderr)
         return outcome.status
 
     try:
-        batch = load_batch(
+        batch = load_analysis(
+            paths,
             lambda index, total, path: LOGGER.info(
                 "[%d/%d] %s",
                 index,
                 total,
                 path,
-            )
+            ),
+            lambda: False,
         )
     except Exception as error:
         print(str(error), file=sys.stderr)
@@ -302,7 +402,8 @@ def _print_plain_batch(source: Path, batch: AnalysisBatch) -> None:
         print(f"  File genre:  {standard} (unchanged)", file=sys.stderr)
         print(f"  Suggested:   {suggestion}", file=sys.stderr)
         print(
-            f"  Changes:     {len(item.readable_changes)} SetTag fields",
+            "  Changes:     SetTag analysis bundle"
+            f" ({len(item.owned_changes)} internal fields)",
             file=sys.stderr,
         )
 
@@ -483,20 +584,23 @@ def _print_plan_preview(plan_path: Path, planned: Sequence[PlannedWrite]) -> Non
         print()
 
         print("SetTag model evidence")
-        if item.selected:
-            width = max(len(prediction.label) for prediction in item.selected)
-            for rank, prediction in enumerate(item.selected, start=1):
+        if item.evidence:
+            width = max(len(prediction.label) for prediction in item.evidence)
+            selected = set(item.selected)
+            for rank, prediction in enumerate(item.evidence, start=1):
+                marker = "selected" if prediction in selected else "available"
                 print(
                     f"  {rank:>2}. {prediction.label:<{width}}  "
-                    f"score {prediction.score:.3f}"
+                    f"score {prediction.score:.3f}  {marker}"
                 )
         else:
-            print("  No labels met the selection threshold.")
+            print("  No ranked evidence was returned by the model.")
         print()
 
-        change_count = len(item.readable_changes)
-        noun = "change" if change_count == 1 else "changes"
-        print(f"Metadata {noun} ({change_count})")
+        print(
+            "SetTag analysis bundle"
+            f" ({len(item.owned_changes)} internal field changes)"
+        )
         if item.readable_changes:
             for change in item.readable_changes:
                 print(f"  {change}")
@@ -512,14 +616,14 @@ def _print_plan_preview(plan_path: Path, planned: Sequence[PlannedWrite]) -> Non
         print(f"  Analyzed: {analyzed_at[0] if analyzed_at else 'not set'}")
 
     write_count = sum(bool(item.readable_changes) for item in planned)
-    selected_count = sum(len(item.selected) for item in planned)
+    evidence_count = sum(len(item.evidence) for item in planned)
     empty_file_genres = sum(not item.file_genre for item in planned)
     standard_edits = sum(item.standard_genre_change is not None for item in planned)
     print()
     print("Summary")
     print(f"  Tracks reviewed:        {len(planned)}")
     print(f"  Files to write:         {write_count}")
-    print(f"  Selected label scores:  {selected_count}")
+    print(f"  Stored evidence scores: {evidence_count}")
     print(f"  Empty file genre tags:  {empty_file_genres}")
     print(f"  Standard genre edits:   {standard_edits}")
     print()
@@ -622,9 +726,10 @@ def _print_batch_plan_summary(
     write_count: int,
 ) -> None:
     field_changes = sum(len(item.owned_plan.changes) for item in prepared)
+    bundle_changes = sum(bool(item.owned_plan.changes) for item in prepared)
     standard_edits = sum(item.standard_genre_change is not None for item in prepared)
     empty_file_genres = sum(not item.item.file_genre for item in prepared)
-    selected_labels = sum(len(item.item.selected) for item in prepared)
+    evidence_scores = sum(len(item.item.evidence) for item in prepared)
 
     print(file=sys.stderr)
     print("Batch write plan", file=sys.stderr)
@@ -632,9 +737,10 @@ def _print_batch_plan_summary(
     print(file=sys.stderr)
     print(f"  Tracks reviewed:        {len(prepared)}", file=sys.stderr)
     print(f"  Files to write:         {write_count}", file=sys.stderr)
-    print(f"  SetTag field changes:   {field_changes}", file=sys.stderr)
+    print(f"  SetTag bundles:         {bundle_changes}", file=sys.stderr)
+    print(f"  Internal field changes: {field_changes}", file=sys.stderr)
     print(f"  Standard genre edits:   {standard_edits}", file=sys.stderr)
-    print(f"  Selected label scores:  {selected_labels}", file=sys.stderr)
+    print(f"  Stored evidence scores: {evidence_scores}", file=sys.stderr)
     print(f"  Empty file genre tags:  {empty_file_genres}", file=sys.stderr)
     print(file=sys.stderr)
     print("Every source SHA-256 and metadata plan matches the reviewed file.", file=sys.stderr)
@@ -690,6 +796,7 @@ def _analyze_one(
     analyzed_at = track.analyzed_at
     config = track.config
     predictions = track.predictions
+    evidence = track.evidence
     selected = track.selected
     desired = track.desired
     genre_state = track.genre_state
@@ -720,6 +827,7 @@ def _analyze_one(
         model=analyzer.model_manifest,
         config=config,
         predictions=predictions,
+        evidence=evidence,
         selected=selected,
         tag_plan=tag_plan,
         write_requested=write_requested,
@@ -728,7 +836,7 @@ def _analyze_one(
     )
     _log_summary(
         genre_state=genre_state,
-        selected=selected,
+        evidence=evidence,
         change_count=len(tag_plan.changes),
         write_status=write_status,
     )
@@ -783,15 +891,15 @@ def _format_owned_genres(
 def _log_summary(
     *,
     genre_state: GenreState,
-    selected: Sequence[Prediction],
+    evidence: Sequence[Prediction],
     change_count: int,
     write_status: str,
 ) -> None:
     standard = ", ".join(genre_state.standard) or "none"
     existing_settag = ", ".join(genre_state.settag) or "none"
-    desired_labels = tuple(item.label for item in selected)
+    desired_labels = tuple(item.label for item in evidence)
     desired_settag = (
-        ", ".join(f"{item.label} score {item.score:.3f}" for item in selected) or "none"
+        ", ".join(f"{item.label} score {item.score:.3f}" for item in evidence) or "none"
     )
 
     LOGGER.info("  file genre tag: %s (unchanged)", standard)
@@ -800,13 +908,18 @@ def _log_summary(
     else:
         LOGGER.info("  SetTag genres: %s -> %s", existing_settag, desired_settag)
 
-    fields = f"{change_count} SetTag field{'s' if change_count != 1 else ''}"
     if write_status == "not_requested":
-        action = f"dry run: {fields} would change; nothing written"
+        action = (
+            "dry run: SetTag analysis bundle would change"
+            f" ({change_count} internal fields); nothing written"
+        )
     elif write_status == "written":
-        action = f"write: {fields} changed and verified"
+        action = (
+            "write: SetTag analysis bundle changed and verified"
+            f" ({change_count} internal fields)"
+        )
     else:
-        action = "write: SetTag fields already up to date"
+        action = "write: SetTag analysis bundle already up to date"
 
     LOGGER.info("  %s", action)
 

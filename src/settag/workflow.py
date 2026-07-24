@@ -4,7 +4,7 @@ import json
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Protocol
+from typing import Literal, Protocol
 
 from settag import __version__
 from settag.hashing import sha256_file
@@ -15,7 +15,7 @@ from settag.plans import (
     plan_record,
     planned_write_record,
 )
-from settag.policy import Prediction, select_predictions
+from settag.policy import Prediction, collect_evidence, select_predictions
 from settag.records import config_record, source_record, utc_now
 from settag.tags import (
     GenreState,
@@ -27,6 +27,7 @@ from settag.tags import (
     plan_owned_tags,
     plan_standard_genres,
     read_genre_state,
+    read_owned_values,
 )
 
 
@@ -40,6 +41,9 @@ class GenreAnalyzer(Protocol):
 
 ProgressCallback = Callable[[int, int, Path], None]
 WriteProgressCallback = Callable[[int, int, Path], None]
+CancelCallback = Callable[[], bool]
+MetadataStatus = Literal["not_analyzed", "current", "stale", "invalid"]
+CacheStatus = Literal["ready", "stale"]
 
 
 @dataclass(frozen=True)
@@ -48,6 +52,7 @@ class PreparedTrack:
     analyzed_at: str
     config: dict[str, object]
     predictions: list[Prediction]
+    evidence: list[Prediction]
     selected: list[Prediction]
     desired: OwnedValues
     genre_state: GenreState
@@ -76,10 +81,34 @@ class AnalysisFailure:
 class AnalysisBatch:
     planned: tuple[PlannedWrite, ...]
     failures: tuple[AnalysisFailure, ...]
+    cancelled: bool = False
 
     @property
     def write_count(self) -> int:
         return sum(bool(item.readable_changes) for item in self.planned)
+
+
+@dataclass(frozen=True)
+class MetadataTrack:
+    path: Path
+    genre_state: GenreState
+    owned: OwnedValues
+    stored_predictions: tuple[Prediction, ...]
+    status: MetadataStatus
+    analyzed_at: str | None
+    cached_plan: PlannedWrite | None = None
+    cache_status: CacheStatus | None = None
+    cache_reason: str | None = None
+
+    @property
+    def needs_analysis(self) -> bool:
+        return self.status != "current" and self.cache_status != "ready"
+
+
+@dataclass(frozen=True)
+class MetadataBatch:
+    tracks: tuple[MetadataTrack, ...]
+    failures: tuple[AnalysisFailure, ...]
 
 
 @dataclass(frozen=True)
@@ -115,13 +144,14 @@ def prepare_track(
     analyzed_at = utc_now()
     config = config_record(top=top, threshold=threshold)
     predictions = analyzer.analyze(path)
-    selected = select_predictions(predictions, threshold=threshold, top=top)
+    evidence = collect_evidence(predictions)
+    selected = select_predictions(evidence, threshold=threshold, top=top)
     spec = analyzer.spec
     model_id = getattr(spec, "id", None)
     if not isinstance(model_id, str):
         raise RuntimeError("Analyzer model specification has no string id")
     desired = build_owned_values(
-        selected,
+        evidence,
         model_id=model_id,
         analyzed_at=analyzed_at,
         config_sha256=str(config["sha256"]),
@@ -133,6 +163,7 @@ def prepare_track(
         analyzed_at=analyzed_at,
         config=config,
         predictions=predictions,
+        evidence=evidence,
         selected=selected,
         desired=desired,
         genre_state=genre_state,
@@ -147,11 +178,14 @@ def analyze_paths(
     top: int,
     threshold: float,
     on_progress: ProgressCallback | None = None,
+    should_cancel: CancelCallback | None = None,
 ) -> AnalysisBatch:
     planned: list[PlannedWrite] = []
     failures: list[AnalysisFailure] = []
     total = len(paths)
     for index, path in enumerate(paths, start=1):
+        if should_cancel is not None and should_cancel():
+            break
         try:
             track = prepare_track(
                 path,
@@ -171,7 +205,135 @@ def analyze_paths(
         finally:
             if on_progress is not None:
                 on_progress(index, total, path)
-    return AnalysisBatch(planned=tuple(planned), failures=tuple(failures))
+    cancelled = should_cancel is not None and should_cancel()
+    return AnalysisBatch(
+        planned=tuple(planned),
+        failures=tuple(failures),
+        cancelled=cancelled,
+    )
+
+
+def inspect_paths(
+    paths: Sequence[Path],
+    *,
+    expected_model_id: str,
+    expected_config_sha256: str,
+    on_progress: ProgressCallback | None = None,
+) -> MetadataBatch:
+    tracks: list[MetadataTrack] = []
+    failures: list[AnalysisFailure] = []
+    total = len(paths)
+    for index, path in enumerate(paths, start=1):
+        try:
+            tracks.append(
+                inspect_track(
+                    path,
+                    expected_model_id=expected_model_id,
+                    expected_config_sha256=expected_config_sha256,
+                )
+            )
+        except Exception as error:
+            failures.append(
+                AnalysisFailure(
+                    path=path,
+                    error_type=type(error).__name__,
+                    message=str(error),
+                )
+            )
+        finally:
+            if on_progress is not None:
+                on_progress(index, total, path)
+    return MetadataBatch(tracks=tuple(tracks), failures=tuple(failures))
+
+
+def inspect_track(
+    path: Path,
+    *,
+    expected_model_id: str,
+    expected_config_sha256: str,
+) -> MetadataTrack:
+    genre_state = read_genre_state(path)
+    owned = read_owned_values(path)
+    has_settag_metadata = any(values is not None for values in owned.values())
+    if not has_settag_metadata:
+        return MetadataTrack(
+            path=path,
+            genre_state=genre_state,
+            owned=owned,
+            stored_predictions=(),
+            status="not_analyzed",
+            analyzed_at=None,
+        )
+
+    stored_predictions, evidence_valid = _stored_predictions(genre_state, owned)
+    model = _single_owned_value(owned, "SETTAG_MODEL")
+    config = _single_owned_value(owned, "SETTAG_CONFIG_SHA256")
+    analyzed_at = _single_owned_value(owned, "SETTAG_ANALYZED_AT")
+    version = _single_owned_value(owned, "SETTAG_VERSION")
+    provenance_valid = all(
+        value is not None for value in (model, config, analyzed_at, version)
+    )
+    if not evidence_valid or not provenance_valid:
+        status: MetadataStatus = "invalid"
+    elif model != expected_model_id or config != expected_config_sha256:
+        status = "stale"
+    else:
+        status = "current"
+
+    return MetadataTrack(
+        path=path,
+        genre_state=genre_state,
+        owned=owned,
+        stored_predictions=stored_predictions,
+        status=status,
+        analyzed_at=analyzed_at,
+    )
+
+
+def _stored_predictions(
+    genre_state: GenreState,
+    owned: OwnedValues,
+) -> tuple[tuple[Prediction, ...], bool]:
+    serialized = owned["SETTAG_GENRE_SCORES"]
+    if not genre_state.settag:
+        return (), serialized is None
+    if serialized is None or len(serialized) != 1:
+        return (), False
+    try:
+        values = json.loads(serialized[0])
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return (), False
+    if not isinstance(values, list):
+        return (), False
+
+    predictions: list[Prediction] = []
+    for value in values:
+        if not isinstance(value, dict):
+            return (), False
+        label = value.get("label")
+        score = value.get("score")
+        if (
+            not isinstance(label, str)
+            or isinstance(score, bool)
+            or not isinstance(score, (int, float))
+        ):
+            return (), False
+        numeric_score = float(score)
+        if not 0 <= numeric_score <= 1:
+            return (), False
+        predictions.append(Prediction(label=label, score=numeric_score))
+
+    labels = tuple(prediction.label for prediction in predictions)
+    if labels != genre_state.settag:
+        return (), False
+    return tuple(predictions), True
+
+
+def _single_owned_value(owned: OwnedValues, field: str) -> str | None:
+    values = owned[field]
+    if values is None or len(values) != 1 or not values[0]:
+        return None
+    return values[0]
 
 
 def plan_record_for_track(track: PreparedTrack) -> dict[str, object]:
@@ -181,6 +343,7 @@ def plan_record_for_track(track: PreparedTrack) -> dict[str, object]:
     return plan_record(
         source=track.source,
         genre_state=track.genre_state,
+        evidence=track.evidence,
         selected=track.selected,
         tag_plan=track.tag_plan,
         readable_changes=[friendly_change(change) for change in track.tag_plan.changes],
@@ -198,6 +361,7 @@ def planned_write_for_track(track: PreparedTrack) -> PlannedWrite:
         source_size=int(track.source["size"]),
         source_mtime_ns=int(track.source["mtime_ns"]),
         file_genre=track.genre_state.standard,
+        evidence=tuple(track.evidence),
         selected=tuple(track.selected),
         desired=track.desired,
         metadata_format=track.tag_plan.format,

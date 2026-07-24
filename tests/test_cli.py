@@ -6,15 +6,26 @@ from io import StringIO
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
 from mutagen.id3 import ID3, TCON
 from mutagen.wave import WAVE
 
+from settag.catalog import DISCOGS519_MAEST
 from settag.cli import (
     _analyze_one,
     main,
 )
-from settag.plans import planned_write_record, stage_file_genre
+from settag.plans import (
+    PlanError,
+    planned_write_from_record,
+    planned_write_record,
+    stage_default_file_genre,
+    stage_file_genre,
+    standard_genre_from_model_label,
+)
 from settag.policy import Prediction
+from settag.state import WorkbenchStore
+from settag.tags import apply_owned_tags
 from settag.workflow import planned_write_for_track, prepare_track
 
 
@@ -37,9 +48,31 @@ class PartiallyFailingAnalyzer(FakeAnalyzer):
         return super().analyze(path)
 
 
+class PinnedFakeAnalyzer(FakeAnalyzer):
+    spec = SimpleNamespace(id=DISCOGS519_MAEST.id)
+
+
 class TtyStringIO(StringIO):
     def isatty(self) -> bool:
         return True
+
+
+@pytest.mark.parametrize(
+    "label",
+    [
+        "Electronic---Deep House",
+        "Electronic---Progressive House",
+        "Electronic---Tech House",
+        "Electronic---Tropical House",
+    ],
+)
+def test_house_model_labels_roll_up_to_standard_house(label: str) -> None:
+    assert standard_genre_from_model_label(label) == "House"
+
+
+def test_standard_genre_rollup_does_not_guess_from_house_suffix() -> None:
+    assert standard_genre_from_model_label("Electronic---Witch House") == "Witch House"
+    assert standard_genre_from_model_label("Electronic---Techno") == "Techno"
 
 
 def _silent_wav(path: Path) -> None:
@@ -100,7 +133,66 @@ def test_analyze_write_applies_exact_planned_fields(tmp_path: Path) -> None:
     assert record["write"]["status"] == "written"
     assert record["write"]["result_sha256"] != record["source"]["sha256"]
     assert tags is not None
-    assert tags["TXXX:SETTAG_GENRE"].text == ["Electronic---Deep House"]
+    assert tags["TXXX:SETTAG_GENRE"].text == [
+        "Electronic---Deep House",
+        "Electronic---House",
+    ]
+    assert record["evidence"] == [
+        {"label": "Electronic---Deep House", "score": 0.72},
+        {"label": "Electronic---House", "score": 0.05},
+    ]
+    assert record["selected"] == [
+        {"label": "Electronic---Deep House", "score": 0.72},
+    ]
+
+
+def test_score_cutoff_and_top_do_not_remove_portable_evidence(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "track.wav"
+    _silent_wav(path)
+    output = StringIO()
+
+    _analyze_one(
+        path,
+        analyzer=FakeAnalyzer(),  # type: ignore[arg-type]
+        top=1,
+        threshold=0.80,
+        write=True,
+        output=output,
+    )
+
+    record = json.loads(output.getvalue())
+    tags = WAVE(path).tags
+    assert record["selected"] == []
+    assert record["evidence"] == [
+        {"label": "Electronic---Deep House", "score": 0.72},
+        {"label": "Electronic---House", "score": 0.05},
+    ]
+    assert tags is not None
+    assert tags["TXXX:SETTAG_GENRE"].text == [
+        "Electronic---Deep House",
+        "Electronic---House",
+    ]
+
+
+def test_default_file_genre_never_replaces_an_existing_value(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "track.wav"
+    _silent_wav(path)
+    _add_genre(path, "Existing genre")
+    track = prepare_track(
+        path,
+        analyzer=FakeAnalyzer(),  # type: ignore[arg-type]
+        top=5,
+        threshold=0.10,
+    )
+
+    planned = stage_default_file_genre(planned_write_for_track(track))
+
+    assert planned.file_genre == ("Existing genre",)
+    assert planned.target_file_genre is None
 
 
 def test_analyze_without_output_logs_summary_and_complete_debug_record(
@@ -123,10 +215,17 @@ def test_analyze_without_output_logs_summary_and_complete_debug_record(
 
     messages = [record.getMessage() for record in caplog.records]
     assert "  file genre tag: Existing genre (unchanged)" in messages
-    assert "  SetTag genres: none -> Electronic---Deep House score 0.720" in messages
-    assert "  dry run: 6 SetTag fields would change; nothing written" in messages
+    assert (
+        "  SetTag genres: none -> Electronic---Deep House score 0.720, "
+        "Electronic---House score 0.050"
+    ) in messages
+    assert (
+        "  dry run: SetTag analysis bundle would change "
+        "(6 internal fields); nothing written"
+    ) in messages
     debug_record = json.loads(caplog.records[-1].getMessage())
     assert len(debug_record["predictions"]) == 2
+    assert debug_record["evidence"] == debug_record["predictions"]
     assert debug_record["selected"] == [{"label": "Electronic---Deep House", "score": 0.72}]
 
 
@@ -203,6 +302,157 @@ def test_no_tui_forces_the_plain_dry_run(
     assert WAVE(path).tags is None
 
 
+def test_interactive_default_reads_metadata_without_constructing_analyzer(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    path = tmp_path / "track.wav"
+    _silent_wav(path)
+    analyzer_constructed = False
+    inspected_paths: list[Path] = []
+
+    def construct_analyzer(_model_dir):
+        nonlocal analyzer_constructed
+        analyzer_constructed = True
+        raise AssertionError("the analyzer must stay unloaded in the library view")
+
+    class FakeApp:
+        def __init__(self, **kwargs) -> None:
+            self.metadata_loader = kwargs["metadata_loader"]
+            assert callable(kwargs["persist_plan"])
+            assert callable(kwargs["discard_plans"])
+
+        def run(self):
+            batch = self.metadata_loader(
+                lambda _completed, _total, inspected: inspected_paths.append(inspected)
+            )
+            assert [track.path for track in batch.tracks] == [path]
+            return SimpleNamespace(status=0, message="Nothing was written.")
+
+    monkeypatch.setattr(sys, "stdin", TtyStringIO())
+    monkeypatch.setattr(sys, "stdout", TtyStringIO())
+    monkeypatch.setattr("settag.cli.EssentiaGenreAnalyzer", construct_analyzer)
+    monkeypatch.setattr("settag.cli.SetTagApp", FakeApp)
+
+    result = main(
+        [
+            "run",
+            str(path),
+            "--state-db",
+            str(tmp_path / "state.sqlite3"),
+        ]
+    )
+
+    assert result == 0
+    assert inspected_paths == [path]
+    assert analyzer_constructed is False
+
+
+def test_interactive_default_restores_ready_workbench_plan(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    path = tmp_path / "track.wav"
+    state_path = tmp_path / "state.sqlite3"
+    _silent_wav(path)
+
+    plan = planned_write_for_track(
+        prepare_track(
+            path,
+            analyzer=PinnedFakeAnalyzer(),  # type: ignore[arg-type]
+            top=5,
+            threshold=0.10,
+        )
+    )
+    WorkbenchStore(state_path).save(plan)
+    analyzer_constructed = False
+
+    def construct_analyzer(_model_dir):
+        nonlocal analyzer_constructed
+        analyzer_constructed = True
+        raise AssertionError("a cached review must not construct the analyzer")
+
+    class FakeApp:
+        def __init__(self, **kwargs) -> None:
+            self.metadata_loader = kwargs["metadata_loader"]
+
+        def run(self):
+            batch = self.metadata_loader(lambda _done, _total, _path: None)
+            assert len(batch.tracks) == 1
+            track = batch.tracks[0]
+            assert track.cache_status == "ready"
+            assert track.cached_plan is not None
+            assert track.cached_plan.evidence == plan.evidence
+            assert track.cached_plan.selected == ()
+            return SimpleNamespace(status=0, message="Nothing was written.")
+
+    monkeypatch.setattr(sys, "stdin", TtyStringIO())
+    monkeypatch.setattr(sys, "stdout", TtyStringIO())
+    monkeypatch.setattr("settag.cli.EssentiaGenreAnalyzer", construct_analyzer)
+    monkeypatch.setattr("settag.cli.SetTagApp", FakeApp)
+
+    result = main(
+        [
+            "run",
+            str(path),
+            "--state-db",
+            str(state_path),
+            "--score-cutoff",
+            "0.80",
+        ]
+    )
+
+    assert result == 0
+    assert analyzer_constructed is False
+
+
+def test_current_embedded_metadata_supersedes_workbench_plan(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    path = tmp_path / "track.wav"
+    state_path = tmp_path / "state.sqlite3"
+    _silent_wav(path)
+    plan = planned_write_for_track(
+        prepare_track(
+            path,
+            analyzer=PinnedFakeAnalyzer(),  # type: ignore[arg-type]
+            top=5,
+            threshold=0.10,
+        )
+    )
+    store = WorkbenchStore(state_path)
+    store.save(plan)
+    apply_owned_tags(path, plan.desired)
+
+    class FakeApp:
+        def __init__(self, **kwargs) -> None:
+            self.metadata_loader = kwargs["metadata_loader"]
+
+        def run(self):
+            batch = self.metadata_loader(lambda _done, _total, _path: None)
+            track = batch.tracks[0]
+            assert track.status == "current"
+            assert track.cached_plan is None
+            assert track.cache_status is None
+            return SimpleNamespace(status=0, message="Nothing was written.")
+
+    monkeypatch.setattr(sys, "stdin", TtyStringIO())
+    monkeypatch.setattr(sys, "stdout", TtyStringIO())
+    monkeypatch.setattr("settag.cli.SetTagApp", FakeApp)
+
+    assert main(["run", str(path), "--state-db", str(state_path)]) == 0
+    model = plan.desired["SETTAG_MODEL"]
+    config = plan.desired["SETTAG_CONFIG_SHA256"]
+    assert model is not None
+    assert config is not None
+    assert store.load(
+        [path],
+        expected_model_id=model[0],
+        expected_config_sha256=config[0],
+    ) == {}
+
+
 def test_compact_plan_is_human_readable_and_applies_after_one_confirmation(
     tmp_path: Path,
     monkeypatch,
@@ -223,12 +473,16 @@ def test_compact_plan_is_human_readable_and_applies_after_one_confirmation(
     assert "Tracks analyzed:  1" in analyze_stderr
     assert f"Preview: uv run settag preview {plan_path}" in analyze_stderr
     assert f"Apply:   uv run settag apply {plan_path}" in analyze_stderr
-    assert plan_text.startswith('{"schema":"settag.plan/v2","path":')
+    assert plan_text.startswith('{"schema":"settag.plan/v3","path":')
     assert "predictions" not in plan
     assert plan["file_genre"] == []
     assert plan["target_file_genre"] is None
+    assert plan["evidence"] == [
+        {"label": "Electronic---Deep House", "score": 0.72},
+        {"label": "Electronic---House", "score": 0.05},
+    ]
     assert plan["selected"] == [{"label": "Electronic---Deep House", "score": 0.72}]
-    assert plan["changes"]["settag"][0] == "Genre labels: 0 → 1"
+    assert plan["changes"]["settag"][0] == "Genre labels: 0 → 2"
     assert plan["changes"]["file_genre"] is None
     assert plan["metadata_format"] == "id3"
     assert set(plan) == {
@@ -237,6 +491,7 @@ def test_compact_plan_is_human_readable_and_applies_after_one_confirmation(
         "source",
         "file_genre",
         "target_file_genre",
+        "evidence",
         "selected",
         "metadata_format",
         "provenance",
@@ -255,7 +510,10 @@ def test_compact_plan_is_human_readable_and_applies_after_one_confirmation(
     assert "Apply this exact plan to 1 file? [y] yes  [n] no > " in stderr
     assert "Done. 1 file written and verified." in stderr
     assert tags is not None
-    assert tags["TXXX:SETTAG_GENRE"].text == ["Electronic---Deep House"]
+    assert tags["TXXX:SETTAG_GENRE"].text == [
+        "Electronic---Deep House",
+        "Electronic---House",
+    ]
 
 
 def test_preview_renders_a_saved_plan_without_external_json_tools_or_writing(
@@ -282,9 +540,10 @@ def test_preview_renders_a_saved_plan_without_external_json_tools_or_writing(
     assert "File genre tag\n  None (will not be changed)" in captured.out
     assert "Suggested candidate: Electronic---Deep House (model score 0.720)" in captured.out
     assert "SetTag model evidence" in captured.out
-    assert "Electronic---Deep House  score 0.720" in captured.out
-    assert "Metadata changes (6)" in captured.out
-    assert "Genre labels: 0 → 1" in captured.out
+    assert "Electronic---Deep House  score 0.720  selected" in captured.out
+    assert "Electronic---House       score 0.050  available" in captured.out
+    assert "SetTag analysis bundle (6 internal field changes)" in captured.out
+    assert "Genre labels: 0 → 2" in captured.out
     assert "This preview reads only the saved plan" in captured.out
     assert f"uv run settag apply {plan_path}" in captured.out
     assert WAVE(path).tags is None
@@ -322,7 +581,10 @@ def test_saved_plan_can_stage_and_apply_a_standard_genre_edit(
     tags = WAVE(path).tags
     assert tags is not None
     assert tags["TCON"].text == ["Deep House"]
-    assert tags["TXXX:SETTAG_GENRE"].text == ["Electronic---Deep House"]
+    assert tags["TXXX:SETTAG_GENRE"].text == [
+        "Electronic---Deep House",
+        "Electronic---House",
+    ]
 
 
 def test_legacy_evidence_only_plan_remains_readable(
@@ -341,13 +603,60 @@ def test_legacy_evidence_only_plan_remains_readable(
     record = planned_write_record(planned_write_for_track(track))
     record["schema"] = "settag.plan/v1"
     del record["target_file_genre"]
+    del record["evidence"]
     changes = record["changes"]
     assert isinstance(changes, dict)
+    changes["settag"][0] = "Genre labels: 0 → 1"
     record["changes"] = changes["settag"]
     plan_path.write_text(json.dumps(record) + "\n", encoding="utf-8")
 
     assert main(["preview", str(plan_path)]) == 0
     assert "Electronic---Deep House" in capsys.readouterr().out
+
+
+def test_v2_plan_remains_readable_as_its_selected_evidence(
+    tmp_path: Path,
+    capsys,
+) -> None:
+    path = tmp_path / "track.wav"
+    plan_path = tmp_path / "v2.jsonl"
+    _silent_wav(path)
+    track = prepare_track(
+        path,
+        analyzer=FakeAnalyzer(),  # type: ignore[arg-type]
+        top=5,
+        threshold=0.10,
+    )
+    record = planned_write_record(planned_write_for_track(track))
+    record["schema"] = "settag.plan/v2"
+    del record["evidence"]
+    changes = record["changes"]
+    assert isinstance(changes, dict)
+    changes["settag"][0] = "Genre labels: 0 → 1"
+    plan_path.write_text(json.dumps(record) + "\n", encoding="utf-8")
+
+    assert main(["preview", str(plan_path)]) == 0
+    preview = capsys.readouterr().out
+    assert "Electronic---Deep House" in preview
+    assert "Electronic---House" not in preview
+
+
+def test_v3_plan_rejects_unranked_evidence(tmp_path: Path) -> None:
+    path = tmp_path / "track.wav"
+    _silent_wav(path)
+    track = prepare_track(
+        path,
+        analyzer=FakeAnalyzer(),  # type: ignore[arg-type]
+        top=5,
+        threshold=0.10,
+    )
+    record = planned_write_record(planned_write_for_track(track))
+    evidence = record["evidence"]
+    assert isinstance(evidence, list)
+    evidence.reverse()
+
+    with pytest.raises(PlanError, match="descending score order"):
+        planned_write_from_record(record)
 
 
 def test_batch_apply_aborts_all_writes_when_any_source_is_stale(
@@ -401,7 +710,7 @@ def test_batch_apply_rejects_a_partial_plan_with_analysis_errors(
     ]
 
     assert analyzed == 1
-    assert schemas == ["settag.plan-error/v1", "settag.plan/v2"]
+    assert schemas == ["settag.plan-error/v1", "settag.plan/v3"]
 
     applied = main(["apply", str(plan_path), "--yes"])
     stderr = capsys.readouterr().err

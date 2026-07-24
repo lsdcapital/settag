@@ -1,4 +1,10 @@
-from settag.policy import Prediction, rank_predictions, select_predictions
+from settag.policy import (
+    EVIDENCE_LIMIT,
+    Prediction,
+    collect_evidence,
+    rank_predictions,
+    select_predictions,
+)
 
 
 def test_rank_predictions_is_descending_and_deterministic() -> None:
@@ -29,3 +35,16 @@ def test_selection_applies_threshold_then_top_limit() -> None:
     ]
 
     assert select_predictions(predictions, threshold=0.75, top=1) == [Prediction("a", 0.9)]
+
+
+def test_evidence_is_ranked_bounded_and_never_score_filtered() -> None:
+    predictions = [
+        Prediction(f"label-{index:02}", index / 100)
+        for index in range(EVIDENCE_LIMIT + 5)
+    ]
+
+    evidence = collect_evidence(predictions)
+
+    assert len(evidence) == EVIDENCE_LIMIT
+    assert evidence[0] == Prediction("label-24", 0.24)
+    assert evidence[-1] == Prediction("label-05", 0.05)

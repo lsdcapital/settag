@@ -3,6 +3,8 @@ from __future__ import annotations
 from collections.abc import Iterable
 from dataclasses import dataclass
 
+EVIDENCE_LIMIT = 20
+
 
 @dataclass(frozen=True)
 class Prediction:
@@ -22,6 +24,20 @@ def rank_predictions(
         for label, score in zip(labels, scores, strict=True)
     ]
     return sorted(predictions, key=lambda item: (-item.score, item.label))
+
+
+def collect_evidence(
+    predictions: Iterable[Prediction],
+    *,
+    limit: int = EVIDENCE_LIMIT,
+) -> list[Prediction]:
+    """Return a bounded, deterministic evidence set without a score cutoff."""
+    if limit < 1:
+        raise ValueError("evidence limit must be at least 1")
+    return sorted(
+        predictions,
+        key=lambda item: (-item.score, item.label),
+    )[:limit]
 
 
 def select_predictions(

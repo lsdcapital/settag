@@ -48,21 +48,34 @@ downloads the original files directly from Essentia:
 - Metadata:
   <https://essentia.upf.edu/models/classification-heads/genre_discogs519/genre_discogs519-discogs-maest-30s-pw-519l-1.json>
 
-Essentia states that its pretrained models are available under Creative
-Commons Attribution-NonCommercial-NoDerivatives 4.0 International
-(`CC BY-NC-ND 4.0`) for non-commercial use, with proprietary licensing
-available on request:
+UPF publicly offers its pretrained models for non-commercial use and makes
+proprietary licensing available on request. Its public documentation currently
+identifies the exact Creative Commons variant inconsistently:
 
-- Essentia model licensing:
+- the dedicated licensing page states `CC BY-NC-ND 4.0`:
   <https://essentia.upf.edu/licensing_information.html#licensing-essentia-models>
-- Licence deed: <https://creativecommons.org/licenses/by-nc-nd/4.0/>
-- Legal code:
-  <https://creativecommons.org/licenses/by-nc-nd/4.0/legalcode.en>
+- the model catalogue states `CC BY-NC-SA 4.0`:
+  <https://essentia.upf.edu/models.html>
+- the model repository's licence file uses the ND name and legal text, but
+  says adaptation is allowed and links to the SA legal code:
+  <https://essentia.upf.edu/models/LICENSE>
+
+The pinned model metadata does not include a licence field, and there is no
+model-specific licence file alongside either pinned model. The two referenced
+Creative Commons licences are:
+
+- `CC BY-NC-ND 4.0`:
+  <https://creativecommons.org/licenses/by-nc-nd/4.0/>
+- `CC BY-NC-SA 4.0`:
+  <https://creativecommons.org/licenses/by-nc-sa/4.0/>
 
 SetTag downloads and uses the original model files without modifying them.
-Downloading the files separately does not change their licence. The model
-licence requires attribution, limits the licensed use to non-commercial
-purposes, and does not permit sharing adapted model material.
+Downloading the files separately does not change their terms. Both publicly
+stated variants limit the public grant to non-commercial use. Until UPF
+provides model-specific clarification, SetTag does not assert permission to
+redistribute or publish adapted model files. Professional, business, or other
+revenue-generating use is not clearly permitted and may require separate
+permission from UPF.
 
 The upstream metadata requests citation of:
 
@@ -83,8 +96,8 @@ packages may include TensorFlow runtime libraries.
 - Licence text: <https://github.com/tensorflow/tensorflow/blob/master/LICENSE>
 
 TensorFlow's Apache licence covers the TensorFlow software. It does not cover
-or override the separate `CC BY-NC-ND 4.0` terms for the Essentia model
-weights and metadata.
+or override the separate, currently inconsistent public terms for the Essentia
+model weights and metadata.
 
 ## Other Python dependencies
 

@@ -60,8 +60,11 @@ def download_models(
 ) -> dict[str, object]:
     model_dir.mkdir(parents=True, exist_ok=True)
     print(
-        "license: Essentia models are offered under CC BY-NC-ND 4.0 for "
-        "non-commercial use; see https://essentia.upf.edu/licensing_information.html",
+        "license: UPF publicly offers these Essentia models for non-commercial use, "
+        "but its documentation conflicts on the exact CC variant. Professional or "
+        "revenue-generating use may require separate permission; see "
+        "https://essentia.upf.edu/licensing_information.html and "
+        "https://essentia.upf.edu/models.html",
         file=sys.stderr,
     )
 

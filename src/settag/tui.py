@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
+from threading import Event
+from typing import Literal
 
 from textual import events, on, work
 from textual.app import App, ComposeResult
@@ -21,9 +23,19 @@ from textual.widgets import (
     Static,
 )
 
-from settag.plans import PlannedWrite, stage_file_genre
+from settag.plans import (
+    PlannedWrite,
+    stage_default_file_genre,
+    stage_file_genre,
+    suggested_file_genre,
+)
+from settag.policy import Prediction, select_predictions
 from settag.workflow import (
     AnalysisBatch,
+    AnalysisFailure,
+    CancelCallback,
+    MetadataBatch,
+    MetadataTrack,
     PartialWriteError,
     ProgressCallback,
     apply_prepared,
@@ -31,7 +43,57 @@ from settag.workflow import (
     save_plan,
 )
 
-BatchLoader = Callable[[ProgressCallback], AnalysisBatch]
+MetadataLoader = Callable[[ProgressCallback], MetadataBatch]
+AnalysisLoader = Callable[
+    [Sequence[Path], ProgressCallback, CancelCallback],
+    AnalysisBatch,
+]
+PlanPersister = Callable[[PlannedWrite], None]
+PlanDiscarder = Callable[[Sequence[Path]], None]
+AppPhase = Literal["choose", "review"]
+LibraryFilter = Literal["all", "needs_analysis", "missing_genre", "current"]
+
+FILTER_ORDER: tuple[LibraryFilter, ...] = (
+    "all",
+    "needs_analysis",
+    "missing_genre",
+    "current",
+)
+FILTER_LABELS: dict[LibraryFilter, str] = {
+    "all": "All",
+    "needs_analysis": "Needs analysis",
+    "missing_genre": "Missing genre",
+    "current": "Up to date",
+}
+CHOOSE_ACTIONS = frozenset(
+    {
+        "toggle_track",
+        "toggle_all",
+        "toggle_details",
+        "cycle_filter",
+        "analyze",
+        "quit",
+    }
+)
+REVIEW_ACTIONS = frozenset(
+    {
+        "toggle_track",
+        "toggle_all",
+        "toggle_details",
+        "library",
+        "use_suggestion",
+        "edit_genre",
+        "save",
+        "write",
+        "quit",
+    }
+)
+STATUS_LABELS = {
+    "not_analyzed": "Never analyzed",
+    "current": "Up to date",
+    "stale": "Reanalyze (model/config changed)",
+    "invalid": "Incomplete metadata",
+}
 
 
 @dataclass(frozen=True)
@@ -40,11 +102,29 @@ class TuiOutcome:
     message: str
 
 
-def suggested_file_genre(item: PlannedWrite) -> str | None:
+@dataclass
+class TrackEntry:
+    path: Path
+    metadata: MetadataTrack | None = None
+    metadata_error: AnalysisFailure | None = None
+    plan: PlannedWrite | None = None
+    plan_cached: bool = False
+    analysis_error: AnalysisFailure | None = None
+
+    @property
+    def can_analyze(self) -> bool:
+        return self.metadata is not None and self.metadata_error is None
+
+    @property
+    def needs_analysis(self) -> bool:
+        return self.metadata is not None and self.plan is None and self.metadata.needs_analysis
+
+
+def _suggested_label(predictions: Sequence[Prediction]) -> str | None:
     """Return the direct child label without performing taxonomy mapping."""
-    if not item.selected:
+    if not predictions:
         return None
-    return item.selected[0].label.rsplit("---", 1)[-1].strip() or None
+    return predictions[0].label.rsplit("---", 1)[-1].strip() or None
 
 
 class GenreEditScreen(ModalScreen[str | None]):
@@ -75,8 +155,14 @@ class GenreEditScreen(ModalScreen[str | None]):
                 id="genre-input",
             )
             if suggestion:
+                model_child = _suggested_label(self.item.selected)
+                source = (
+                    f" (from model label {model_child})"
+                    if model_child and model_child != suggestion
+                    else ""
+                )
                 yield Static(
-                    f"Model suggestion: {suggestion}",
+                    f"Standard genre suggestion: {suggestion}{source}",
                     markup=False,
                     id="dialog-suggestion",
                 )
@@ -109,7 +195,7 @@ class GenreEditScreen(ModalScreen[str | None]):
 
 class ConfirmWriteScreen(ModalScreen[bool]):
     BINDINGS = [
-        Binding("y", "confirm", "Write"),
+        Binding("enter,y", "confirm", "Write"),
         Binding("n,escape", "cancel", "Cancel"),
     ]
 
@@ -118,32 +204,42 @@ class ConfirmWriteScreen(ModalScreen[bool]):
         *,
         track_count: int,
         standard_genre_count: int,
-        field_change_count: int,
+        evidence_count: int,
     ) -> None:
         super().__init__()
         self.track_count = track_count
         self.standard_genre_count = standard_genre_count
-        self.field_change_count = field_change_count
+        self.evidence_count = evidence_count
 
     def compose(self) -> ComposeResult:
         noun = "track" if self.track_count == 1 else "tracks"
+        bundle_noun = "bundle" if self.track_count == 1 else "bundles"
+        edit_noun = "edit" if self.standard_genre_count == 1 else "edits"
         with Vertical(id="confirm-dialog"):
-            yield Label("Write staged metadata?", id="dialog-title")
+            yield Label("Write selected tracks?", id="dialog-title")
             yield Static(
                 f"{self.track_count} {noun}\n"
-                f"{self.field_change_count} SetTag field changes\n"
-                f"{self.standard_genre_count} standard genre edits",
+                f"{self.track_count} SetTag analysis {bundle_noun}"
+                f" · {self.evidence_count} ranked scores\n"
+                f"{self.standard_genre_count} standard genre {edit_noun}",
                 markup=False,
                 id="confirm-summary",
             )
             yield Static(
-                "Sources passed preflight. They will be checked again before writing.",
+                "The files passed preflight. SetTag will verify each file after writing.",
                 markup=False,
                 id="dialog-help",
             )
             with Horizontal(classes="dialog-actions"):
-                yield Button("Cancel", id="cancel")
-                yield Button("Write and verify", variant="primary", id="confirm")
+                yield Button("Back to review", id="cancel")
+                yield Button(
+                    f"Write {self.track_count} {noun}",
+                    variant="primary",
+                    id="confirm",
+                )
+
+    def on_mount(self) -> None:
+        self.query_one("#confirm", Button).focus()
 
     @on(Button.Pressed, "#confirm")
     def confirm_button(self) -> None:
@@ -183,19 +279,18 @@ class ErrorScreen(ModalScreen[None]):
 
 
 class SetTagApp(App[TuiOutcome]):
-    """The single interactive SetTag interface.
-
-    The palette begins with an OKLCH crimson seed from the project design
-    system. Textual currently accepts sRGB terminal colors, so the stylesheet
-    uses its closest practical terminal equivalents.
-    """
+    """Metadata-first library browser and explicit analysis/write workflow."""
 
     TITLE = "SetTag"
     ENABLE_COMMAND_PALETTE = False
     BINDINGS = [
-        Binding("space", "toggle_track", "Include"),
-        Binding("a", "select_all", "All"),
-        Binding("n", "select_none", "None"),
+        Binding("space", "toggle_track", "Toggle"),
+        Binding("a", "toggle_all", "All/None"),
+        Binding("i", "toggle_details", "Details"),
+        Binding("f", "cycle_filter", "Filter"),
+        Binding("r", "analyze", "Analyze"),
+        Binding("escape", "cancel_analysis", "Cancel"),
+        Binding("b", "library", "Library"),
         Binding("g", "use_suggestion", "Use suggestion"),
         Binding("e", "edit_genre", "Edit genre"),
         Binding("s", "save", "Save plan"),
@@ -205,24 +300,24 @@ class SetTagApp(App[TuiOutcome]):
 
     CSS = """
     Screen {
-        background: #111111;
-        color: #f3f1f1;
+        background: #0b0f0e;
+        color: #eef2f1;
     }
 
     Header {
-        background: #272323;
-        color: #f3f1f1;
+        background: #16201e;
+        color: #eef2f1;
     }
 
     Footer {
-        background: #272323;
-        color: #d8d3d3;
+        background: #16201e;
+        color: #c3cecb;
     }
 
     Footer > .footer--highlight,
     Footer > .footer--key {
-        background: #b63f38;
-        color: #ffffff;
+        background: #d0794f;
+        color: #1f0e05;
     }
 
     #loading {
@@ -233,16 +328,16 @@ class SetTagApp(App[TuiOutcome]):
 
     #loading-title {
         text-style: bold;
-        color: #ffffff;
+        color: #eef2f1;
         margin-bottom: 1;
     }
 
     #loading-path {
-        color: #bdb6b6;
+        color: #8ea09b;
         margin-bottom: 1;
     }
 
-    #analysis-progress {
+    #metadata-progress {
         width: 72;
         max-width: 90%;
         margin-top: 1;
@@ -256,8 +351,32 @@ class SetTagApp(App[TuiOutcome]):
     #context {
         height: 3;
         padding: 1 2 0 2;
-        color: #bdb6b6;
-        background: #181717;
+        color: #8ea09b;
+        background: #0f1413;
+    }
+
+    #analysis-activity {
+        display: none;
+        height: 6;
+        padding: 1 2 0 2;
+        background: #16201e;
+    }
+
+    #analysis-activity-title {
+        height: 1;
+        text-style: bold;
+        color: #eef2f1;
+    }
+
+    #analysis-activity-file {
+        height: 1;
+        color: #c3cecb;
+    }
+
+    #analysis-progress {
+        width: 100%;
+        height: 1;
+        margin-top: 1;
     }
 
     #workspace {
@@ -271,51 +390,57 @@ class SetTagApp(App[TuiOutcome]):
     }
 
     #inspector-pane {
+        display: none;
         width: 1fr;
         min-width: 34;
         padding: 0 2 1 1;
-        background: #181717;
+        background: #0f1413;
+    }
+
+    SetTagApp.details-open #inspector-pane {
+        display: block;
     }
 
     .section-title {
         height: 2;
         padding: 0 1;
         text-style: bold;
-        color: #ffffff;
+        color: #eef2f1;
     }
 
     DataTable {
         height: 1fr;
-        background: #111111;
-        color: #e9e5e5;
-        scrollbar-color: #645d5d;
-        scrollbar-color-hover: #807575;
-        scrollbar-color-active: #b63f38;
+        background: #111716;
+        color: #c3cecb;
+        scrollbar-color: #3a4744;
+        scrollbar-color-hover: #8ea09b;
+        scrollbar-color-active: #d0794f;
     }
 
     DataTable > .datatable--header {
-        background: #272323;
-        color: #ffffff;
+        background: #16201e;
+        color: #eef2f1;
         text-style: bold;
     }
 
     DataTable > .datatable--cursor {
-        background: #63302d;
-        color: #ffffff;
+        background: #d0794f;
+        color: #1f0e05;
+        text-style: bold;
     }
 
     #inspector {
         height: 1fr;
         padding: 0 1;
-        color: #e4dfdf;
+        color: #c3cecb;
         overflow-y: auto;
     }
 
     #status {
         height: 3;
         padding: 1 2;
-        background: #272323;
-        color: #d8d3d3;
+        background: #16201e;
+        color: #c3cecb;
     }
 
     ModalScreen {
@@ -331,35 +456,35 @@ class SetTagApp(App[TuiOutcome]):
         height: auto;
         max-height: 86%;
         padding: 1 2;
-        background: #272323;
-        border: solid #817575;
+        background: #16201e;
+        border: solid #3a4744;
     }
 
     #dialog-title {
         text-style: bold;
-        color: #ffffff;
+        color: #eef2f1;
         margin-bottom: 1;
     }
 
     #dialog-help,
     #dialog-suggestion {
-        color: #c8c0c0;
+        color: #8ea09b;
         margin-bottom: 1;
     }
 
     #genre-input {
         margin-bottom: 1;
-        border: tall #817575;
+        border: tall #3a4744;
     }
 
     #genre-input:focus {
-        border: tall #c84d45;
+        border: tall #d0794f;
     }
 
     #confirm-summary,
     #error-message {
         margin-bottom: 1;
-        color: #f3f1f1;
+        color: #eef2f1;
         max-height: 16;
         overflow-y: auto;
     }
@@ -373,9 +498,26 @@ class SetTagApp(App[TuiOutcome]):
         margin-left: 1;
     }
 
+    #confirm-dialog #cancel {
+        background: #25302d;
+        color: #c3cecb;
+    }
+
+    #confirm-dialog #cancel:focus {
+        background: #3a4744;
+        color: #eef2f1;
+    }
+
+    #confirm-dialog #confirm,
+    #confirm-dialog #confirm:focus {
+        background: #d0794f;
+        color: #1f0e05;
+        text-style: bold;
+    }
+
     Button.-primary {
-        background: #b63f38;
-        color: #ffffff;
+        background: #d0794f;
+        color: #1f0e05;
     }
 
     SetTagApp.narrow #workspace {
@@ -402,34 +544,67 @@ class SetTagApp(App[TuiOutcome]):
         self,
         *,
         source: Path,
-        loader: BatchLoader | None = None,
-        initial_batch: AnalysisBatch | None = None,
+        analysis_loader: AnalysisLoader,
+        metadata_loader: MetadataLoader | None = None,
+        initial_metadata: MetadataBatch | None = None,
+        persist_plan: PlanPersister | None = None,
+        discard_plans: PlanDiscarder | None = None,
+        review_top: int = 5,
+        score_cutoff: float = 0.10,
     ) -> None:
         super().__init__()
-        if loader is None and initial_batch is None:
-            raise ValueError("SetTagApp requires a batch loader or initial batch")
+        if metadata_loader is None and initial_metadata is None:
+            raise ValueError(
+                "SetTagApp requires a metadata loader or initial metadata"
+            )
         self.source = source.expanduser().resolve()
-        self.loader = loader
-        self.initial_batch = initial_batch
-        self.batch: AnalysisBatch | None = None
-        self.items: list[PlannedWrite] = []
-        self.selected: set[int] = set()
+        self.metadata_loader = metadata_loader
+        self.analysis_loader = analysis_loader
+        self.initial_metadata = initial_metadata
+        self.persist_plan = persist_plan
+        self.discard_plans = discard_plans
+        self.review_top = review_top
+        self.score_cutoff = score_cutoff
+        self.entries: list[TrackEntry] = []
+        self.visible_indices: list[int] = []
+        self.analysis_selected: set[int] = set()
+        self.write_selected: set[int] = set()
+        self.review_indices: set[int] = set()
+        self.phase: AppPhase = "choose"
+        self.library_filter: LibraryFilter = "all"
         self.busy = False
+        self._pending_analysis_indices: tuple[int, ...] = ()
+        self._analysis_cancel_requested = Event()
+        self._analysis_completed_count = 0
+        self._analysis_current_path: Path | None = None
         self._pending_write: tuple[PlannedWrite, ...] = ()
-        self.sub_title = str(self.source)
+        self._written_count = 0
+        self.sub_title = "Reading existing metadata"
 
     def compose(self) -> ComposeResult:
         yield Header()
         with Vertical(id="loading"):
-            yield Static("Analyzing your music", markup=False, id="loading-title")
+            yield Static("Reading existing metadata", markup=False, id="loading-title")
             yield Static(str(self.source), markup=False, id="loading-path")
-            yield Static("Preparing the model…", markup=False, id="loading-status")
-            yield ProgressBar(total=100, show_eta=False, id="analysis-progress")
+            yield Static("Opening file tags…", markup=False, id="loading-status")
+            yield ProgressBar(total=100, show_eta=False, id="metadata-progress")
         with Vertical(id="main"):
             yield Static("", markup=False, id="context")
+            with Vertical(id="analysis-activity"):
+                yield Static(
+                    "Preparing analysis",
+                    markup=False,
+                    id="analysis-activity-title",
+                )
+                yield Static("", markup=False, id="analysis-activity-file")
+                yield ProgressBar(
+                    total=1,
+                    show_eta=False,
+                    id="analysis-progress",
+                )
             with Horizontal(id="workspace"):
                 with Vertical(id="tracks-pane"):
-                    yield Static("Tracks", markup=False, classes="section-title")
+                    yield Static("Library", markup=False, classes="section-title")
                     yield DataTable(
                         cursor_type="row",
                         zebra_stripes=True,
@@ -443,36 +618,74 @@ class SetTagApp(App[TuiOutcome]):
 
     def on_mount(self) -> None:
         table = self.query_one("#tracks", DataTable)
-        table.add_columns("", "Track", "File genre", "Suggested", "Score", "Changes")
-        if self.initial_batch is not None:
-            self._show_batch(self.initial_batch)
+        table.add_columns(
+            "",
+            "Track",
+            "File genre",
+            "Analysis",
+            "Suggested",
+            "Score",
+            "Changes",
+        )
+        if self.initial_metadata is not None:
+            self._show_metadata(self.initial_metadata)
         else:
-            self._load_analysis()
+            self._load_metadata()
 
     def on_resize(self, event: events.Resize) -> None:
         self.set_class(event.size.width < 100, "narrow")
 
-    @work(thread=True, exclusive=True, exit_on_error=False)
-    def _load_analysis(self) -> None:
-        assert self.loader is not None
+    def check_action(
+        self,
+        action: str,
+        parameters: tuple[object, ...],
+    ) -> bool | None:
+        del parameters
+        if action == "cancel_analysis":
+            if not self.busy or not self._pending_analysis_indices:
+                return False
+            return None if self._analysis_cancel_requested.is_set() else True
+        phase_actions = CHOOSE_ACTIONS if self.phase == "choose" else REVIEW_ACTIONS
+        if action in CHOOSE_ACTIONS | REVIEW_ACTIONS:
+            return action in phase_actions
+        return True
+
+    @work(thread=True, exclusive=True, group="metadata", exit_on_error=False)
+    def _load_metadata(self) -> None:
+        assert self.metadata_loader is not None
         try:
-            batch = self.loader(self._progress_from_worker)
+            metadata = self.metadata_loader(self._metadata_progress_from_worker)
         except Exception as error:
             self.call_from_thread(
                 self._show_fatal_error,
                 f"{type(error).__name__}: {error}",
             )
             return
-        self.call_from_thread(self._show_batch, batch)
+        self.call_from_thread(self._show_metadata, metadata)
 
-    def _progress_from_worker(self, completed: int, total: int, path: Path) -> None:
-        self.call_from_thread(self._update_progress, completed, total, path.name)
+    def _metadata_progress_from_worker(
+        self,
+        completed: int,
+        total: int,
+        path: Path,
+    ) -> None:
+        self.call_from_thread(
+            self._update_metadata_progress,
+            completed,
+            total,
+            path.name,
+        )
 
-    def _update_progress(self, completed: int, total: int, name: str) -> None:
+    def _update_metadata_progress(
+        self,
+        completed: int,
+        total: int,
+        name: str,
+    ) -> None:
         self.query_one("#loading-status", Static).update(
             f"{completed} of {total} · {name}"
         )
-        self.query_one("#analysis-progress", ProgressBar).update(
+        self.query_one("#metadata-progress", ProgressBar).update(
             total=total,
             progress=completed,
         )
@@ -480,78 +693,369 @@ class SetTagApp(App[TuiOutcome]):
     def _show_fatal_error(self, message: str) -> None:
         self.exit(TuiOutcome(2, f"SetTag could not start: {message}"))
 
-    def _show_batch(self, batch: AnalysisBatch) -> None:
-        self.batch = batch
-        self.items = list(batch.planned)
-        self.selected = {
+    def _show_metadata(self, metadata: MetadataBatch) -> None:
+        entries = [
+            TrackEntry(
+                path=track.path,
+                metadata=track,
+                plan=self._ready_cached_plan(track),
+                plan_cached=track.cache_status == "ready",
+            )
+            for track in metadata.tracks
+        ]
+        entries.extend(
+            TrackEntry(path=failure.path, metadata_error=failure)
+            for failure in metadata.failures
+        )
+        self.entries = sorted(entries, key=lambda entry: str(entry.path))
+        self.analysis_selected = {
             index
-            for index, item in enumerate(self.items)
-            if bool(item.readable_changes)
+            for index, entry in enumerate(self.entries)
+            if entry.can_analyze and entry.needs_analysis
         }
-
-        table = self.query_one("#tracks", DataTable)
-        table.clear()
-        for index, item in enumerate(self.items):
-            table.add_row(*self._row_cells(index, item), key=str(index))
-
+        self.review_indices = {
+            index
+            for index, entry in enumerate(self.entries)
+            if entry.plan is not None
+        }
+        self.write_selected = {
+            index
+            for index in self.review_indices
+            if bool(self.entries[index].plan.readable_changes)
+        }
         self.query_one("#loading").display = False
         self.query_one("#main").display = True
-        failures = len(batch.failures)
-        context = (
-            f"{self.source}  ·  {len(self.items)} analyzed"
-            f"  ·  {failures} error{'s' if failures != 1 else ''}"
-        )
-        self.query_one("#context", Static).update(context)
-        self._update_status()
-
-        if self.items:
-            table.focus()
-            table.move_cursor(row=0)
-            self._update_inspector(0)
-        else:
-            self.query_one("#inspector", Static).update(
-                "No tracks completed analysis."
+        if self.review_indices:
+            restored = len(self.review_indices)
+            self._show_review()
+            self._update_status(
+                f"Restored {restored} ready-to-review track"
+                f"{'s' if restored != 1 else ''} from the local workbench"
             )
+        else:
+            self._show_library()
+
+    def _ready_cached_plan(self, track: MetadataTrack) -> PlannedWrite | None:
+        if track.cache_status != "ready" or track.cached_plan is None:
+            return None
+        return replace(
+            track.cached_plan,
+            selected=tuple(self._select_for_review(track.cached_plan.evidence)),
+        )
+
+    def _select_for_review(
+        self,
+        evidence: Sequence[Prediction],
+    ) -> list[Prediction]:
+        return select_predictions(
+            evidence,
+            threshold=self.score_cutoff,
+            top=self.review_top,
+        )
+
+    def _show_library(self) -> None:
+        self.phase = "choose"
+        self.sub_title = "Choose tracks to analyze"
+        self.refresh_bindings()
+        self.query_one("#tracks-pane .section-title", Static).update(
+            "Library · choose tracks to analyze"
+        )
+        self._rebuild_table()
+
+    def _show_review(self) -> None:
+        self.phase = "review"
+        self.sub_title = "Review analyzed tracks"
+        self.refresh_bindings()
+        self.query_one("#tracks-pane .section-title", Static).update(
+            "Review · checked tracks will be written"
+        )
+        self._rebuild_table()
+
+    def _filtered_indices(self) -> list[int]:
+        if self.phase == "review":
+            return sorted(self.review_indices)
+
+        indices = range(len(self.entries))
+        if self.library_filter == "all":
+            return list(indices)
+        if self.library_filter == "needs_analysis":
+            return [
+                index
+                for index in indices
+                if self.entries[index].needs_analysis
+            ]
+        if self.library_filter == "missing_genre":
+            return [
+                index
+                for index in indices
+                if (
+                    self.entries[index].metadata is not None
+                    and not self.entries[index].metadata.genre_state.standard
+                )
+            ]
+        return [
+            index
+            for index in indices
+            if (
+                self.entries[index].metadata is not None
+                and self.entries[index].metadata.status == "current"
+                and self.entries[index].plan is None
+            )
+        ]
+
+    def _rebuild_table(self, preferred_index: int | None = None) -> None:
+        if preferred_index is None:
+            preferred_index = self._current_index()
+        self.visible_indices = self._filtered_indices()
+        table = self.query_one("#tracks", DataTable)
+        table.clear()
+        for index in self.visible_indices:
+            table.add_row(*self._row_cells(index), key=str(index))
+
+        self._update_context()
+        self._update_status()
+        if not self.visible_indices:
+            self.query_one("#inspector", Static).update(
+                "No tracks match this view."
+            )
+            return
+
+        try:
+            cursor_row = self.visible_indices.index(preferred_index)
+        except ValueError:
+            cursor_row = 0
+        table.focus()
+        table.move_cursor(row=cursor_row)
+        self._update_inspector(self.visible_indices[cursor_row])
 
     def _row_cells(
         self,
         index: int,
-        item: PlannedWrite,
-    ) -> tuple[str, str, str, str, str, str]:
-        primary = item.selected[0] if item.selected else None
-        before = ", ".join(item.file_genre) or "None"
-        if item.target_file_genre is not None:
-            after = ", ".join(item.target_file_genre) or "None"
-            file_genre = f"{before} → {after}"
-        else:
-            file_genre = before
-        return (
-            "[x]" if index in self.selected else "[ ]",
-            item.path.name,
-            file_genre,
-            suggested_file_genre(item) or "—",
-            f"{primary.score:.3f}" if primary else "—",
-            str(len(item.readable_changes)),
+    ) -> tuple[str, str, str, str, str, str, str]:
+        entry = self.entries[index]
+        plan = entry.plan
+        metadata = entry.metadata
+        selected = (
+            index in self.analysis_selected
+            if self.phase == "choose"
+            else index in self.write_selected
         )
+        predictions: Sequence[Prediction] = (
+            plan.selected
+            if plan is not None
+            else self._select_for_review(metadata.stored_predictions)
+            if metadata is not None
+            else ()
+        )
+        primary = predictions[0] if predictions else None
+
+        if plan is not None:
+            before = ", ".join(plan.file_genre) or "None"
+            if plan.target_file_genre is not None:
+                after = ", ".join(plan.target_file_genre) or "None"
+                file_genre = f"{before} → {after}"
+            else:
+                file_genre = before
+        elif metadata is not None:
+            file_genre = ", ".join(metadata.genre_state.standard) or "None"
+        else:
+            file_genre = "Unknown"
+
+        return (
+            "✓" if selected else "",
+            entry.path.name,
+            file_genre,
+            self._entry_analysis(entry),
+            _suggested_label(predictions) or "—",
+            f"{primary.score:.3f}" if primary else "—",
+            str(len(plan.readable_changes)) if plan is not None else "—",
+        )
+
+    def _entry_analysis(self, entry: TrackEntry) -> str:
+        if entry.metadata_error is not None:
+            return "Metadata error"
+        if entry.analysis_error is not None:
+            return "Analysis error"
+
+        analyzed_at = self._entry_analyzed_at(entry)
+        if entry.plan is not None:
+            state = "Ready" if entry.plan_cached else "New"
+        else:
+            assert entry.metadata is not None
+            if entry.metadata.cache_status == "stale":
+                state = "Reanalyze"
+            elif entry.metadata.status == "not_analyzed":
+                return "Never"
+            else:
+                state = {
+                    "current": "Up to date",
+                    "stale": "Reanalyze",
+                    "invalid": "Incomplete",
+                }[entry.metadata.status]
+
+        return f"{state} · {analyzed_at}" if analyzed_at != "—" else state
+
+    def _entry_analyzed_at(self, entry: TrackEntry) -> str:
+        if entry.plan is not None:
+            values = entry.plan.desired["SETTAG_ANALYZED_AT"]
+            value = values[0] if values else None
+        elif (
+            entry.metadata is not None
+            and entry.metadata.cached_plan is not None
+        ):
+            values = entry.metadata.cached_plan.desired["SETTAG_ANALYZED_AT"]
+            value = values[0] if values else None
+        else:
+            value = entry.metadata.analyzed_at if entry.metadata is not None else None
+        return value[:10] if value else "—"
+
+    def _update_context(self) -> None:
+        if self.phase == "choose":
+            needs = sum(entry.needs_analysis for entry in self.entries)
+            errors = sum(entry.metadata_error is not None for entry in self.entries)
+            text = (
+                f"{self.source}  ·  {len(self.entries)} tracks"
+                f"  ·  {needs} need analysis"
+                f"  ·  {errors} metadata error{'s' if errors != 1 else ''}"
+                f"  ·  Filter: {FILTER_LABELS[self.library_filter]}"
+            )
+        else:
+            failures = sum(
+                self.entries[index].analysis_error is not None
+                for index in self.review_indices
+            )
+            text = (
+                f"{self.source}  ·  {len(self.review_indices)} reviewed"
+                f"  ·  {failures} analysis error{'s' if failures != 1 else ''}"
+                "  ·  B returns to the library"
+            )
+        self.query_one("#context", Static).update(text)
 
     @on(DataTable.RowHighlighted, "#tracks")
     def row_highlighted(self, event: DataTable.RowHighlighted) -> None:
-        self._update_inspector(event.cursor_row)
+        value = event.row_key.value
+        if value is not None:
+            self._update_inspector(int(value))
 
     @on(DataTable.RowSelected, "#tracks")
     def row_selected(self) -> None:
-        self.action_edit_genre()
+        if self.phase == "choose":
+            self.action_analyze()
+        else:
+            self.action_write()
 
     def _current_index(self) -> int | None:
-        if not self.items:
-            return None
-        row = self.query_one("#tracks", DataTable).cursor_row
-        return row if 0 <= row < len(self.items) else None
+        table = self.query_one("#tracks", DataTable)
+        row = table.cursor_row
+        if 0 <= row < len(self.visible_indices):
+            return self.visible_indices[row]
+        return None
 
     def _update_inspector(self, index: int) -> None:
-        if not 0 <= index < len(self.items):
-            return
-        item = self.items[index]
+        entry = self.entries[index]
+        if self.phase == "choose":
+            lines = self._metadata_inspector(entry, index)
+        else:
+            lines = self._review_inspector(entry, index)
+        self.query_one("#inspector", Static).update("\n".join(lines))
+
+    def _metadata_inspector(self, entry: TrackEntry, index: int) -> list[str]:
+        lines = [entry.path.name, str(entry.path.parent), ""]
+        if entry.metadata_error is not None:
+            return [
+                *lines,
+                "Metadata could not be read",
+                f"  {entry.metadata_error.description}",
+                "",
+                "This track cannot be analyzed safely until its metadata is readable.",
+            ]
+
+        assert entry.metadata is not None
+        metadata = entry.metadata
+        genre = ", ".join(metadata.genre_state.standard) or "None"
+        cached_plan = metadata.cached_plan
+        cache_status = (
+            f"Local result needs reanalysis ({metadata.cache_reason})"
+            if metadata.cache_status == "stale"
+            else None
+        )
+        predictions: Sequence[Prediction] = (
+            cached_plan.evidence
+            if cached_plan is not None and metadata.cache_status == "stale"
+            else metadata.stored_predictions
+        )
+        selected = self._select_for_review(predictions)
+        lines.extend(
+            [
+                "Current file metadata",
+                f"  Standard genre: {genre}",
+                f"  SetTag status: {cache_status or STATUS_LABELS[metadata.status]}",
+                f"  Last analyzed: {self._full_analyzed_at(entry)}",
+                "",
+                (
+                    "Local review candidates (stale)"
+                    if metadata.cache_status == "stale"
+                    else "Review candidates from stored evidence"
+                ),
+            ]
+        )
+        if predictions:
+            lines.extend(self._candidate_lines(predictions, selected))
+        elif metadata.genre_state.settag:
+            lines.extend(
+                f"  • {label} (score metadata unavailable)"
+                for label in metadata.genre_state.settag
+            )
+        else:
+            lines.append("  None")
+
+        lines.extend(
+            [
+                "",
+                *(
+                    [
+                        "Last analysis attempt failed",
+                        f"  {entry.analysis_error.description}",
+                        "",
+                    ]
+                    if entry.analysis_error is not None
+                    else []
+                ),
+                (
+                    "Selected for analysis."
+                    if index in self.analysis_selected
+                    else "Not selected for analysis."
+                ),
+                "The audio model has not been loaded.",
+            ]
+        )
+        return lines
+
+    def _full_analyzed_at(self, entry: TrackEntry) -> str:
+        if entry.plan is not None:
+            values = entry.plan.desired["SETTAG_ANALYZED_AT"]
+            return values[0] if values else "Never"
+        if entry.metadata is not None and entry.metadata.cached_plan is not None:
+            values = entry.metadata.cached_plan.desired["SETTAG_ANALYZED_AT"]
+            return values[0] if values else "Never"
+        if entry.metadata is not None:
+            return entry.metadata.analyzed_at or "Never"
+        return "Never"
+
+    def _review_inspector(self, entry: TrackEntry, index: int) -> list[str]:
+        lines = [entry.path.name, str(entry.path.parent), ""]
+        if entry.analysis_error is not None:
+            return [
+                *lines,
+                "Analysis failed",
+                f"  {entry.analysis_error.description}",
+                "",
+                "Return to the library with B to retry or choose another track.",
+            ]
+        if entry.plan is None:
+            return [*lines, "No analysis result is available."]
+
+        item = entry.plan
         current = ", ".join(item.file_genre) or "None"
         if item.target_file_genre is None:
             genre_line = f"  {current} (unchanged)"
@@ -559,25 +1063,35 @@ class SetTagApp(App[TuiOutcome]):
             target = ", ".join(item.target_file_genre) or "None"
             genre_line = f"  {current} → {target} (staged)"
 
-        lines = [
-            item.path.name,
-            str(item.path.parent),
-            "",
-            "Standard file genre",
-            genre_line,
-            "",
-            "Ranked model evidence",
-        ]
-        if item.selected:
-            width = max(len(prediction.label) for prediction in item.selected)
-            lines.extend(
-                f"  {rank:>2}. {prediction.label:<{width}}  {prediction.score:.3f}"
-                for rank, prediction in enumerate(item.selected, start=1)
-            )
+        suggestion = suggested_file_genre(item)
+        model_child = _suggested_label(item.selected)
+        rollup_line = (
+            f"  Suggested roll-up: {model_child} → {suggestion}"
+            if suggestion and model_child and suggestion != model_child
+            else None
+        )
+        lines.extend(
+            [
+                "Standard file genre",
+                genre_line,
+                *([rollup_line] if rollup_line else []),
+                "",
+                "Review candidates",
+            ]
+        )
+        if item.evidence:
+            lines.extend(self._candidate_lines(item.evidence, item.selected))
         else:
-            lines.append("  No labels met the threshold.")
+            lines.append("  No ranked evidence was returned by the model.")
 
-        lines.extend(["", f"Staged metadata changes ({len(item.readable_changes)})"])
+        lines.extend(
+            [
+                "",
+                "SetTag analysis bundle",
+                f"  {len(item.evidence)} ranked scores with provenance",
+                f"  {len(item.owned_changes)} internal field changes",
+            ]
+        )
         if item.readable_changes:
             lines.extend(f"  • {change}" for change in item.readable_changes)
         else:
@@ -585,17 +1099,53 @@ class SetTagApp(App[TuiOutcome]):
         lines.extend(
             [
                 "",
-                "SetTag evidence and scores are written together.",
-                "A standard genre changes only when explicitly staged here.",
+                (
+                    "Will be written."
+                    if index in self.write_selected
+                    else "Will not be written."
+                ),
+                "The SetTag analysis bundle is always written together.",
+                "The standard genre is a separate, editable staged change.",
             ]
         )
-        self.query_one("#inspector", Static).update("\n".join(lines))
+        return lines
+
+    def _candidate_lines(
+        self,
+        evidence: Sequence[Prediction],
+        selected: Sequence[Prediction],
+    ) -> list[str]:
+        cutoff = f"{self.score_cutoff:.3f}"
+        if cutoff.endswith("0"):
+            cutoff = cutoff[:-1]
+        lines = [
+            f"  Score cutoff ≥ {cutoff} · maximum {self.review_top}",
+        ]
+        if selected:
+            width = max(len(prediction.label) for prediction in selected)
+            lines.extend(
+                f"  {rank:>2}. {prediction.label:<{width}}  {prediction.score:.3f}"
+                for rank, prediction in enumerate(selected, start=1)
+            )
+        else:
+            lines.append("  No candidate met the review cutoff.")
+
+        hidden = len(evidence) - len(selected)
+        if hidden:
+            noun = "score" if hidden == 1 else "scores"
+            lines.append(
+                f"  {hidden} additional ranked {noun} stored for importing apps."
+            )
+        return lines
 
     def _refresh_row(self, index: int) -> None:
+        if index not in self.visible_indices:
+            return
+        row = self.visible_indices.index(index)
         table = self.query_one("#tracks", DataTable)
-        for column, value in enumerate(self._row_cells(index, self.items[index])):
+        for column, value in enumerate(self._row_cells(index)):
             table.update_cell_at(
-                Coordinate(index, column),
+                Coordinate(row, column),
                 value,
                 update_width=True,
             )
@@ -603,15 +1153,47 @@ class SetTagApp(App[TuiOutcome]):
         self._update_status()
 
     def _update_status(self, message: str | None = None) -> None:
-        selected = len(self.selected)
-        genre_edits = sum(
-            self.items[index].standard_genre_change is not None
-            for index in self.selected
-        )
-        base = (
-            f"{selected} included  ·  {genre_edits} standard genre edits"
-            "  ·  Space include/exclude  ·  W preflight and write"
-        )
+        if self.busy and self._pending_analysis_indices:
+            if self._analysis_cancel_requested.is_set():
+                base = (
+                    "Cancel requested"
+                    "  ·  The current track will finish"
+                    "  ·  Completed results will be kept"
+                )
+            else:
+                base = (
+                    "Analysis is read-only"
+                    "  ·  Esc cancels after the current track"
+                )
+            self.query_one("#status", Static).update(
+                f"{message}  ·  {base}" if message else base
+            )
+            return
+
+        if self.phase == "choose":
+            selected = sum(
+                index in self.analysis_selected
+                for index in self.visible_indices
+            )
+            base = (
+                f"{selected} selected in this view"
+                f"  ·  Filter: {FILTER_LABELS[self.library_filter]}"
+                "  ·  Space toggle  ·  Enter/R analyze selected"
+            )
+        else:
+            selected = len(self.write_selected)
+            genre_edits = sum(
+                (
+                    self.entries[index].plan is not None
+                    and self.entries[index].plan.standard_genre_change is not None
+                )
+                for index in self.write_selected
+            )
+            base = (
+                f"{selected} will be written"
+                f"  ·  {genre_edits} standard genre edits"
+                "  ·  Space toggle  ·  Enter/W review write"
+            )
         self.query_one("#status", Static).update(
             f"{message}  ·  {base}" if message else base
         )
@@ -622,86 +1204,386 @@ class SetTagApp(App[TuiOutcome]):
         index = self._current_index()
         if index is None:
             return
-        if index in self.selected:
-            self.selected.remove(index)
-        elif self.items[index].readable_changes:
-            self.selected.add(index)
+        if self.phase == "choose":
+            entry = self.entries[index]
+            if not entry.can_analyze:
+                self.notify(
+                    "This track's metadata could not be read safely.",
+                    severity="warning",
+                )
+                return
+            selection = self.analysis_selected
+        else:
+            entry = self.entries[index]
+            if entry.plan is None or not entry.plan.readable_changes:
+                return
+            selection = self.write_selected
+
+        if index in selection:
+            selection.remove(index)
+        else:
+            selection.add(index)
         self._refresh_row(index)
 
-    def action_select_all(self) -> None:
+    def action_toggle_all(self) -> None:
         if self.busy:
             return
-        self.selected = {
+        if self.phase == "choose":
+            eligible = {
+                index
+                for index in self.visible_indices
+                if self.entries[index].can_analyze
+            }
+            selection = self.analysis_selected
+        else:
+            eligible = {
+                index
+                for index in self.visible_indices
+                if (
+                    self.entries[index].plan is not None
+                    and bool(self.entries[index].plan.readable_changes)
+                )
+            }
+            selection = self.write_selected
+
+        if eligible and eligible.issubset(selection):
+            selection.difference_update(eligible)
+        else:
+            selection.update(eligible)
+        self._rebuild_table()
+
+    def action_toggle_details(self) -> None:
+        visible = not self.has_class("details-open")
+        self.set_class(visible, "details-open")
+        index = self._current_index()
+        if visible and index is not None:
+            self._update_inspector(index)
+        self.query_one("#tracks", DataTable).focus()
+
+    def action_cycle_filter(self) -> None:
+        if self.busy:
+            return
+        if self.phase != "choose":
+            self.notify("Filters apply to the library view. Press B first.")
+            return
+        position = FILTER_ORDER.index(self.library_filter)
+        self.library_filter = FILTER_ORDER[(position + 1) % len(FILTER_ORDER)]
+        self._rebuild_table()
+
+    def action_analyze(self) -> None:
+        if self.busy:
+            return
+        if self.phase != "choose":
+            self.notify("Press B to choose another analysis batch.")
+            return
+        indices = tuple(
             index
-            for index, item in enumerate(self.items)
-            if bool(item.readable_changes)
-        }
-        self._refresh_all_rows()
+            for index in self.visible_indices
+            if (
+                index in self.analysis_selected
+                and self.entries[index].can_analyze
+            )
+        )
+        if not indices:
+            self.notify(
+                "Select at least one visible, readable track first.",
+                severity="warning",
+            )
+            return
+        self._analysis_cancel_requested.clear()
+        self._pending_analysis_indices = indices
+        self._analysis_completed_count = 0
+        self._analysis_current_path = self.entries[indices[0]].path
+        self.busy = True
+        self.sub_title = "Analyzing selected tracks"
+        self.refresh_bindings()
+        self._show_analysis_activity()
+        self._update_status()
+        self._analyze_selected(indices)
 
-    def action_select_none(self) -> None:
+    def action_cancel_analysis(self) -> None:
+        if not self.busy or not self._pending_analysis_indices:
+            return
+        if self._analysis_cancel_requested.is_set():
+            return
+        self._analysis_cancel_requested.set()
+        self.refresh_bindings()
+        self._show_cancel_requested()
+        self._update_status()
+
+    @work(thread=True, exclusive=True, group="analysis", exit_on_error=False)
+    def _analyze_selected(self, indices: tuple[int, ...]) -> None:
+        paths = [self.entries[index].path for index in indices]
+        try:
+            batch = self.analysis_loader(
+                paths,
+                self._analysis_progress_from_worker,
+                self._analysis_cancel_requested.is_set,
+            )
+        except Exception as error:
+            self.call_from_thread(
+                self._analysis_failed,
+                f"{type(error).__name__}: {error}",
+            )
+            return
+        self.call_from_thread(self._analysis_complete, batch)
+
+    def _analysis_progress_from_worker(
+        self,
+        completed: int,
+        total: int,
+        path: Path,
+    ) -> None:
+        self.call_from_thread(
+            self._advance_analysis_activity,
+            completed,
+            total,
+            path,
+        )
+
+    def _show_analysis_activity(self) -> None:
+        total = len(self._pending_analysis_indices)
+        path = self._analysis_current_path
+        activity = self.query_one("#analysis-activity")
+        activity.display = True
+        self.query_one("#analysis-activity-title", Static).update(
+            f"Analyzing track 1 of {total}  ·  0 complete"
+        )
+        if path is not None:
+            self.query_one("#analysis-activity-file", Static).update(
+                f"Current file: {path.name}  ·  {path.parent}"
+            )
+        self.query_one("#analysis-progress", ProgressBar).update(
+            total=total,
+            progress=0,
+        )
+
+    def _show_cancel_requested(self) -> None:
+        total = len(self._pending_analysis_indices)
+        path = self._analysis_current_path
+        self.query_one("#analysis-activity-title", Static).update(
+            "Cancel requested"
+            f"  ·  {self._analysis_completed_count} of {total} complete"
+        )
+        if path is not None:
+            self.query_one("#analysis-activity-file", Static).update(
+                f"Finishing {path.name}  ·  {path.parent}"
+            )
+
+    def _advance_analysis_activity(
+        self,
+        completed: int,
+        total: int,
+        path: Path,
+    ) -> None:
+        self._analysis_completed_count = completed
+        progress = self.query_one("#analysis-progress", ProgressBar)
+        progress.update(total=total, progress=completed)
+
+        if self._analysis_cancel_requested.is_set():
+            self._analysis_current_path = path
+            self.query_one("#analysis-activity-title", Static).update(
+                f"Stopping analysis  ·  {completed} of {total} complete"
+            )
+            self.query_one("#analysis-activity-file", Static).update(
+                f"Finished {path.name}  ·  completed results will be kept"
+            )
+            return
+
+        if completed < len(self._pending_analysis_indices):
+            next_index = self._pending_analysis_indices[completed]
+            next_path = self.entries[next_index].path
+            self._analysis_current_path = next_path
+            self.query_one("#analysis-activity-title", Static).update(
+                f"Analyzing track {completed + 1} of {total}"
+                f"  ·  {completed} complete"
+            )
+            self.query_one("#analysis-activity-file", Static).update(
+                f"Current file: {next_path.name}  ·  {next_path.parent}"
+            )
+            return
+
+        self._analysis_current_path = None
+        self.query_one("#analysis-activity-title", Static).update(
+            f"Finalizing results  ·  {completed} of {total} complete"
+        )
+        self.query_one("#analysis-activity-file", Static).update(
+            f"Finished {path.name}"
+        )
+
+    def _hide_analysis_activity(self) -> None:
+        self.query_one("#analysis-activity").display = False
+        self._analysis_completed_count = 0
+        self._analysis_current_path = None
+
+    def _analysis_failed(self, message: str) -> None:
+        self.busy = False
+        self._pending_analysis_indices = ()
+        self._analysis_cancel_requested.clear()
+        self._hide_analysis_activity()
+        self.sub_title = "Choose tracks to analyze"
+        self.refresh_bindings()
+        self._update_status("Analysis did not start; nothing was written")
+        self.push_screen(ErrorScreen("Could not analyze selection", message))
+
+    def _analysis_complete(self, batch: AnalysisBatch) -> None:
+        by_path = {entry.path: index for index, entry in enumerate(self.entries)}
+        completed_paths: set[Path] = set()
+        completed_indices: set[int] = set()
+        for plan in batch.planned:
+            plan = stage_default_file_genre(plan)
+            index = by_path[plan.path]
+            entry = self.entries[index]
+            entry.plan = plan
+            entry.plan_cached = False
+            entry.analysis_error = None
+            self.review_indices.add(index)
+            if plan.readable_changes:
+                self.write_selected.add(index)
+            self._persist(index)
+            completed_paths.add(plan.path)
+            completed_indices.add(index)
+
+        for failure in batch.failures:
+            index = by_path[failure.path]
+            entry = self.entries[index]
+            entry.plan = None
+            entry.analysis_error = failure
+            self.review_indices.add(index)
+            self.write_selected.discard(index)
+            completed_paths.add(failure.path)
+            completed_indices.add(index)
+
+        pending_indices = self._pending_analysis_indices
+        if not batch.cancelled:
+            for index in pending_indices:
+                entry = self.entries[index]
+                if entry.path not in completed_paths:
+                    entry.plan = None
+                    entry.analysis_error = AnalysisFailure(
+                        path=entry.path,
+                        error_type="RuntimeError",
+                        message="Analyzer returned no result for the selected track",
+                    )
+                    self.review_indices.add(index)
+                    self.write_selected.discard(index)
+                    completed_indices.add(index)
+
+        self.analysis_selected.difference_update(completed_indices)
+        self._pending_analysis_indices = ()
+        self.busy = False
+        self._analysis_cancel_requested.clear()
+        self._hide_analysis_activity()
+        self.refresh_bindings()
+
+        remaining = len(pending_indices) - len(completed_indices)
+        if batch.cancelled and remaining > 0:
+            if completed_indices:
+                self._show_review()
+                self._update_status(
+                    f"Cancelled after {len(completed_indices)} of "
+                    f"{len(pending_indices)} tracks; {remaining} remain selected"
+                )
+            else:
+                self._show_library()
+                self._update_status(
+                    "Analysis cancelled; visible tracks remain selected"
+                )
+            return
+
+        self._show_review()
+
+    def action_library(self) -> None:
         if self.busy:
             return
-        self.selected.clear()
-        self._refresh_all_rows()
-
-    def _refresh_all_rows(self) -> None:
-        for index in range(len(self.items)):
-            self._refresh_row(index)
+        if self.phase == "choose":
+            return
+        self.analysis_selected = {
+            index
+            for index, entry in enumerate(self.entries)
+            if entry.needs_analysis
+        }
+        self._show_library()
 
     def action_use_suggestion(self) -> None:
         if self.busy:
             return
-        index = self._current_index()
+        index = self._current_review_index()
         if index is None:
             return
-        suggestion = suggested_file_genre(self.items[index])
+        item = self.entries[index].plan
+        assert item is not None
+        suggestion = suggested_file_genre(item)
         if suggestion is None:
             self.notify(
                 "No selected model label is available for this track.",
                 severity="warning",
             )
             return
-        self.items[index] = stage_file_genre(
-            self.items[index],
-            (suggestion,),
-        )
-        self.selected.add(index)
+        self.entries[index].plan = stage_file_genre(item, (suggestion,))
+        self.write_selected.add(index)
+        self._persist(index)
         self._refresh_row(index)
-        self._update_status(f"Staged file genre “{suggestion}”")
+        model_child = _suggested_label(item.selected)
+        source = (
+            f" from “{model_child}”"
+            if model_child and model_child != suggestion
+            else ""
+        )
+        self._update_status(f"Staged file genre “{suggestion}”{source}")
 
     def action_edit_genre(self) -> None:
         if self.busy:
             return
-        index = self._current_index()
+        index = self._current_review_index()
         if index is None:
             return
+        item = self.entries[index].plan
+        assert item is not None
         self.push_screen(
-            GenreEditScreen(self.items[index]),
+            GenreEditScreen(item),
             lambda result: self._genre_edited(index, result),
         )
 
+    def _current_review_index(self) -> int | None:
+        if self.phase != "review":
+            self.notify("Analyze a selection before editing genre suggestions.")
+            return None
+        index = self._current_index()
+        if index is None or self.entries[index].plan is None:
+            self.notify("This track has no analysis result.", severity="warning")
+            return None
+        return index
+
     def _genre_edited(self, index: int, result: str | None) -> None:
         if result is None:
+            return
+        item = self.entries[index].plan
+        if item is None:
             return
         genres = tuple(
             value.strip()
             for value in result.split(",")
             if value.strip()
         )
-        self.items[index] = stage_file_genre(self.items[index], genres)
-        if self.items[index].readable_changes:
-            self.selected.add(index)
+        self.entries[index].plan = stage_file_genre(item, genres)
+        if self.entries[index].plan.readable_changes:
+            self.write_selected.add(index)
+        self._persist(index)
         self._refresh_row(index)
         self._update_status("Standard file genre edit staged")
 
     def action_save(self) -> None:
         if self.busy:
             return
+        if self.phase != "review":
+            self.notify("Analyze a selection before saving a write plan.")
+            return
         planned = self._selected_items()
         if not planned:
             self.notify("Include at least one changed track first.", severity="warning")
             return
-        failures = self.batch.failures if self.batch is not None else ()
+        failures = self._review_failures()
         try:
             path = save_plan(planned, failures=failures)
         except OSError as error:
@@ -713,9 +1595,13 @@ class SetTagApp(App[TuiOutcome]):
     def action_write(self) -> None:
         if self.busy:
             return
-        if self.batch is not None and self.batch.failures:
+        if self.phase != "review":
+            self.notify("Analyze a selection before writing metadata.")
+            return
+        failures = self._review_failures()
+        if failures:
             self.notify(
-                "Writing is disabled because one or more tracks failed analysis.",
+                "Writing is disabled because one or more reviewed tracks failed analysis.",
                 severity="error",
             )
             return
@@ -744,18 +1630,18 @@ class SetTagApp(App[TuiOutcome]):
             return
         self.call_from_thread(self._confirm_preflight, prepared)
 
-    def _confirm_preflight(self, prepared: Sequence[object]) -> None:
+    def _confirm_preflight(self, _prepared: Sequence[object]) -> None:
         self.busy = False
         track_count = len(self._pending_write)
         standard_count = sum(
             item.standard_genre_change is not None for item in self._pending_write
         )
-        field_count = sum(len(item.owned_changes) for item in self._pending_write)
+        evidence_count = sum(len(item.evidence) for item in self._pending_write)
         self.push_screen(
             ConfirmWriteScreen(
                 track_count=track_count,
                 standard_genre_count=standard_count,
-                field_change_count=field_count,
+                evidence_count=evidence_count,
             ),
             self._write_confirmation,
         )
@@ -778,10 +1664,16 @@ class SetTagApp(App[TuiOutcome]):
                 on_progress=self._write_progress_from_worker,
             )
         except PartialWriteError as error:
+            written = self._pending_write[: error.completed]
+            cleanup_error = self._discard_written(written)
+            message = str(error)
+            if cleanup_error is not None:
+                message += f"\n\nLocal workbench cleanup also failed: {cleanup_error}"
             self.call_from_thread(
-                self._write_failed,
+                self._partial_write_failed,
                 "Write stopped",
-                str(error),
+                message,
+                written,
             )
             return
         except Exception as error:
@@ -791,14 +1683,106 @@ class SetTagApp(App[TuiOutcome]):
                 str(error),
             )
             return
-        self.call_from_thread(
-            self.exit,
-            TuiOutcome(
-                0,
-                f"Done. {completed} file{'s' if completed != 1 else ''} "
-                "written and verified.",
-            ),
+        cleanup_error = self._discard_written(self._pending_write)
+        self.call_from_thread(self._write_complete, completed, cleanup_error)
+
+    def _write_complete(
+        self,
+        completed: int,
+        cleanup_error: str | None,
+    ) -> None:
+        written = self._pending_write
+        self._accept_written(written)
+        self._written_count += completed
+        self.busy = False
+        self._pending_write = ()
+        message = (
+            f"Done. {completed} file{'s' if completed != 1 else ''} "
+            "written and verified."
         )
+        if cleanup_error is not None:
+            message += (
+                " The audio write succeeded, but SetTag could not clear its "
+                f"local workbench entry: {cleanup_error}"
+            )
+            self.notify(
+                "The audio write succeeded, but local workbench cleanup failed.",
+                severity="warning",
+                timeout=8,
+            )
+        if self.review_indices:
+            self._show_review()
+        else:
+            self._show_library()
+        self._update_status(message)
+        self.notify(message, title="Write complete", timeout=6)
+
+    def _partial_write_failed(
+        self,
+        title: str,
+        message: str,
+        written: Sequence[PlannedWrite],
+    ) -> None:
+        self._accept_written(written)
+        self._written_count += len(written)
+        if self.review_indices:
+            self._show_review()
+        else:
+            self._show_library()
+        self._write_failed(title, message)
+
+    def _accept_written(self, items: Sequence[PlannedWrite]) -> None:
+        by_path = {entry.path: index for index, entry in enumerate(self.entries)}
+        for item in items:
+            index = by_path[item.path]
+            entry = self.entries[index]
+            if entry.metadata is not None:
+                analyzed_at_values = item.desired["SETTAG_ANALYZED_AT"]
+                analyzed_at = (
+                    analyzed_at_values[0]
+                    if analyzed_at_values
+                    else None
+                )
+                standard_genre = (
+                    item.target_file_genre
+                    if item.target_file_genre is not None
+                    else item.file_genre
+                )
+                entry.metadata = replace(
+                    entry.metadata,
+                    genre_state=replace(
+                        entry.metadata.genre_state,
+                        standard=standard_genre,
+                        settag=tuple(
+                            prediction.label for prediction in item.selected
+                        ),
+                    ),
+                    owned=item.desired,
+                    stored_predictions=item.evidence,
+                    status="current",
+                    analyzed_at=analyzed_at,
+                    cached_plan=None,
+                    cache_status=None,
+                    cache_reason=None,
+                )
+            entry.plan = None
+            entry.plan_cached = False
+            entry.analysis_error = None
+            self.analysis_selected.discard(index)
+            self.write_selected.discard(index)
+            self.review_indices.discard(index)
+
+    def _discard_written(
+        self,
+        items: Sequence[PlannedWrite],
+    ) -> str | None:
+        if self.discard_plans is None or not items:
+            return None
+        try:
+            self.discard_plans([item.path for item in items])
+        except Exception as error:
+            return f"{type(error).__name__}: {error}"
+        return None
 
     def _write_progress_from_worker(
         self,
@@ -818,14 +1802,46 @@ class SetTagApp(App[TuiOutcome]):
         self.push_screen(ErrorScreen(title, message))
 
     def _selected_items(self) -> tuple[PlannedWrite, ...]:
+        items: list[PlannedWrite] = []
+        for index in sorted(self.write_selected):
+            item = self.entries[index].plan
+            if item is not None and item.readable_changes:
+                items.append(item)
+        return tuple(items)
+
+    def _review_failures(self) -> tuple[AnalysisFailure, ...]:
         return tuple(
-            self.items[index]
-            for index in sorted(self.selected)
-            if self.items[index].readable_changes
+            failure
+            for index in sorted(self.review_indices)
+            if (failure := self.entries[index].analysis_error) is not None
         )
+
+    def _persist(self, index: int) -> None:
+        if self.persist_plan is None:
+            return
+        item = self.entries[index].plan
+        if item is None:
+            return
+        try:
+            self.persist_plan(item)
+        except Exception as error:
+            self.notify(
+                "The result is still available in this session, but could not "
+                f"be saved to the local workbench: {type(error).__name__}: {error}",
+                severity="warning",
+                timeout=8,
+            )
 
     def action_quit(self) -> None:
         if self.busy:
             self.notify("A safety check or write is in progress.", severity="warning")
             return
-        self.exit(TuiOutcome(0, "Nothing was written."))
+        if self._written_count:
+            message = (
+                f"Done. {self._written_count} "
+                f"file{'s' if self._written_count != 1 else ''} "
+                "written and verified."
+            )
+        else:
+            message = "Nothing was written."
+        self.exit(TuiOutcome(0, message))

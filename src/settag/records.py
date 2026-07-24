@@ -6,7 +6,7 @@ from typing import Any
 
 from settag import __version__
 from settag.hashing import sha256_file, sha256_json
-from settag.policy import Prediction
+from settag.policy import EVIDENCE_LIMIT, Prediction
 from settag.tags import TagPlan
 
 
@@ -15,11 +15,18 @@ def utc_now() -> str:
 
 
 def config_record(*, top: int, threshold: float) -> dict[str, object]:
-    values: dict[str, object] = {
-        "top": top,
-        "threshold": threshold,
+    evidence: dict[str, object] = {
+        "schema": "settag.evidence/v1",
+        "limit": EVIDENCE_LIMIT,
     }
-    return {**values, "sha256": sha256_json(values)}
+    return {
+        "evidence": evidence,
+        "selection": {
+            "top": top,
+            "score_cutoff": threshold,
+        },
+        "sha256": sha256_json(evidence),
+    }
 
 
 def source_record(path: Path) -> dict[str, object]:
@@ -40,6 +47,7 @@ def analysis_record(
     model: dict[str, object],
     config: dict[str, object],
     predictions: list[Prediction],
+    evidence: list[Prediction],
     selected: list[Prediction],
     tag_plan: TagPlan,
     write_requested: bool,
@@ -66,6 +74,7 @@ def analysis_record(
         "model": model,
         "config": config,
         "predictions": [item.to_dict() for item in predictions],
+        "evidence": [item.to_dict() for item in evidence],
         "selected": [item.to_dict() for item in selected],
         "tag_plan": tag_plan.to_dict(),
         "write": write,

@@ -76,15 +76,15 @@ class GenreState:
 
 
 def build_owned_values(
-    selected: list[Prediction],
+    evidence: list[Prediction],
     *,
     model_id: str,
     analyzed_at: str,
     config_sha256: str,
 ) -> OwnedValues:
-    genres = [item.label for item in selected]
+    genres = [item.label for item in evidence]
     scores = json.dumps(
-        [item.to_dict() for item in selected],
+        [item.to_dict() for item in evidence],
         ensure_ascii=False,
         separators=(",", ":"),
     )

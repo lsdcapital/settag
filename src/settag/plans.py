@@ -6,12 +6,37 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
-from settag.policy import Prediction
+from settag.policy import EVIDENCE_LIMIT, Prediction
 from settag.tags import GenreState, OwnedValues, TagChange, TagPlan
 
-PLAN_SCHEMA = "settag.plan/v2"
+PLAN_SCHEMA = "settag.plan/v3"
+LEGACY_PLAN_SCHEMA_V2 = "settag.plan/v2"
 LEGACY_PLAN_SCHEMA = "settag.plan/v1"
+SUPPORTED_PLAN_SCHEMAS = {
+    PLAN_SCHEMA,
+    LEGACY_PLAN_SCHEMA_V2,
+    LEGACY_PLAN_SCHEMA,
+}
 PLAN_ERROR_SCHEMA = "settag.plan-error/v1"
+
+HOUSE_MODEL_LABELS = frozenset(
+    {
+        "Electronic---Acid House",
+        "Electronic---Deep House",
+        "Electronic---Electro House",
+        "Electronic---Euro House",
+        "Electronic---Garage House",
+        "Electronic---Ghetto House",
+        "Electronic---Hard House",
+        "Electronic---Hip-House",
+        "Electronic---House",
+        "Electronic---Italo House",
+        "Electronic---Progressive House",
+        "Electronic---Tech House",
+        "Electronic---Tribal House",
+        "Electronic---Tropical House",
+    }
+)
 
 
 class PlanError(ValueError):
@@ -25,6 +50,7 @@ class PlannedWrite:
     source_size: int
     source_mtime_ns: int
     file_genre: tuple[str, ...]
+    evidence: tuple[Prediction, ...]
     selected: tuple[Prediction, ...]
     desired: OwnedValues
     metadata_format: str
@@ -62,10 +88,45 @@ def stage_file_genre(
     return replace(item, target_file_genre=target)
 
 
+def suggested_file_genre(item: PlannedWrite) -> str | None:
+    if not item.selected:
+        return None
+    return standard_genre_from_model_label(item.selected[0].label)
+
+
+def standard_genre_from_model_label(label: str) -> str | None:
+    """Return the conservative conventional genre for a model label.
+
+    SetTag keeps the complete child label in its evidence. The standard genre
+    rolls up only explicitly reviewed families; all other labels retain their
+    direct Discogs child name.
+    """
+    normalized = label.strip()
+    child = normalized.rsplit("---", 1)[-1].strip()
+    if not child:
+        return None
+    if normalized in HOUSE_MODEL_LABELS:
+        return "House"
+    return child
+
+
+def stage_default_file_genre(item: PlannedWrite) -> PlannedWrite:
+    """Stage its conservative standard-genre suggestion when the genre is empty."""
+    if item.file_genre or item.target_file_genre is not None:
+        return item
+    suggestion = suggested_file_genre(item)
+    return (
+        stage_file_genre(item, (suggestion,))
+        if suggestion is not None
+        else item
+    )
+
+
 def plan_record(
     *,
     source: dict[str, object],
     genre_state: GenreState,
+    evidence: list[Prediction],
     selected: list[Prediction],
     tag_plan: TagPlan,
     readable_changes: list[str],
@@ -96,6 +157,7 @@ def plan_record(
         "target_file_genre": (
             list(target_file_genre) if target_file_genre is not None else None
         ),
+        "evidence": [item.to_dict() for item in evidence],
         "selected": [item.to_dict() for item in selected],
         "metadata_format": tag_plan.format,
         "provenance": {
@@ -134,6 +196,7 @@ def planned_write_record(item: PlannedWrite) -> dict[str, object]:
             if item.target_file_genre is not None
             else None
         ),
+        "evidence": [prediction.to_dict() for prediction in item.evidence],
         "selected": [prediction.to_dict() for prediction in item.selected],
         "metadata_format": item.metadata_format,
         "provenance": {
@@ -182,16 +245,14 @@ def load_plan(path: Path) -> list[PlannedWrite]:
         if schema == PLAN_ERROR_SCHEMA:
             message = _string(record.get("error"), f"{resolved}:{line_number}.error")
             raise PlanError(f"{resolved}:{line_number}: plan contains an analysis error: {message}")
-        if schema not in {PLAN_SCHEMA, LEGACY_PLAN_SCHEMA}:
+        if schema not in SUPPORTED_PLAN_SCHEMAS:
             raise PlanError(
                 f"{resolved}:{line_number}: unsupported schema {schema!r}; "
                 f"expected {PLAN_SCHEMA!r}"
             )
-        item = _planned_write(
+        item = planned_write_from_record(
             record,
-            resolved=resolved,
-            line_number=line_number,
-            schema=schema,
+            location=f"{resolved}:{line_number}",
         )
         if item.path in seen_paths:
             raise PlanError(f"{resolved}:{line_number}: duplicate path {item.path}")
@@ -203,14 +264,30 @@ def load_plan(path: Path) -> list[PlannedWrite]:
     return planned
 
 
+def planned_write_from_record(
+    value: object,
+    *,
+    location: str = "plan record",
+) -> PlannedWrite:
+    record = _mapping(value, location)
+    schema = _string(record.get("schema"), f"{location}.schema")
+    if schema == PLAN_ERROR_SCHEMA:
+        message = _string(record.get("error"), f"{location}.error")
+        raise PlanError(f"{location}: plan contains an analysis error: {message}")
+    if schema not in SUPPORTED_PLAN_SCHEMAS:
+        raise PlanError(
+            f"{location}: unsupported schema {schema!r}; "
+            f"expected {PLAN_SCHEMA!r}"
+        )
+    return _planned_write(record, location=location, schema=schema)
+
+
 def _planned_write(
     record: dict[str, Any],
     *,
-    resolved: Path,
-    line_number: int,
+    location: str,
     schema: str,
 ) -> PlannedWrite:
-    location = f"{resolved}:{line_number}"
     file_path = Path(_string(record.get("path"), f"{location}.path"))
     if not file_path.is_absolute():
         raise PlanError(f"{location}.path: expected an absolute path")
@@ -237,6 +314,17 @@ def _planned_write(
             else tuple(_string_list(target_value, f"{location}.target_file_genre"))
         )
     selected = tuple(_predictions(record.get("selected"), f"{location}.selected"))
+    evidence = (
+        tuple(_predictions(record.get("evidence"), f"{location}.evidence"))
+        if schema == PLAN_SCHEMA
+        else selected
+    )
+    if schema == PLAN_SCHEMA:
+        _validate_evidence(evidence, f"{location}.evidence")
+        if not _is_ordered_subset(selected, evidence):
+            raise PlanError(
+                f"{location}.selected: expected an ordered subset of the stored evidence"
+            )
     metadata_format = _string(
         record.get("metadata_format"),
         f"{location}.metadata_format",
@@ -270,16 +358,16 @@ def _planned_write(
                 recorded_standard_change,
                 f"{location}.changes.file_genre",
             )
-    genres = [item.label for item in selected] or None
+    genres = [item.label for item in evidence] or None
     scores = (
         [
             json.dumps(
-                [item.to_dict() for item in selected],
+                [item.to_dict() for item in evidence],
                 ensure_ascii=False,
                 separators=(",", ":"),
             )
         ]
-        if selected
+        if evidence
         else None
     )
     desired: OwnedValues = {
@@ -297,6 +385,7 @@ def _planned_write(
         source_size=source_size,
         source_mtime_ns=source_mtime_ns,
         file_genre=file_genre,
+        evidence=evidence,
         selected=selected,
         desired=desired,
         metadata_format=metadata_format,
@@ -314,6 +403,40 @@ def _planned_write(
             f"{location}.changes.file_genre: does not match the staged file genre"
         )
     return planned
+
+
+def _is_ordered_subset(
+    selected: tuple[Prediction, ...],
+    evidence: tuple[Prediction, ...],
+) -> bool:
+    position = 0
+    for prediction in selected:
+        try:
+            position = evidence.index(prediction, position) + 1
+        except ValueError:
+            return False
+    return True
+
+
+def _validate_evidence(
+    evidence: tuple[Prediction, ...],
+    location: str,
+) -> None:
+    if len(evidence) > EVIDENCE_LIMIT:
+        raise PlanError(
+            f"{location}: expected no more than {EVIDENCE_LIMIT} ranked scores"
+        )
+    labels = [prediction.label for prediction in evidence]
+    if len(set(labels)) != len(labels):
+        raise PlanError(f"{location}: expected unique model labels")
+    ranked = tuple(
+        sorted(
+            evidence,
+            key=lambda prediction: (-prediction.score, prediction.label),
+        )
+    )
+    if evidence != ranked:
+        raise PlanError(f"{location}: expected descending score order")
 
 
 def _predictions(value: object, location: str) -> list[Prediction]:
@@ -347,7 +470,7 @@ def friendly_change(change: TagChange) -> str:
         "SETTAG_VERSION": "SetTag version",
         "SETTAG_MODEL": "Analysis model",
         "SETTAG_ANALYZED_AT": "Analysis time",
-        "SETTAG_CONFIG_SHA256": "Selection configuration",
+        "SETTAG_CONFIG_SHA256": "Evidence configuration",
     }
     label = labels.get(logical, logical)
     return f"{label}: {_friendly_values(change.before)} → {_friendly_values(change.after)}"
