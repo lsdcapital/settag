@@ -320,10 +320,9 @@ Current compact plans use `settag.plan/v4`:
 or an empty array (explicitly clear it). SetTag and conventional changes are
 serialized separately.
 
-`analyze --plan` writes v3 with a null target. The Textual app may save an
-explicit target. `load_plan` remains compatible with `settag.plan/v1` and
-`settag.plan/v2` files, treating their selected subset as all available
-evidence.
+`analyze --plan` writes v4 with a null target. The Textual app may save an
+explicit target. `settag.plan/v4` is the only accepted plan schema; earlier
+drafts were never released and are rejected with an explicit error.
 
 Failed tracks use `settag.plan-error/v1`. A file containing any error record
 cannot be applied.

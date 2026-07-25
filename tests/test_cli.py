@@ -25,7 +25,8 @@ from settag.plans import (
 )
 from settag.policy import Prediction
 from settag.state import WorkbenchStore
-from settag.tags import apply_owned_tags, task_evidence_from_owned
+from settag.tags import apply_metadata_tags, task_evidence_from_owned
+from settag.tasks import AnalysisTask
 from settag.workflow import (
     AnalysisBatch,
     analyze_paths,
@@ -59,7 +60,7 @@ class PinnedFakeAnalyzer(FakeAnalyzer):
 
 class FakeInstrumentAnalyzer:
     backend_version = "test"
-    model_manifests = {
+    model_manifests: dict[AnalysisTask, dict[str, object]] = {
         "instrument": {
             "schema": "settag.models/v1",
             "id": "essentia/instrument-effnet/v1",
@@ -70,7 +71,10 @@ class FakeInstrumentAnalyzer:
         },
     }
 
-    def analyze_tasks(self, path: Path) -> dict[str, list[Prediction]]:
+    def analyze_tasks(
+        self,
+        path: Path,
+    ) -> dict[AnalysisTask, list[Prediction]]:
         return {
             "instrument": [
                 Prediction("synthesizer", 0.81),
@@ -125,7 +129,7 @@ def test_analyze_dry_run_emits_plan_without_writing(tmp_path: Path) -> None:
 
     _analyze_one(
         path,
-        analyzer=FakeAnalyzer(),  # type: ignore[arg-type]
+        analyzer=FakeAnalyzer(),
         top=5,
         threshold=0.10,
         write=False,
@@ -147,7 +151,7 @@ def test_analyze_write_applies_exact_planned_fields(tmp_path: Path) -> None:
 
     _analyze_one(
         path,
-        analyzer=FakeAnalyzer(),  # type: ignore[arg-type]
+        analyzer=FakeAnalyzer(),
         top=5,
         threshold=0.10,
         write=True,
@@ -183,7 +187,7 @@ def test_score_cutoff_and_top_do_not_remove_portable_evidence(
 
     _analyze_one(
         path,
-        analyzer=FakeAnalyzer(),  # type: ignore[arg-type]
+        analyzer=FakeAnalyzer(),
         top=1,
         threshold=0.80,
         write=True,
@@ -213,7 +217,7 @@ def test_instrument_only_run_preserves_genre_and_publishes_task_provenance(
 
     _analyze_one(
         path,
-        analyzer=FakeAnalyzer(),  # type: ignore[arg-type]
+        analyzer=FakeAnalyzer(),
         top=5,
         threshold=0.10,
         write=True,
@@ -226,7 +230,7 @@ def test_instrument_only_run_preserves_genre_and_publishes_task_provenance(
     output = StringIO()
     _analyze_one(
         path,
-        analyzer=FakeInstrumentAnalyzer(),  # type: ignore[arg-type]
+        analyzer=FakeInstrumentAnalyzer(),
         top=5,
         threshold=0.10,
         write=True,
@@ -245,9 +249,7 @@ def test_instrument_only_run_preserves_genre_and_publishes_task_provenance(
     provenance = json.loads(tags["TXXX:SETTAG_PROVENANCE"].text[0])
     assert provenance["schema"] == "settag.provenance/v2"
     assert set(provenance["tasks"]) == {"genre", "instrument"}
-    assert provenance["tasks"]["instrument"]["model"]["files"]["embedding"]["sha256"] == (
-        "a" * 64
-    )
+    assert provenance["tasks"]["instrument"]["model"]["files"]["embedding"]["sha256"] == ("a" * 64)
     assert set(record["tasks"]) == {"instrument"}
     assert "genre" not in record["tasks"]
 
@@ -294,7 +296,7 @@ def test_default_file_genre_never_replaces_an_existing_value(
     _add_genre(path, "Existing genre")
     track = prepare_track(
         path,
-        analyzer=FakeAnalyzer(),  # type: ignore[arg-type]
+        analyzer=FakeAnalyzer(),
         top=5,
         threshold=0.10,
     )
@@ -316,7 +318,7 @@ def test_analyze_without_output_logs_summary_and_complete_debug_record(
     with caplog.at_level(logging.DEBUG, logger="settag"):
         _analyze_one(
             path,
-            analyzer=FakeAnalyzer(),  # type: ignore[arg-type]
+            analyzer=FakeAnalyzer(),
             top=5,
             threshold=0.10,
             write=False,
@@ -330,8 +332,7 @@ def test_analyze_without_output_logs_summary_and_complete_debug_record(
         "Electronic---House score 0.050"
     ) in messages
     assert (
-        "  dry run: SetTag analysis bundle would change "
-        "(7 internal fields); nothing written"
+        "  dry run: SetTag analysis bundle would change (7 internal fields); nothing written"
     ) in messages
     debug_record = json.loads(caplog.records[-1].getMessage())
     genre = debug_record["tasks"]["genre"]
@@ -358,7 +359,7 @@ def test_inspect_reads_existing_tags_without_running_the_model(tmp_path: Path, c
     _add_genre(path, "Existing genre")
     _analyze_one(
         path,
-        analyzer=FakeAnalyzer(),  # type: ignore[arg-type]
+        analyzer=FakeAnalyzer(),
         top=5,
         threshold=0.10,
         write=True,
@@ -491,7 +492,7 @@ def test_interactive_run_uses_configured_tasks_and_task_analyzer(
         def __call__(self, paths, on_progress, should_cancel) -> AnalysisBatch:
             return analyze_paths(
                 paths,
-                analyzer=self.analyzer,  # type: ignore[arg-type]
+                analyzer=self.analyzer,
                 top=self.top,
                 threshold=self.threshold,
                 on_progress=on_progress,
@@ -577,7 +578,7 @@ def test_interactive_default_restores_ready_workbench_plan(
     plan = planned_write_for_track(
         prepare_track(
             path,
-            analyzer=PinnedFakeAnalyzer(),  # type: ignore[arg-type]
+            analyzer=PinnedFakeAnalyzer(),
             top=5,
             threshold=0.10,
         )
@@ -636,14 +637,14 @@ def test_current_embedded_metadata_supersedes_workbench_plan(
     plan = planned_write_for_track(
         prepare_track(
             path,
-            analyzer=PinnedFakeAnalyzer(),  # type: ignore[arg-type]
+            analyzer=PinnedFakeAnalyzer(),
             top=5,
             threshold=0.10,
         )
     )
     store = WorkbenchStore(state_path)
     store.save(plan)
-    apply_owned_tags(path, plan.desired)
+    apply_metadata_tags(path, plan.desired)
 
     class FakeApp:
         def __init__(self, **kwargs) -> None:
@@ -678,11 +679,14 @@ def test_current_embedded_metadata_supersedes_workbench_plan(
     config = plan.desired["SETTAG_CONFIG_SHA256"]
     assert model is not None
     assert config is not None
-    assert store.load(
-        [path],
-        expected_model_id=model[0],
-        expected_config_sha256=config[0],
-    ) == {}
+    assert (
+        store.load(
+            [path],
+            expected_model_ids={"genre": model[0]},
+            expected_config_sha256=config[0],
+        )
+        == {}
+    )
 
 
 def test_compact_plan_is_human_readable_and_applies_after_one_confirmation(
@@ -792,7 +796,7 @@ def test_saved_plan_can_stage_and_apply_a_standard_genre_edit(
     _silent_wav(path)
     track = prepare_track(
         path,
-        analyzer=FakeAnalyzer(),  # type: ignore[arg-type]
+        analyzer=FakeAnalyzer(),
         top=5,
         threshold=0.10,
     )
@@ -821,66 +825,40 @@ def test_saved_plan_can_stage_and_apply_a_standard_genre_edit(
     ]
 
 
-def test_legacy_evidence_only_plan_remains_readable(
+@pytest.mark.parametrize(
+    "schema",
+    ["settag.plan/v1", "settag.plan/v2", "settag.plan/v3"],
+)
+def test_superseded_plan_schemas_are_rejected(
     tmp_path: Path,
     capsys,
+    schema: str,
 ) -> None:
     path = tmp_path / "track.wav"
     plan_path = tmp_path / "legacy.jsonl"
     _silent_wav(path)
     track = prepare_track(
         path,
-        analyzer=FakeAnalyzer(),  # type: ignore[arg-type]
+        analyzer=FakeAnalyzer(),
         top=5,
         threshold=0.10,
     )
     record = planned_write_record(planned_write_for_track(track))
-    record["schema"] = "settag.plan/v1"
-    del record["target_file_genre"]
-    del record["evidence"]
-    changes = record["changes"]
-    assert isinstance(changes, dict)
-    changes["settag"][0] = "Genre labels: 0 → 1"
-    record["changes"] = changes["settag"]
+    record["schema"] = schema
     plan_path.write_text(json.dumps(record) + "\n", encoding="utf-8")
 
-    assert main(["preview", str(plan_path)]) == 0
-    assert "Electronic---Deep House" in capsys.readouterr().out
+    assert main(["preview", str(plan_path)]) == 2
+    stderr = capsys.readouterr().err
+    assert f"unsupported schema {schema!r}" in stderr
+    assert "expected 'settag.plan/v4'" in stderr
 
 
-def test_v2_plan_remains_readable_as_its_selected_evidence(
-    tmp_path: Path,
-    capsys,
-) -> None:
-    path = tmp_path / "track.wav"
-    plan_path = tmp_path / "v2.jsonl"
-    _silent_wav(path)
-    track = prepare_track(
-        path,
-        analyzer=FakeAnalyzer(),  # type: ignore[arg-type]
-        top=5,
-        threshold=0.10,
-    )
-    record = planned_write_record(planned_write_for_track(track))
-    record["schema"] = "settag.plan/v2"
-    del record["evidence"]
-    changes = record["changes"]
-    assert isinstance(changes, dict)
-    changes["settag"][0] = "Genre labels: 0 → 1"
-    plan_path.write_text(json.dumps(record) + "\n", encoding="utf-8")
-
-    assert main(["preview", str(plan_path)]) == 0
-    preview = capsys.readouterr().out
-    assert "Electronic---Deep House" in preview
-    assert "Electronic---House" not in preview
-
-
-def test_v3_plan_rejects_unranked_evidence(tmp_path: Path) -> None:
+def test_plan_rejects_unranked_evidence(tmp_path: Path) -> None:
     path = tmp_path / "track.wav"
     _silent_wav(path)
     track = prepare_track(
         path,
-        analyzer=FakeAnalyzer(),  # type: ignore[arg-type]
+        analyzer=FakeAnalyzer(),
         top=5,
         threshold=0.10,
     )
@@ -939,8 +917,7 @@ def test_batch_apply_rejects_a_partial_plan_with_analysis_errors(
     analyzed = main(["analyze", str(tmp_path), "--plan", str(plan_path)])
     capsys.readouterr()
     schemas = [
-        json.loads(line)["schema"]
-        for line in plan_path.read_text(encoding="utf-8").splitlines()
+        json.loads(line)["schema"] for line in plan_path.read_text(encoding="utf-8").splitlines()
     ]
 
     assert analyzed == 1

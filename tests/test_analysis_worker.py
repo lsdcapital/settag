@@ -20,7 +20,7 @@ class _FakeAnalyzer:
     model_manifest = {"id": "model/v1", "files": {}}
     backend_version = "test"
 
-    def analyze(self, _path: Path) -> list[Prediction]:
+    def analyze(self, path: Path) -> list[Prediction]:
         return [
             Prediction("Electronic---Progressive House", 0.72),
             Prediction("Electronic---Techno", 0.18),

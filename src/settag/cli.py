@@ -19,9 +19,7 @@ from settag.config import DEFAULT_CONFIG_PATH, load_config
 from settag.hashing import sha256_file
 from settag.model_store import (
     DEFAULT_MODEL_DIR,
-    download_models,
     download_task_models,
-    installed_manifest,
     installed_task_manifests,
     missing_task_files,
 )
@@ -37,7 +35,7 @@ from settag.scanner import scan_audio
 from settag.state import DEFAULT_STATE_DB, WorkbenchStore
 from settag.tags import (
     GenreState,
-    apply_owned_tags,
+    apply_metadata_tags,
     read_genre_state,
     read_owned_values,
 )
@@ -80,10 +78,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--config",
         type=Path,
         default=DEFAULT_CONFIG_PATH,
-        help=(
-            "TOML config file used for TUI defaults "
-            f"(default: {DEFAULT_CONFIG_PATH})."
-        ),
+        help=(f"TOML config file used for TUI defaults (default: {DEFAULT_CONFIG_PATH})."),
     )
     run.add_argument(
         "--no-tui",
@@ -333,10 +328,7 @@ def _run_default(args: argparse.Namespace) -> int:
             tasks=tasks,
         )
         config_sha256 = str(current_config["sha256"])
-        expected_model_ids = {
-            task: MODEL_SPECS_BY_TASK[task].id
-            for task in tasks
-        }
+        expected_model_ids = {task: MODEL_SPECS_BY_TASK[task].id for task in tasks}
         store = WorkbenchStore(args.state_db)
 
         def load_metadata(on_progress) -> MetadataBatch:
@@ -347,19 +339,11 @@ def _run_default(args: argparse.Namespace) -> int:
                 expected_config=current_config,
                 on_progress=on_progress,
             )
-            current_paths = [
-                track.path
-                for track in metadata.tracks
-                if track.status == "current"
-            ]
+            current_paths = [track.path for track in metadata.tracks if track.status == "current"]
             if current_paths:
                 store.delete(current_paths)
             cached = store.load(
-                [
-                    track.path
-                    for track in metadata.tracks
-                    if track.status != "current"
-                ],
+                [track.path for track in metadata.tracks if track.status != "current"],
                 expected_model_ids=expected_model_ids,
                 expected_config_sha256=config_sha256,
                 expected_config=current_config,
@@ -407,8 +391,7 @@ def _run_default(args: argparse.Namespace) -> int:
                 analysis_loader.start()
             except Exception as error:
                 print(
-                    "Could not start the interactive analyzer: "
-                    f"{type(error).__name__}: {error}",
+                    f"Could not start the interactive analyzer: {type(error).__name__}: {error}",
                     file=sys.stderr,
                 )
                 return 2
@@ -476,8 +459,7 @@ def _print_plain_batch(source: Path, batch: AnalysisBatch) -> None:
         print(f"  File genre:  {standard} (unchanged)", file=sys.stderr)
         print(f"  Suggested:   {suggestion}", file=sys.stderr)
         print(
-            "  Changes:     SetTag analysis bundle"
-            f" ({len(item.owned_changes)} internal fields)",
+            f"  Changes:     SetTag analysis bundle ({len(item.owned_changes)} internal fields)",
             file=sys.stderr,
         )
 
@@ -495,11 +477,7 @@ def _print_plain_batch(source: Path, batch: AnalysisBatch) -> None:
 def _run_models(args: argparse.Namespace) -> int:
     model_dir = args.model_dir.expanduser().resolve()
     if args.models_command == "download":
-        manifest = (
-            download_models(model_dir, force=args.force)
-            if args.tasks == ("genre",)
-            else download_task_models(model_dir, args.tasks, force=args.force)
-        )
+        manifest = download_task_models(model_dir, args.tasks, force=args.force)
         print(json.dumps(manifest, indent=2, sort_keys=True))
         return 0
 
@@ -513,14 +491,10 @@ def _run_models(args: argparse.Namespace) -> int:
                 for item in files:
                     print(f"missing[{task}]: {item.filename}")
             return 1
-        manifest = (
-            installed_manifest(model_dir)
-            if args.tasks == ("genre",)
-            else {
-                "schema": "settag.models/v2",
-                "tasks": installed_task_manifests(model_dir, args.tasks),
-            }
-        )
+        manifest = {
+            "schema": "settag.models/v2",
+            "tasks": installed_task_manifests(model_dir, args.tasks),
+        }
         print(json.dumps(manifest, indent=2, sort_keys=True))
         return 0
 
@@ -668,10 +642,7 @@ def _print_plan_preview(plan_path: Path, planned: Sequence[PlannedWrite]) -> Non
             print(f"  {before_genre} (will not be changed)")
             if not item.file_genre and item.selected:
                 primary = item.selected[0]
-                print(
-                    f"  Suggested candidate: {primary.label} "
-                    f"(model score {primary.score:.3f})"
-                )
+                print(f"  Suggested candidate: {primary.label} (model score {primary.score:.3f})")
                 print("  Candidate only; SetTag will not write the file genre tag.")
         print()
 
@@ -689,10 +660,7 @@ def _print_plan_preview(plan_path: Path, planned: Sequence[PlannedWrite]) -> Non
             print("  No ranked evidence was returned by the model.")
         print()
 
-        print(
-            "SetTag analysis bundle"
-            f" ({len(item.owned_changes)} internal field changes)"
-        )
+        print(f"SetTag analysis bundle ({len(item.owned_changes)} internal field changes)")
         if item.readable_changes:
             for change in item.readable_changes:
                 print(f"  {change}")
@@ -893,7 +861,7 @@ def _analyze_one(
     tag_plan = track.tag_plan
 
     if write:
-        applied_plan = apply_owned_tags(
+        applied_plan = apply_metadata_tags(
             path,
             desired,
             expected_plan=tag_plan,
@@ -918,18 +886,9 @@ def _analyze_one(
         tasks={
             task: {
                 "provenance": track.task_provenance[task],
-                "predictions": [
-                    item.to_dict()
-                    for item in track.task_predictions[task]
-                ],
-                "evidence": [
-                    item.to_dict()
-                    for item in track.task_evidence[task]
-                ],
-                "selected": [
-                    item.to_dict()
-                    for item in track.task_selected[task]
-                ],
+                "predictions": [item.to_dict() for item in track.task_predictions[task]],
+                "evidence": [item.to_dict() for item in track.task_evidence[task]],
+                "selected": [item.to_dict() for item in track.task_selected[task]],
             }
             for task in track.task_predictions
         },
@@ -1019,8 +978,7 @@ def _log_summary(
         )
     elif write_status == "written":
         action = (
-            "write: SetTag analysis bundle changed and verified"
-            f" ({change_count} internal fields)"
+            f"write: SetTag analysis bundle changed and verified ({change_count} internal fields)"
         )
     else:
         action = "write: SetTag analysis bundle already up to date"

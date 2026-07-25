@@ -9,7 +9,7 @@ from typing import Any
 if sys.version_info >= (3, 11):
     import tomllib
 else:
-    import tomli as tomllib
+    import tomli as tomllib  # ty: ignore[unresolved-import]
 
 from settag.tasks import AnalysisTask, ordered_tasks
 

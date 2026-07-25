@@ -4,7 +4,7 @@ import json
 import math
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from settag.policy import EVIDENCE_LIMIT, Prediction
 from settag.tags import (
@@ -17,15 +17,6 @@ from settag.tags import (
 from settag.tasks import TASK_ORDER
 
 PLAN_SCHEMA = "settag.plan/v4"
-LEGACY_PLAN_SCHEMA_V3 = "settag.plan/v3"
-LEGACY_PLAN_SCHEMA_V2 = "settag.plan/v2"
-LEGACY_PLAN_SCHEMA = "settag.plan/v1"
-SUPPORTED_PLAN_SCHEMAS = {
-    PLAN_SCHEMA,
-    LEGACY_PLAN_SCHEMA_V3,
-    LEGACY_PLAN_SCHEMA_V2,
-    LEGACY_PLAN_SCHEMA,
-}
 PLAN_ERROR_SCHEMA = "settag.plan-error/v1"
 
 HOUSE_MODEL_LABELS = frozenset(
@@ -124,11 +115,7 @@ def stage_default_file_genre(item: PlannedWrite) -> PlannedWrite:
     if item.file_genre or item.target_file_genre is not None:
         return item
     suggestion = suggested_file_genre(item)
-    return (
-        stage_file_genre(item, (suggestion,))
-        if suggestion is not None
-        else item
-    )
+    return stage_file_genre(item, (suggestion,)) if suggestion is not None else item
 
 
 def planned_write_record(item: PlannedWrite) -> dict[str, object]:
@@ -148,28 +135,20 @@ def planned_write_record(item: PlannedWrite) -> dict[str, object]:
         },
         "file_genre": list(item.file_genre),
         "target_file_genre": (
-            list(item.target_file_genre)
-            if item.target_file_genre is not None
-            else None
+            list(item.target_file_genre) if item.target_file_genre is not None else None
         ),
         "evidence": [prediction.to_dict() for prediction in item.evidence],
         "selected": [prediction.to_dict() for prediction in item.selected],
         "tasks": {
             task: {
-                "evidence": [
-                    prediction.to_dict()
-                    for prediction in task_evidence.get(task, ())
-                ],
+                "evidence": [prediction.to_dict() for prediction in task_evidence.get(task, ())],
                 "provenance": task_provenance.get(task),
             }
             for task in TASK_ORDER
             if task in task_evidence or task in task_provenance
         },
         "metadata": {
-            "fields": {
-                field: item.desired.get(field)
-                for field in OWNED_DESCRIPTIONS
-            },
+            "fields": {field: item.desired.get(field) for field in OWNED_DESCRIPTIONS},
         },
         "metadata_format": item.metadata_format,
         "provenance": {
@@ -218,10 +197,9 @@ def load_plan(path: Path) -> list[PlannedWrite]:
         if schema == PLAN_ERROR_SCHEMA:
             message = _string(record.get("error"), f"{resolved}:{line_number}.error")
             raise PlanError(f"{resolved}:{line_number}: plan contains an analysis error: {message}")
-        if schema not in SUPPORTED_PLAN_SCHEMAS:
+        if schema != PLAN_SCHEMA:
             raise PlanError(
-                f"{resolved}:{line_number}: unsupported schema {schema!r}; "
-                f"expected {PLAN_SCHEMA!r}"
+                f"{resolved}:{line_number}: unsupported schema {schema!r}; expected {PLAN_SCHEMA!r}"
             )
         item = planned_write_from_record(
             record,
@@ -247,19 +225,15 @@ def planned_write_from_record(
     if schema == PLAN_ERROR_SCHEMA:
         message = _string(record.get("error"), f"{location}.error")
         raise PlanError(f"{location}: plan contains an analysis error: {message}")
-    if schema not in SUPPORTED_PLAN_SCHEMAS:
-        raise PlanError(
-            f"{location}: unsupported schema {schema!r}; "
-            f"expected {PLAN_SCHEMA!r}"
-        )
-    return _planned_write(record, location=location, schema=schema)
+    if schema != PLAN_SCHEMA:
+        raise PlanError(f"{location}: unsupported schema {schema!r}; expected {PLAN_SCHEMA!r}")
+    return _planned_write(record, location=location)
 
 
 def _planned_write(
     record: dict[str, Any],
     *,
     location: str,
-    schema: str,
 ) -> PlannedWrite:
     file_path = Path(_string(record.get("path"), f"{location}.path"))
     if not file_path.is_absolute():
@@ -276,104 +250,51 @@ def _planned_write(
     source_mtime_ns = _non_negative_int(source.get("mtime_ns"), f"{location}.source.mtime_ns")
 
     file_genre = tuple(_string_list(record.get("file_genre"), f"{location}.file_genre"))
-    target_file_genre: tuple[str, ...] | None
-    if schema == LEGACY_PLAN_SCHEMA:
-        target_file_genre = None
-    else:
-        target_value = record.get("target_file_genre")
-        target_file_genre = (
-            None
-            if target_value is None
-            else tuple(_string_list(target_value, f"{location}.target_file_genre"))
-        )
-    selected = tuple(_predictions(record.get("selected"), f"{location}.selected"))
-    evidence = (
-        tuple(_predictions(record.get("evidence"), f"{location}.evidence"))
-        if schema in {PLAN_SCHEMA, LEGACY_PLAN_SCHEMA_V3}
-        else selected
+    target_value = record.get("target_file_genre")
+    target_file_genre = (
+        None
+        if target_value is None
+        else tuple(_string_list(target_value, f"{location}.target_file_genre"))
     )
-    if schema in {PLAN_SCHEMA, LEGACY_PLAN_SCHEMA_V3}:
-        _validate_evidence(evidence, f"{location}.evidence")
-        if not _is_ordered_subset(selected, evidence):
-            raise PlanError(
-                f"{location}.selected: expected an ordered subset of the stored evidence"
-            )
+    selected = tuple(_predictions(record.get("selected"), f"{location}.selected"))
+    evidence = tuple(_predictions(record.get("evidence"), f"{location}.evidence"))
+    _validate_evidence(evidence, f"{location}.evidence")
+    if not _is_ordered_subset(selected, evidence):
+        raise PlanError(f"{location}.selected: expected an ordered subset of the stored evidence")
     metadata_format = _string(
         record.get("metadata_format"),
         f"{location}.metadata_format",
     )
     provenance = _mapping(record.get("provenance"), f"{location}.provenance")
-    settag_version = _string(
-        provenance.get("settag_version"),
-        f"{location}.provenance.settag_version",
-    )
-    model_id = _string(provenance.get("model"), f"{location}.provenance.model")
-    analyzed_at = _string(
-        provenance.get("analyzed_at"),
-        f"{location}.provenance.analyzed_at",
-    )
-    config_sha256 = _string(
-        provenance.get("config_sha256"),
-        f"{location}.provenance.config_sha256",
-    )
-    changes_value = record.get("changes")
-    if schema == LEGACY_PLAN_SCHEMA:
-        owned_changes = tuple(_string_list(changes_value, f"{location}.changes"))
-        recorded_standard_change = None
-    else:
-        changes = _mapping(changes_value, f"{location}.changes")
-        owned_changes = tuple(
-            _string_list(changes.get("settag"), f"{location}.changes.settag")
+    for field in ("settag_version", "model", "analyzed_at", "config_sha256"):
+        _string(provenance.get(field), f"{location}.provenance.{field}")
+
+    changes = _mapping(record.get("changes"), f"{location}.changes")
+    owned_changes = tuple(_string_list(changes.get("settag"), f"{location}.changes.settag"))
+    recorded_standard_change = changes.get("file_genre")
+    if recorded_standard_change is not None:
+        recorded_standard_change = _string(
+            recorded_standard_change,
+            f"{location}.changes.file_genre",
         )
-        recorded_standard_change = changes.get("file_genre")
-        if recorded_standard_change is not None:
-            recorded_standard_change = _string(
-                recorded_standard_change,
-                f"{location}.changes.file_genre",
-            )
-    if schema == PLAN_SCHEMA:
-        metadata = _mapping(record.get("metadata"), f"{location}.metadata")
-        fields = _mapping(metadata.get("fields"), f"{location}.metadata.fields")
-        unknown = sorted(set(fields) - set(OWNED_DESCRIPTIONS))
-        missing = sorted(set(OWNED_DESCRIPTIONS) - set(fields))
-        if unknown or missing:
-            raise PlanError(
-                f"{location}.metadata.fields: expected the complete SetTag field set"
-            )
-        desired = {
-            field: _optional_string_list(
-                fields.get(field),
-                f"{location}.metadata.fields.{field}",
-            )
-            for field in OWNED_DESCRIPTIONS
-        }
-        stored_genre = task_evidence_from_owned(desired).get("genre", ())
-        if tuple(stored_genre) != evidence:
-            raise PlanError(
-                f"{location}.evidence: does not match the stored genre metadata"
-            )
-        _validate_task_records(record.get("tasks"), desired, location)
-    else:
-        genres = [item.label for item in evidence] or None
-        scores = (
-            [
-                json.dumps(
-                    [item.to_dict() for item in evidence],
-                    ensure_ascii=False,
-                    separators=(",", ":"),
-                )
-            ]
-            if evidence
-            else None
+
+    metadata = _mapping(record.get("metadata"), f"{location}.metadata")
+    fields = _mapping(metadata.get("fields"), f"{location}.metadata.fields")
+    unknown = sorted(set(fields) - set(OWNED_DESCRIPTIONS))
+    missing = sorted(set(OWNED_DESCRIPTIONS) - set(fields))
+    if unknown or missing:
+        raise PlanError(f"{location}.metadata.fields: expected the complete SetTag field set")
+    desired = {
+        field: _optional_string_list(
+            fields.get(field),
+            f"{location}.metadata.fields.{field}",
         )
-        desired = {
-            "SETTAG_GENRE": genres,
-            "SETTAG_GENRE_SCORES": scores,
-            "SETTAG_VERSION": [settag_version],
-            "SETTAG_MODEL": [model_id],
-            "SETTAG_ANALYZED_AT": [analyzed_at],
-            "SETTAG_CONFIG_SHA256": [config_sha256],
-        }
+        for field in OWNED_DESCRIPTIONS
+    }
+    stored_genre = task_evidence_from_owned(desired).get("genre", ())
+    if tuple(stored_genre) != evidence:
+        raise PlanError(f"{location}.evidence: does not match the stored genre metadata")
+    _validate_task_records(record.get("tasks"), desired, location)
 
     planned = PlannedWrite(
         path=file_path,
@@ -395,9 +316,7 @@ def _planned_write(
         else None
     )
     if recorded_standard_change != expected_description:
-        raise PlanError(
-            f"{location}.changes.file_genre: does not match the staged file genre"
-        )
+        raise PlanError(f"{location}.changes.file_genre: does not match the staged file genre")
     return planned
 
 
@@ -419,9 +338,7 @@ def _validate_evidence(
     location: str,
 ) -> None:
     if len(evidence) > EVIDENCE_LIMIT:
-        raise PlanError(
-            f"{location}: expected no more than {EVIDENCE_LIMIT} ranked scores"
-        )
+        raise PlanError(f"{location}: expected no more than {EVIDENCE_LIMIT} ranked scores")
     labels = [prediction.label for prediction in evidence]
     if len(set(labels)) != len(labels):
         raise PlanError(f"{location}: expected unique model labels")
@@ -465,26 +382,16 @@ def _validate_task_records(
     tasks = _mapping(value, f"{location}.tasks")
     evidence = task_evidence_from_owned(desired)
     provenance = read_task_provenance(desired)
-    expected = {
-        task
-        for task in TASK_ORDER
-        if task in evidence or task in provenance
-    }
+    expected = {task for task in TASK_ORDER if task in evidence or task in provenance}
     if set(tasks) != expected:
         raise PlanError(f"{location}.tasks: does not match the stored task metadata")
     for task in expected:
         entry = _mapping(tasks.get(task), f"{location}.tasks.{task}")
-        recorded = tuple(
-            _predictions(entry.get("evidence"), f"{location}.tasks.{task}.evidence")
-        )
+        recorded = tuple(_predictions(entry.get("evidence"), f"{location}.tasks.{task}.evidence"))
         if recorded != evidence.get(task, ()):
-            raise PlanError(
-                f"{location}.tasks.{task}.evidence: does not match stored metadata"
-            )
+            raise PlanError(f"{location}.tasks.{task}.evidence: does not match stored metadata")
         if entry.get("provenance") != provenance.get(task):
-            raise PlanError(
-                f"{location}.tasks.{task}.provenance: does not match stored metadata"
-            )
+            raise PlanError(f"{location}.tasks.{task}.provenance: does not match stored metadata")
 
 
 def friendly_change(change: TagChange) -> str:
@@ -517,10 +424,7 @@ def friendly_change(change: TagChange) -> str:
 
 
 def friendly_standard_genre_change(change: TagChange) -> str:
-    return (
-        f"File genre: {_friendly_genres(change.before)} "
-        f"→ {_friendly_genres(change.after)}"
-    )
+    return f"File genre: {_friendly_genres(change.before)} → {_friendly_genres(change.after)}"
 
 
 def _friendly_genres(values: list[str] | None) -> str:
@@ -555,7 +459,9 @@ def _friendly_values(values: list[str] | None) -> str:
 def _mapping(value: object, location: str) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise PlanError(f"{location}: expected an object")
-    return value
+    if not all(isinstance(key, str) for key in value):
+        raise PlanError(f"{location}: expected string object keys")
+    return cast(dict[str, Any], value)
 
 
 def _list(value: object, location: str) -> list[Any]:
@@ -572,8 +478,7 @@ def _string(value: object, location: str) -> str:
 
 def _string_list(value: object, location: str) -> list[str]:
     return [
-        _string(item, f"{location}[{index}]")
-        for index, item in enumerate(_list(value, location))
+        _string(item, f"{location}[{index}]") for index, item in enumerate(_list(value, location))
     ]
 
 

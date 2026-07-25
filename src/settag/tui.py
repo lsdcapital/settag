@@ -127,6 +127,22 @@ class TrackEntry:
     def needs_analysis(self) -> bool:
         return self.metadata is not None and self.plan is None and self.metadata.needs_analysis
 
+    @property
+    def has_changes(self) -> bool:
+        return self.plan is not None and bool(self.plan.readable_changes)
+
+    @property
+    def has_standard_genre_change(self) -> bool:
+        return self.plan is not None and self.plan.standard_genre_change is not None
+
+    @property
+    def is_missing_standard_genre(self) -> bool:
+        return self.metadata is not None and not self.metadata.genre_state.standard
+
+    @property
+    def is_current_unplanned(self) -> bool:
+        return self.metadata is not None and self.metadata.status == "current" and self.plan is None
+
 
 @dataclass(frozen=True)
 class TrackTableColumn:
@@ -876,9 +892,7 @@ class SetTagApp(App[TuiOutcome]):
             index for index, entry in enumerate(self.entries) if entry.plan is not None
         }
         self.write_selected = {
-            index
-            for index in self.review_indices
-            if bool(self.entries[index].plan.readable_changes)
+            index for index in self.review_indices if self.entries[index].has_changes
         }
         self.query_one("#loading").display = False
         self.query_one("#main").display = True
@@ -937,23 +951,8 @@ class SetTagApp(App[TuiOutcome]):
         if self.library_filter == "needs_analysis":
             return [index for index in indices if self.entries[index].needs_analysis]
         if self.library_filter == "missing_genre":
-            return [
-                index
-                for index in indices
-                if (
-                    self.entries[index].metadata is not None
-                    and not self.entries[index].metadata.genre_state.standard
-                )
-            ]
-        return [
-            index
-            for index in indices
-            if (
-                self.entries[index].metadata is not None
-                and self.entries[index].metadata.status == "current"
-                and self.entries[index].plan is None
-            )
-        ]
+            return [index for index in indices if self.entries[index].is_missing_standard_genre]
+        return [index for index in indices if self.entries[index].is_current_unplanned]
 
     def _rebuild_table(
         self,
@@ -977,10 +976,13 @@ class SetTagApp(App[TuiOutcome]):
                 self.query_one("#inspector", Static).update("No tracks match this view.")
             return
 
-        try:
-            cursor_row = self.visible_indices.index(preferred_index)
-        except ValueError:
+        if preferred_index is None:
             cursor_row = 0
+        else:
+            try:
+                cursor_row = self.visible_indices.index(preferred_index)
+            except ValueError:
+                cursor_row = 0
         table.focus()
         table.move_cursor(row=cursor_row)
         if refresh_surrounding:
@@ -1425,11 +1427,7 @@ class SetTagApp(App[TuiOutcome]):
         else:
             selected = len(self.write_selected)
             genre_edits = sum(
-                (
-                    self.entries[index].plan is not None
-                    and self.entries[index].plan.standard_genre_change is not None
-                )
-                for index in self.write_selected
+                self.entries[index].has_standard_genre_change for index in self.write_selected
             )
             base = (
                 f"{selected} will be written"
@@ -1476,14 +1474,7 @@ class SetTagApp(App[TuiOutcome]):
             eligible = {index for index in self.visible_indices if self.entries[index].can_analyze}
             selection = self.analysis_selected
         else:
-            eligible = {
-                index
-                for index in self.visible_indices
-                if (
-                    self.entries[index].plan is not None
-                    and bool(self.entries[index].plan.readable_changes)
-                )
-            }
+            eligible = {index for index in self.visible_indices if self.entries[index].has_changes}
             selection = self.write_selected
 
         if eligible and eligible.issubset(selection):
@@ -1830,8 +1821,9 @@ class SetTagApp(App[TuiOutcome]):
         if item is None:
             return
         genres = tuple(value.strip() for value in result.split(",") if value.strip())
-        self.entries[index].plan = stage_file_genre(item, genres)
-        if self.entries[index].plan.readable_changes:
+        updated = stage_file_genre(item, genres)
+        self.entries[index].plan = updated
+        if updated.readable_changes:
             self.write_selected.add(index)
         self._persist(index)
         self._refresh_row(index)
@@ -2091,7 +2083,7 @@ class SetTagApp(App[TuiOutcome]):
                 timeout=8,
             )
 
-    def action_quit(self) -> None:
+    async def action_quit(self) -> None:
         if self.busy:
             self.notify("A safety check or write is in progress.", severity="warning")
             return

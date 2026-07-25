@@ -14,20 +14,20 @@ from settag import __version__
 from settag.policy import Prediction
 from settag.tags import (
     MP4_MEAN,
+    OWNED_DESCRIPTIONS,
     GenreState,
     Mp4OwnedTagStore,
     TagStateChangedError,
     UnsupportedTagFormatError,
     VorbisOwnedTagStore,
     apply_metadata_tags,
-    apply_owned_tags,
-    build_owned_values,
     build_task_owned_values,
     plan_owned_tags,
     plan_standard_genres,
     read_genre_state,
     read_owned_values,
 )
+from settag.tasks import AnalysisTask
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
@@ -72,11 +72,16 @@ def _desired(
 ) -> dict[str, list[str] | None]:
     if selected is None:
         selected = [Prediction("Electronic---Deep House", 0.72)]
-    return build_owned_values(
-        selected,
-        model_id="model/v1",
-        analyzed_at="2026-07-23T12:00:00Z",
-        config_sha256=config_sha256,
+    return build_task_owned_values(
+        {field: None for field in OWNED_DESCRIPTIONS},
+        {"genre": selected},
+        {
+            "genre": {
+                "model": {"schema": "settag.models/v1", "id": "model/v1", "files": {}},
+                "analyzed_at": "2026-07-23T12:00:00Z",
+                "config": {"sha256": config_sha256},
+            }
+        },
     )
 
 
@@ -93,7 +98,9 @@ def test_owned_genres_and_scores_have_identical_membership_and_order() -> None:
     ]
 
     desired = _desired(selected)
-    scores = json.loads(desired["SETTAG_GENRE_SCORES"][0])
+    serialized_scores = desired["SETTAG_GENRE_SCORES"]
+    assert serialized_scores is not None
+    scores = json.loads(serialized_scores[0])
 
     assert desired["SETTAG_GENRE"] == [item.label for item in selected]
     assert [item["label"] for item in scores] == desired["SETTAG_GENRE"]
@@ -116,12 +123,12 @@ def test_real_flac_round_trip_preserves_standard_tags_and_value_order(tmp_path: 
         settag=(),
     )
     planned = plan_owned_tags(path, desired)
-    applied = apply_owned_tags(path, desired)
+    applied = apply_metadata_tags(path, desired)
     audio = FLAC(path)
 
     assert applied == planned
     assert planned.format == "vorbis-comments"
-    assert len(planned.changes) == 6
+    assert len(planned.changes) == 7
     assert audio["title"] == ["Original title"]
     assert audio["genre"] == ["Existing genre"]
     assert audio["SETTAG_GENRE"] == [item.label for item in selected]
@@ -140,6 +147,7 @@ def test_real_mp4_round_trip_preserves_standard_tags_and_value_order(tmp_path: P
     ]
     desired = _desired(selected)
     before = MP4(path)
+    assert before.info is not None
     before_stream = (before.info.sample_rate, before.info.channels, before.info.length)
 
     assert read_genre_state(path) == GenreState(
@@ -147,9 +155,10 @@ def test_real_mp4_round_trip_preserves_standard_tags_and_value_order(tmp_path: P
         settag=(),
     )
     planned = plan_owned_tags(path, desired)
-    applied = apply_owned_tags(path, desired)
+    applied = apply_metadata_tags(path, desired)
     audio = MP4(path)
     assert audio.tags is not None
+    assert audio.info is not None
     genre_key = f"----:{MP4_MEAN}:GENRE"
     scores_key = f"----:{MP4_MEAN}:GENRE_SCORES"
     version_key = f"----:{MP4_MEAN}:VERSION"
@@ -157,7 +166,7 @@ def test_real_mp4_round_trip_preserves_standard_tags_and_value_order(tmp_path: P
 
     assert applied == planned
     assert planned.format == "mp4-freeform"
-    assert len(planned.changes) == 6
+    assert len(planned.changes) == 7
     assert audio.tags["\xa9nam"] == ["Original title"]
     assert audio.tags["\xa9gen"] == ["Existing genre"]
     genres = [bytes(item).decode() for item in audio.tags[genre_key]]
@@ -176,7 +185,7 @@ def test_id3_write_preserves_standard_and_unowned_tags(tmp_path: Path) -> None:
 
     before = read_genre_state(path)
     planned = plan_owned_tags(path, desired)
-    applied = apply_owned_tags(path, desired)
+    applied = apply_metadata_tags(path, desired)
     after = read_genre_state(path)
     tags = WAVE(path).tags
 
@@ -208,7 +217,7 @@ def test_task_bundle_round_trips_across_supported_containers(
     else:
         path = _copy_fixture(fixture, tmp_path)
     current = read_owned_values(path)
-    evidence = {
+    evidence: dict[AnalysisTask, list[Prediction]] = {
         "mood-theme": [
             Prediction("dark", 0.82),
             Prediction("deep", 0.61),
@@ -218,7 +227,7 @@ def test_task_bundle_round_trips_across_supported_containers(
             Prediction("drummachine", 0.74),
         ],
     }
-    provenance = {
+    provenance: dict[AnalysisTask, dict[str, object]] = {
         task: {
             "model": {
                 "schema": "settag.models/v1",
@@ -238,14 +247,16 @@ def test_task_bundle_round_trips_across_supported_containers(
         for task in evidence
     }
 
-    desired = build_task_owned_values(current, evidence, provenance)  # type: ignore[arg-type]
-    apply_owned_tags(path, desired)
+    desired = build_task_owned_values(current, evidence, provenance)
+    apply_metadata_tags(path, desired)
     stored = read_owned_values(path)
 
     assert stored["SETTAG_MOOD_THEME"] == ["dark", "deep"]
     assert stored["SETTAG_INSTRUMENT"] == ["synthesizer", "drummachine"]
     assert stored["SETTAG_GENRE"] is None
-    task_provenance = json.loads(stored["SETTAG_PROVENANCE"][0])
+    serialized_provenance = stored["SETTAG_PROVENANCE"]
+    assert serialized_provenance is not None
+    task_provenance = json.loads(serialized_provenance[0])
     assert set(task_provenance["tasks"]) == {"mood-theme", "instrument"}
     assert read_genre_state(path).standard == ("Existing genre",)
 
@@ -314,10 +325,10 @@ def test_explicit_genre_edit_uses_the_native_container_field(
 def test_empty_result_removes_only_stale_owned_genre(tmp_path: Path) -> None:
     path = tmp_path / "track.wav"
     _tagged_wav(path)
-    apply_owned_tags(path, _desired())
+    apply_metadata_tags(path, _desired())
 
     empty = _desired([], config_sha256="new")
-    apply_owned_tags(path, empty)
+    apply_metadata_tags(path, empty)
     tags = WAVE(path).tags
 
     assert tags is not None
@@ -407,7 +418,7 @@ def test_expected_state_is_checked_before_writing(tmp_path: Path) -> None:
     audio.save()
 
     with pytest.raises(TagStateChangedError, match="File genre tag changed"):
-        apply_owned_tags(
+        apply_metadata_tags(
             path,
             desired,
             expected_plan=planned,

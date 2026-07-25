@@ -19,7 +19,7 @@ from settag.plans import (
 )
 from settag.records import configs_match_for_task
 from settag.tags import read_task_provenance
-from settag.tasks import AnalysisTask
+from settag.tasks import AnalysisTask, checked_expected_models
 
 STATE_SCHEMA_VERSION = 1
 CacheStatus = Literal["ready", "stale"]
@@ -45,11 +45,7 @@ def default_state_db() -> Path:
         base = Path.home() / "Library" / "Application Support"
     elif os.name == "nt":
         configured = os.environ.get("LOCALAPPDATA") or os.environ.get("APPDATA")
-        base = (
-            Path(configured)
-            if configured
-            else Path.home() / "AppData" / "Local"
-        )
+        base = Path(configured) if configured else Path.home() / "AppData" / "Local"
     else:
         configured = os.environ.get("XDG_DATA_HOME")
         base = Path(configured) if configured else Path.home() / ".local" / "share"
@@ -90,10 +86,7 @@ class WorkbenchStore:
     def delete(self, paths: Sequence[Path]) -> None:
         if not paths:
             return
-        values = [
-            (str(path.expanduser().resolve()),)
-            for path in paths
-        ]
+        values = [(str(path.expanduser().resolve()),) for path in paths]
         with closing(self._connect()) as connection, connection:
             connection.executemany(
                 "DELETE FROM workbench_plans WHERE path = ?",
@@ -106,16 +99,12 @@ class WorkbenchStore:
         *,
         expected_config_sha256: str,
         expected_config: Mapping[str, object] | None = None,
-        expected_model_id: str | None = None,
-        expected_model_ids: Mapping[AnalysisTask, str] | None = None,
+        expected_model_ids: Mapping[AnalysisTask, str],
     ) -> dict[Path, WorkbenchEntry]:
         resolved_paths = tuple(path.expanduser().resolve() for path in paths)
         if not resolved_paths:
             return {}
-        expected_models = _normalize_expected_models(
-            expected_model_id=expected_model_id,
-            expected_model_ids=expected_model_ids,
-        )
+        expected_models = checked_expected_models(expected_model_ids)
 
         entries: dict[Path, WorkbenchEntry] = {}
         with closing(self._connect()) as connection:
@@ -179,13 +168,9 @@ class WorkbenchStore:
                 location=f"{self.path}:{path}",
             )
         except (json.JSONDecodeError, PlanError) as error:
-            raise WorkbenchError(
-                f"Invalid cached analysis for {path}: {error}"
-            ) from error
+            raise WorkbenchError(f"Invalid cached analysis for {path}: {error}") from error
         if plan.path.expanduser().resolve() != path.expanduser().resolve():
-            raise WorkbenchError(
-                f"Cached analysis path does not match its database key: {path}"
-            )
+            raise WorkbenchError(f"Cached analysis path does not match its database key: {path}")
         return plan
 
 
@@ -214,35 +199,13 @@ def _classify(
             return WorkbenchEntry(plan, "stale", "analysis model changed")
         config = task_provenance.get("config")
         config_sha256 = config.get("sha256") if isinstance(config, dict) else None
-        if (
-            config_sha256 != expected_config_sha256
-            and not configs_match_for_task(config, expected_config, task)
+        if config_sha256 != expected_config_sha256 and not configs_match_for_task(
+            config, expected_config, task
         ):
             return WorkbenchEntry(plan, "stale", "evidence settings changed")
 
     return WorkbenchEntry(plan, "ready")
 
 
-def _normalize_expected_models(
-    *,
-    expected_model_id: str | None,
-    expected_model_ids: Mapping[AnalysisTask, str] | None,
-) -> dict[AnalysisTask, str]:
-    if expected_model_ids is not None:
-        if expected_model_id is not None:
-            raise ValueError("provide expected_model_id or expected_model_ids, not both")
-        if not expected_model_ids:
-            raise ValueError("at least one expected analysis model is required")
-        return dict(expected_model_ids)
-    if expected_model_id is None:
-        raise ValueError("an expected analysis model is required")
-    return {"genre": expected_model_id}
-
-
 def _utc_now() -> str:
-    return (
-        datetime.now(timezone.utc)
-        .replace(microsecond=0)
-        .isoformat()
-        .replace("+00:00", "Z")
-    )
+    return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")

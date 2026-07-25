@@ -5,8 +5,7 @@ from settag.policy import Prediction
 from settag.records import config_record
 from settag.tags import (
     OWNED_DESCRIPTIONS,
-    apply_owned_tags,
-    build_owned_values,
+    apply_metadata_tags,
     build_task_owned_values,
 )
 from settag.workflow import inspect_paths
@@ -25,11 +24,16 @@ def _owned_values(
     model_id: str = "model/v1",
     config_sha256: str = "config/current",
 ) -> dict[str, list[str] | None]:
-    return build_owned_values(
-        [Prediction("Electronic---House", 0.72)],
-        model_id=model_id,
-        analyzed_at="2026-07-23T12:00:00Z",
-        config_sha256=config_sha256,
+    return build_task_owned_values(
+        {field: None for field in OWNED_DESCRIPTIONS},
+        {"genre": [Prediction("Electronic---House", 0.72)]},
+        {
+            "genre": {
+                "model": {"schema": "settag.models/v1", "id": model_id, "files": {}},
+                "analyzed_at": "2026-07-23T12:00:00Z",
+                "config": {"sha256": config_sha256},
+            }
+        },
     )
 
 
@@ -43,20 +47,18 @@ def test_metadata_inspection_classifies_current_stale_missing_and_invalid(
     for path in (missing, current, stale, invalid):
         _silent_wav(path)
 
-    apply_owned_tags(current, _owned_values())
-    apply_owned_tags(stale, _owned_values(config_sha256="config/older"))
+    apply_metadata_tags(current, _owned_values())
+    apply_metadata_tags(stale, _owned_values(config_sha256="config/older"))
     invalid_values = _owned_values()
     invalid_values["SETTAG_VERSION"] = None
-    apply_owned_tags(invalid, invalid_values)
+    apply_metadata_tags(invalid, invalid_values)
 
     progress: list[tuple[int, int, Path]] = []
     batch = inspect_paths(
         (missing, current, stale, invalid),
-        expected_model_id="model/v1",
+        expected_model_ids={"genre": "model/v1"},
         expected_config_sha256="config/current",
-        on_progress=lambda completed, total, path: progress.append(
-            (completed, total, path)
-        ),
+        on_progress=lambda completed, total, path: progress.append((completed, total, path)),
     )
     statuses = {track.path.name: track.status for track in batch.tracks}
 
@@ -67,9 +69,9 @@ def test_metadata_inspection_classifies_current_stale_missing_and_invalid(
         "stale.wav": "stale",
         "invalid.wav": "invalid",
     }
-    assert next(
-        track for track in batch.tracks if track.path == current
-    ).stored_predictions == (Prediction("Electronic---House", 0.72),)
+    assert next(track for track in batch.tracks if track.path == current).stored_predictions == (
+        Prediction("Electronic---House", 0.72),
+    )
     assert progress == [
         (1, 4, missing),
         (2, 4, current),
@@ -108,7 +110,7 @@ def test_metadata_inspection_is_task_aware_for_effnet_only_metadata(
             }
         },
     )
-    apply_owned_tags(path, desired)
+    apply_metadata_tags(path, desired)
 
     current = inspect_paths(
         (path,),
@@ -158,7 +160,7 @@ def test_metadata_inspection_rejects_invalid_selected_task_evidence(
         },
     )
     desired["SETTAG_INSTRUMENT_SCORES"] = ["not-json"]
-    apply_owned_tags(path, desired)
+    apply_metadata_tags(path, desired)
 
     track = inspect_paths(
         (path,),

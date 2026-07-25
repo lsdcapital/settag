@@ -1,14 +1,22 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, TypedDict
 
 from settag import __version__
 from settag.hashing import sha256_file, sha256_json
 from settag.policy import EVIDENCE_LIMIT
 from settag.tags import TagPlan
 from settag.tasks import AnalysisTask, ordered_tasks
+
+
+class SourceRecord(TypedDict):
+    path: str
+    size: int
+    mtime_ns: int
+    sha256: str
 
 
 def utc_now() -> str:
@@ -50,16 +58,8 @@ def configs_match_for_task(
         return False
     recorded_tasks = recorded_evidence.get("tasks")
     expected_tasks = expected_evidence.get("tasks")
-    recorded_settings = {
-        key: value
-        for key, value in recorded_evidence.items()
-        if key != "tasks"
-    }
-    expected_settings = {
-        key: value
-        for key, value in expected_evidence.items()
-        if key != "tasks"
-    }
+    recorded_settings = {key: value for key, value in recorded_evidence.items() if key != "tasks"}
+    expected_settings = {key: value for key, value in expected_evidence.items() if key != "tasks"}
     return (
         recorded_settings == expected_settings
         and isinstance(recorded_tasks, list)
@@ -69,7 +69,7 @@ def configs_match_for_task(
     )
 
 
-def source_record(path: Path) -> dict[str, object]:
+def source_record(path: Path) -> SourceRecord:
     stat = path.stat()
     return {
         "path": str(path.resolve()),
@@ -81,7 +81,7 @@ def source_record(path: Path) -> dict[str, object]:
 
 def analysis_record(
     *,
-    source: dict[str, object],
+    source: Mapping[str, object],
     analyzed_at: str,
     backend_version: str,
     config: dict[str, object],

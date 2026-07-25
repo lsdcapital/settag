@@ -10,6 +10,7 @@ from settag.plans import stage_file_genre
 from settag.policy import Prediction
 from settag.records import config_record
 from settag.state import WorkbenchError, WorkbenchStore
+from settag.tasks import AnalysisTask
 from settag.workflow import planned_write_for_track, prepare_track
 
 
@@ -22,7 +23,7 @@ class FakeAnalyzer:
 
 class FakeInstrumentAnalyzer:
     backend_version = "test"
-    model_manifests = {
+    model_manifests: dict[AnalysisTask, dict[str, object]] = {
         "instrument": {
             "schema": "settag.models/v1",
             "id": "model/instrument/v1",
@@ -30,7 +31,10 @@ class FakeInstrumentAnalyzer:
         }
     }
 
-    def analyze_tasks(self, path: Path) -> dict[str, list[Prediction]]:
+    def analyze_tasks(
+        self,
+        path: Path,
+    ) -> dict[AnalysisTask, list[Prediction]]:
         return {"instrument": [Prediction("synthesizer", 0.81)]}
 
 
@@ -45,7 +49,7 @@ def _silent_wav(path: Path) -> None:
 def _plan(path: Path):
     track = prepare_track(
         path,
-        analyzer=FakeAnalyzer(),  # type: ignore[arg-type]
+        analyzer=FakeAnalyzer(),
         top=5,
         threshold=0.10,
     )
@@ -55,7 +59,7 @@ def _plan(path: Path):
 def _instrument_plan(path: Path):
     track = prepare_track(
         path,
-        analyzer=FakeInstrumentAnalyzer(),  # type: ignore[arg-type]
+        analyzer=FakeInstrumentAnalyzer(),
         top=5,
         threshold=0.10,
     )
@@ -69,7 +73,7 @@ def _load(store: WorkbenchStore, path: Path, plan):
     assert config is not None
     return store.load(
         [path],
-        expected_model_id=model[0],
+        expected_model_ids={"genre": model[0]},
         expected_config_sha256=config[0],
     )[path.resolve()]
 
@@ -172,7 +176,7 @@ def test_workbench_marks_model_or_config_change_stale(
 
     entry = store.load(
         [path],
-        expected_model_id=model or stored_model[0],
+        expected_model_ids={"genre": model or stored_model[0]},
         expected_config_sha256=config or stored_config[0],
     )[path.resolve()]
 
@@ -192,7 +196,7 @@ def test_workbench_remains_ready_when_only_review_policy_changes(
 
     entry = store.load(
         [path],
-        expected_model_id="model/v1",
+        expected_model_ids={"genre": "model/v1"},
         expected_config_sha256=str(changed_policy["sha256"]),
     )[path.resolve()]
 
@@ -223,11 +227,14 @@ def test_workbench_delete_removes_plan(tmp_path: Path) -> None:
     config = plan.desired["SETTAG_CONFIG_SHA256"]
     assert model is not None
     assert config is not None
-    assert store.load(
-        [path],
-        expected_model_id=model[0],
-        expected_config_sha256=config[0],
-    ) == {}
+    assert (
+        store.load(
+            [path],
+            expected_model_ids={"genre": model[0]},
+            expected_config_sha256=config[0],
+        )
+        == {}
+    )
 
 
 def test_workbench_reports_corrupt_cached_record(tmp_path: Path) -> None:

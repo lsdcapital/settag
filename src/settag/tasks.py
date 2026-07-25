@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from collections.abc import Iterable
-from typing import Literal, cast
+from collections.abc import Iterable, Mapping
+from typing import Literal
 
 AnalysisTask = Literal["genre", "mood-theme", "instrument"]
 
@@ -31,7 +31,15 @@ def ordered_tasks(tasks: Iterable[str]) -> tuple[AnalysisTask, ...]:
     return tuple(task for task in TASK_ORDER if task in selected)
 
 
+def checked_expected_models(
+    expected_model_ids: Mapping[AnalysisTask, str],
+) -> dict[AnalysisTask, str]:
+    if not expected_model_ids:
+        raise ValueError("at least one expected analysis model is required")
+    return dict(expected_model_ids)
+
+
 def task_name(value: str) -> AnalysisTask:
     if value not in TASK_SET:
         raise ValueError(f"unknown analysis task: {value}")
-    return cast(AnalysisTask, value)
+    return value

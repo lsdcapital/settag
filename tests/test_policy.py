@@ -39,8 +39,7 @@ def test_selection_applies_threshold_then_top_limit() -> None:
 
 def test_evidence_is_ranked_bounded_and_never_score_filtered() -> None:
     predictions = [
-        Prediction(f"label-{index:02}", index / 100)
-        for index in range(EVIDENCE_LIMIT + 5)
+        Prediction(f"label-{index:02}", index / 100) for index in range(EVIDENCE_LIMIT + 5)
     ]
 
     evidence = collect_evidence(predictions)

@@ -29,6 +29,7 @@ settag = "settag.cli:main"
 dev = [
   "pytest>=8,<10",
   "ruff>=0.12,<1",
+  "ty>=0.0.18,<0.1",
 ]
 
 [tool.hatch.build.targets.wheel]
@@ -37,6 +38,9 @@ packages = ["src/settag"]
 [tool.pytest.ini_options]
 addopts = "-q"
 testpaths = ["tests"]
+
+[tool.ty.environment]
+python-version = "3.10"
 
 [tool.ruff]
 line-length = 100

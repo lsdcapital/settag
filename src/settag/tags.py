@@ -82,29 +82,6 @@ class GenreState:
     settag: tuple[str, ...]
 
 
-def build_owned_values(
-    evidence: list[Prediction],
-    *,
-    model_id: str,
-    analyzed_at: str,
-    config_sha256: str,
-) -> OwnedValues:
-    genres = [item.label for item in evidence]
-    scores = json.dumps(
-        [item.to_dict() for item in evidence],
-        ensure_ascii=False,
-        separators=(",", ":"),
-    )
-    return {
-        "SETTAG_GENRE": genres or None,
-        "SETTAG_GENRE_SCORES": [scores] if genres else None,
-        "SETTAG_VERSION": [__version__],
-        "SETTAG_MODEL": [model_id],
-        "SETTAG_ANALYZED_AT": [analyzed_at],
-        "SETTAG_CONFIG_SHA256": [config_sha256],
-    }
-
-
 def build_task_owned_values(
     current: Mapping[str, list[str] | None],
     evidence_by_task: Mapping[AnalysisTask, list[Prediction]],
@@ -112,8 +89,7 @@ def build_task_owned_values(
 ) -> OwnedValues:
     """Merge newly analyzed tasks into the complete SetTag-owned metadata bundle."""
     desired: OwnedValues = {
-        description: current.get(description)
-        for description in OWNED_DESCRIPTIONS
+        description: current.get(description) for description in OWNED_DESCRIPTIONS
     }
     provenance = read_task_provenance(current)
     for task in TASK_ORDER:
@@ -147,9 +123,7 @@ def build_task_owned_values(
         config = genre.get("config")
         config_sha256 = config.get("sha256") if isinstance(config, dict) else None
         desired["SETTAG_MODEL"] = [model_id] if isinstance(model_id, str) else None
-        desired["SETTAG_ANALYZED_AT"] = (
-            [analyzed_at] if isinstance(analyzed_at, str) else None
-        )
+        desired["SETTAG_ANALYZED_AT"] = [analyzed_at] if isinstance(analyzed_at, str) else None
         desired["SETTAG_CONFIG_SHA256"] = (
             [config_sha256] if isinstance(config_sha256, str) else None
         )
@@ -159,11 +133,7 @@ def build_task_owned_values(
             json.dumps(
                 {
                     "schema": "settag.provenance/v2",
-                    "tasks": {
-                        task: provenance[task]
-                        for task in TASK_ORDER
-                        if task in provenance
-                    },
+                    "tasks": {task: provenance[task] for task in TASK_ORDER if task in provenance},
                 },
                 ensure_ascii=False,
                 separators=(",", ":"),
@@ -196,17 +166,6 @@ def read_task_provenance(
                         continue
                     if isinstance(entry, dict):
                         parsed[task] = entry
-
-    if "genre" not in parsed:
-        model = _single_owned(owned, "SETTAG_MODEL")
-        analyzed_at = _single_owned(owned, "SETTAG_ANALYZED_AT")
-        config_sha256 = _single_owned(owned, "SETTAG_CONFIG_SHA256")
-        if model and analyzed_at and config_sha256:
-            parsed["genre"] = {
-                "model": {"schema": "settag.models/v1", "id": model, "files": {}},
-                "analyzed_at": analyzed_at,
-                "config": {"sha256": config_sha256},
-            }
     return parsed
 
 
@@ -248,16 +207,6 @@ def task_evidence_from_owned(
     return results
 
 
-def _single_owned(
-    owned: Mapping[str, list[str] | None],
-    field: str,
-) -> str | None:
-    values = owned.get(field)
-    if values is None or len(values) != 1 or not values[0]:
-        return None
-    return values[0]
-
-
 class OwnedTagStore(ABC):
     format_name: str
 
@@ -285,9 +234,7 @@ class OwnedTagStore(ABC):
     ) -> TagPlan:
         plan = self.plan(desired)
         standard_change = (
-            self.plan_standard_genres(standard_genres)
-            if standard_genres is not None
-            else None
+            self.plan_standard_genres(standard_genres) if standard_genres is not None else None
         )
         if not plan.changes and standard_change is None:
             return plan
@@ -531,21 +478,6 @@ def read_owned_values(path: Path) -> OwnedValues:
     return {description: store.read_value(description) for description in OWNED_DESCRIPTIONS}
 
 
-def apply_owned_tags(
-    path: Path,
-    desired: OwnedValues,
-    *,
-    expected_plan: TagPlan | None = None,
-    expected_standard: tuple[str, ...] | None = None,
-) -> TagPlan:
-    return apply_metadata_tags(
-        path,
-        desired,
-        expected_plan=expected_plan,
-        expected_standard=expected_standard,
-    )
-
-
 def apply_metadata_tags(
     path: Path,
     desired: OwnedValues,
@@ -564,9 +496,7 @@ def apply_metadata_tags(
     current_plan = store.plan(desired)
     current_standard = store.genre_state().standard
     current_standard_change = (
-        store.plan_standard_genres(standard_genres)
-        if standard_genres is not None
-        else None
+        store.plan_standard_genres(standard_genres) if standard_genres is not None else None
     )
     if expected_plan is not None and current_plan != expected_plan:
         raise TagStateChangedError(f"Tag state changed after planning and before writing {path}")

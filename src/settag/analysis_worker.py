@@ -5,11 +5,10 @@ from contextlib import suppress
 from dataclasses import dataclass
 from multiprocessing import get_context
 from multiprocessing.connection import Connection
-from multiprocessing.context import BaseContext
 from multiprocessing.process import BaseProcess
 from pathlib import Path
 from threading import Lock
-from typing import Any
+from typing import Any, Protocol, cast
 
 from settag.analyzer import EssentiaGenreAnalyzer, EssentiaTaskAnalyzer
 from settag.tasks import AnalysisTask, ordered_tasks
@@ -21,6 +20,19 @@ from settag.workflow import (
 )
 
 AnalyzerFactory = Callable[[Path, tuple[AnalysisTask, ...]], Any]
+
+
+class ProcessContext(Protocol):
+    def Pipe(self, duplex: bool = True) -> tuple[Connection, Connection]: ...
+
+    def Process(
+        self,
+        *,
+        target: Callable[..., object],
+        args: tuple[object, ...],
+        name: str,
+        daemon: bool,
+    ) -> BaseProcess: ...
 
 
 class AnalysisWorkerError(RuntimeError):
@@ -118,7 +130,7 @@ class SubprocessAnalysisLoader:
         top: int,
         threshold: float,
         analyzer_factory: AnalyzerFactory = _create_analyzer,
-        context: BaseContext | None = None,
+        context: ProcessContext | None = None,
         poll_interval: float = 0.05,
         shutdown_timeout: float = 5.0,
     ) -> None:
@@ -135,7 +147,7 @@ class SubprocessAnalysisLoader:
         self.top = top
         self.threshold = threshold
         self._analyzer_factory = analyzer_factory
-        self._context = context or get_context("spawn")
+        self._context = context or cast(ProcessContext, get_context("spawn"))
         self._poll_interval = poll_interval
         self._shutdown_timeout = shutdown_timeout
         self._connection: Connection | None = None
@@ -166,9 +178,7 @@ class SubprocessAnalysisLoader:
 
                 response = self._analyze(path)
                 if isinstance(response, _AnalysisError):
-                    raise AnalysisWorkerError(
-                        f"{response.error_type}: {response.message}"
-                    )
+                    raise AnalysisWorkerError(f"{response.error_type}: {response.message}")
 
                 planned.extend(response.batch.planned)
                 failures.extend(response.batch.failures)
@@ -281,8 +291,7 @@ class SubprocessAnalysisLoader:
 
         if not isinstance(response, (_AnalysisResult, _AnalysisError)):
             raise AnalysisWorkerError(
-                "Analyzer worker returned an invalid response: "
-                f"{type(response).__name__}"
+                f"Analyzer worker returned an invalid response: {type(response).__name__}"
             )
         return response
 

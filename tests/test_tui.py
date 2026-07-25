@@ -13,10 +13,12 @@ from textual.widgets import Button, DataTable, ProgressBar, Static
 
 from settag.policy import Prediction
 from settag.tags import OWNED_DESCRIPTIONS, GenreState, task_evidence_from_owned
+from settag.tasks import AnalysisTask
 from settag.tui import ConfirmWriteScreen, GenreEditScreen, SetTagApp
 from settag.workflow import (
     AnalysisBatch,
     MetadataBatch,
+    MetadataStatus,
     MetadataTrack,
     analyze_paths,
     planned_write_for_track,
@@ -38,7 +40,7 @@ class FakeAnalyzer:
 
 class FakeTaskAnalyzer:
     backend_version = "test"
-    model_manifests = {
+    model_manifests: dict[AnalysisTask, dict[str, object]] = {
         task: {
             "schema": "settag.models/v1",
             "id": f"model/{task}/v1",
@@ -47,7 +49,10 @@ class FakeTaskAnalyzer:
         for task in ("genre", "mood-theme", "instrument")
     }
 
-    def analyze_tasks(self, path: Path) -> dict[str, list[Prediction]]:
+    def analyze_tasks(
+        self,
+        path: Path,
+    ) -> dict[AnalysisTask, list[Prediction]]:
         return {
             "genre": [
                 Prediction("Electronic---Progressive House", 0.664),
@@ -82,7 +87,7 @@ def _analysis_batch(
     for path in paths:
         track = prepare_track(
             path,
-            analyzer=FakeAnalyzer(),  # type: ignore[arg-type]
+            analyzer=FakeAnalyzer(),
             top=top,
             threshold=threshold,
         )
@@ -96,7 +101,7 @@ def _task_analysis_batch(paths: Sequence[Path]) -> AnalysisBatch:
     for path in paths:
         track = prepare_track(
             path,
-            analyzer=analyzer,  # type: ignore[arg-type]
+            analyzer=analyzer,
             top=5,
             threshold=0.10,
         )
@@ -107,7 +112,7 @@ def _task_analysis_batch(paths: Sequence[Path]) -> AnalysisBatch:
 def _metadata_track(
     path: Path,
     *,
-    status: str = "not_analyzed",
+    status: MetadataStatus = "not_analyzed",
     standard_genre: tuple[str, ...] = (),
 ) -> MetadataTrack:
     predictions = (Prediction("Electronic---House", 0.72),) if status == "current" else ()
@@ -119,7 +124,7 @@ def _metadata_track(
         ),
         owned={description: None for description in OWNED_DESCRIPTIONS},
         stored_predictions=predictions,
-        status=status,  # type: ignore[arg-type]
+        status=status,
         analyzed_at="2026-07-23T12:00:00Z" if status == "current" else None,
     )
 
@@ -400,7 +405,7 @@ def test_escape_cancels_after_current_track_and_keeps_remaining_selected(
     def load_analysis(paths, on_progress, should_cancel) -> AnalysisBatch:
         return analyze_paths(
             paths,
-            analyzer=analyzer,  # type: ignore[arg-type]
+            analyzer=analyzer,
             top=5,
             threshold=0.10,
             on_progress=on_progress,
@@ -898,7 +903,10 @@ def test_tui_track_columns_fit_terminal_and_expand_with_available_width(
                 "changes",
             ]
             assert table.max_scroll_x == 0
-            assert table.columns["track"].width > 8
+            track_column = next(
+                column for column in table.ordered_columns if column.key.value == "track"
+            )
+            assert track_column.width > 8
 
             await pilot.press("i")
             await pilot.resize_terminal(100, 32)

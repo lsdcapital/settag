@@ -408,8 +408,8 @@ human-readable renderer; users do not need `jq`.
 
 Every apply performs preflight both before and after confirmation. A source
 change or an analysis-error record rejects the whole plan before writing.
-Legacy `settag.plan/v1` and `settag.plan/v2` plans remain readable; their
-previously selected labels are treated as the complete available evidence.
+`settag.plan/v4` is the only accepted plan schema; a plan written with any
+other schema is rejected with an explicit error.
 
 ## Scores and models
 
@@ -481,8 +481,13 @@ See:
 uv sync --group dev
 uv run pytest
 uv run ruff check .
+uv run ruff format --check .
+uv run ty check
 uv build
 ```
+
+GitHub Actions runs the same lint, format, type, and test checks on Python
+3.10, 3.12, and 3.13 for every push to `main` and every pull request.
 
 The tests use Textual's headless app runner and synthetic audio; they do not
 run model inference. A real-audio smoke test requires downloaded models:

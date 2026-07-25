@@ -68,13 +68,13 @@ class EssentiaGenreAnalyzer:
         self.labels: list[str] = labels
 
         try:
+            import essentia.standard as standard
             from essentia import Pool, log
-            from essentia.standard import (
-                MonoLoader,
-                TensorflowPredict,
-                TensorflowPredictMAEST,
-            )
-        except ImportError as error:
+
+            MonoLoader = vars(standard)["MonoLoader"]
+            TensorflowPredict = vars(standard)["TensorflowPredict"]
+            TensorflowPredictMAEST = vars(standard)["TensorflowPredictMAEST"]
+        except (ImportError, KeyError) as error:
             raise AnalyzerError(
                 "Essentia TensorFlow bindings are unavailable. Run `uv sync` "
                 "or install the `essentia-tensorflow` dependency."
@@ -149,13 +149,13 @@ class EssentiaEffnetAnalyzer:
         self.backend_version = _package_version("essentia-tensorflow")
 
         try:
+            import essentia.standard as standard
             from essentia import log
-            from essentia.standard import (
-                MonoLoader,
-                TensorflowPredict2D,
-                TensorflowPredictEffnetDiscogs,
-            )
-        except ImportError as error:
+
+            MonoLoader = vars(standard)["MonoLoader"]
+            TensorflowPredict2D = vars(standard)["TensorflowPredict2D"]
+            TensorflowPredictEffnetDiscogs = vars(standard)["TensorflowPredictEffnetDiscogs"]
+        except (ImportError, KeyError) as error:
             raise AnalyzerError(
                 "Essentia TensorFlow bindings are unavailable. Run `uv sync` "
                 "or install the `essentia-tensorflow` dependency."
@@ -241,11 +241,7 @@ class EssentiaTaskAnalyzer:
             raise ValueError("at least one analysis task is required")
         self._genre = EssentiaGenreAnalyzer(model_dir) if "genre" in self.tasks else None
         effnet_tasks = tuple(task for task in self.tasks if task != "genre")
-        self._effnet = (
-            EssentiaEffnetAnalyzer(model_dir, effnet_tasks)
-            if effnet_tasks
-            else None
-        )
+        self._effnet = EssentiaEffnetAnalyzer(model_dir, effnet_tasks) if effnet_tasks else None
         manifests: dict[AnalysisTask, dict[str, object]] = {}
         if self._genre is not None:
             manifests["genre"] = self._genre.model_manifest

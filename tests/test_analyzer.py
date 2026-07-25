@@ -27,7 +27,7 @@ def test_tensorflow_startup_noise_is_filtered_but_other_stderr_survives(capfd) -
         b"2026-07-24 07:28:10.984456: W "
         b"external/local_xla/xla/tsl/platform/profile_utils/cpu_utils.cc:145] "
         b"Failed to get CPU frequency: 0 Hz\n"
-        b'W0000 00:00:1784910231.731010 25260253 op_level_cost_estimator.cc:743] '
+        b"W0000 00:00:1784910231.731010 25260253 op_level_cost_estimator.cc:743] "
         b'Invalid device specifications for CPU: type: "CPU" model: "0" '
         b"num_cores: 12\n"
         b"real native diagnostic\n"
@@ -102,11 +102,7 @@ def test_task_analyzer_decodes_once_and_shares_effnet_embedding(
             pass
 
         def __call__(self, _pool: Pool) -> dict[str, np.ndarray]:
-            return {
-                DISCOGS519_MAEST.classifier_output: np.asarray(
-                    [[0.8, 0.2], [0.6, 0.4]]
-                )
-            }
+            return {DISCOGS519_MAEST.classifier_output: np.asarray([[0.8, 0.2], [0.6, 0.4]])}
 
     class TensorflowPredictEffnetDiscogs:
         def __init__(self, **_kwargs: Any) -> None:
@@ -128,14 +124,22 @@ def test_task_analyzer_decodes_once_and_shares_effnet_embedding(
             return np.asarray([[0.4, 0.8], [0.6, 1.0]])
 
     essentia = ModuleType("essentia")
-    essentia.Pool = Pool  # type: ignore[attr-defined]
-    essentia.log = SimpleNamespace(infoActive=True, warningActive=True)  # type: ignore[attr-defined]
+    vars(essentia).update(
+        {
+            "Pool": Pool,
+            "log": SimpleNamespace(infoActive=True, warningActive=True),
+        }
+    )
     standard = ModuleType("essentia.standard")
-    standard.MonoLoader = MonoLoader  # type: ignore[attr-defined]
-    standard.TensorflowPredict = TensorflowPredict  # type: ignore[attr-defined]
-    standard.TensorflowPredict2D = TensorflowPredict2D  # type: ignore[attr-defined]
-    standard.TensorflowPredictEffnetDiscogs = TensorflowPredictEffnetDiscogs  # type: ignore[attr-defined]
-    standard.TensorflowPredictMAEST = TensorflowPredictMAEST  # type: ignore[attr-defined]
+    vars(standard).update(
+        {
+            "MonoLoader": MonoLoader,
+            "TensorflowPredict": TensorflowPredict,
+            "TensorflowPredict2D": TensorflowPredict2D,
+            "TensorflowPredictEffnetDiscogs": TensorflowPredictEffnetDiscogs,
+            "TensorflowPredictMAEST": TensorflowPredictMAEST,
+        }
+    )
     monkeypatch.setitem(sys.modules, "essentia", essentia)
     monkeypatch.setitem(sys.modules, "essentia.standard", standard)
     monkeypatch.setattr("settag.analyzer.require_models", lambda *_args: None)
@@ -146,9 +150,7 @@ def test_task_analyzer_decodes_once_and_shares_effnet_embedding(
     )
     monkeypatch.setattr(
         "settag.analyzer.installed_task_manifests",
-        lambda _directory, tasks: {
-            task: {"id": f"{task}/v1"} for task in tasks
-        },
+        lambda _directory, tasks: {task: {"id": f"{task}/v1"} for task in tasks},
     )
 
     analyzer = EssentiaTaskAnalyzer(
