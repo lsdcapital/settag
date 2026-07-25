@@ -12,6 +12,7 @@ from typing import Literal
 
 from settag.plans import PlannedWrite
 from settag.policy import Prediction
+from settag.tags import OwnedValues, read_task_provenance
 from settag.tasks import AnalysisTask
 from settag.workflow import (
     AnalysisBatch,
@@ -96,3 +97,18 @@ def suggested_label(predictions: Sequence[Prediction]) -> str | None:
     if not predictions:
         return None
     return predictions[0].label.rsplit("---", 1)[-1].strip() or None
+
+
+def latest_analyzed_at(owned: OwnedValues, tasks: Sequence[AnalysisTask]) -> str | None:
+    """Newest analysis time across the tasks in play, or the legacy single field."""
+    provenance = read_task_provenance(owned)
+    values: list[str] = []
+    for task in tasks:
+        entry = provenance.get(task)
+        analyzed_at = entry.get("analyzed_at") if entry is not None else None
+        if isinstance(analyzed_at, str) and analyzed_at:
+            values.append(analyzed_at)
+    if values:
+        return max(values)
+    legacy = owned.get("SETTAG_ANALYZED_AT")
+    return legacy[0] if legacy and len(legacy) == 1 else None

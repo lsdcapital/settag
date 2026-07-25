@@ -34,7 +34,7 @@ from settag.plans import (
     stage_file_genre,
     suggested_file_genre,
 )
-from settag.policy import Prediction, select_predictions
+from settag.policy import Prediction
 from settag.tags import OwnedValues, read_task_provenance, task_evidence_from_owned
 from settag.tasks import AnalysisTask, ordered_tasks
 from settag.tui.entries import (
@@ -48,6 +48,7 @@ from settag.tui.entries import (
     PlanPersister,
     TrackEntry,
     TuiOutcome,
+    latest_analyzed_at,
     suggested_label,
 )
 from settag.tui.screens import (
@@ -60,8 +61,10 @@ from settag.tui.screens import (
 from settag.tui.style import APP_CSS
 from settag.tui.table import (
     ResponsiveTrackTable,
+    RowContext,
     TrackTableColumn,
     _track_table_layout,
+    visible_row_cells,
 )
 from settag.workflow import (
     AnalysisBatch,
@@ -393,17 +396,29 @@ class SetTagApp(App[TuiOutcome]):
             return None
         return replace(
             track.cached_plan,
-            selected=tuple(self._select_for_review(track.cached_plan.evidence)),
+            selected=tuple(self._row_context.select_for_review(track.cached_plan.evidence)),
         )
 
-    def _select_for_review(
-        self,
-        evidence: Sequence[Prediction],
-    ) -> list[Prediction]:
-        return select_predictions(
-            evidence,
-            threshold=self.score_cutoff,
-            top=self.review_top,
+    @property
+    def _row_context(self) -> RowContext:
+        return RowContext(
+            tasks=self.analysis_tasks,
+            review_top=self.review_top,
+            score_cutoff=self.score_cutoff,
+        )
+
+    def _visible_cells(self, index: int) -> tuple[str, ...]:
+        """Supply one row's app state to the renderer in tui.table."""
+        selected = (
+            index in self.analysis_selected
+            if self.phase == "choose"
+            else index in self.write_selected
+        )
+        return visible_row_cells(
+            self.entries[index],
+            selected=selected,
+            context=self._row_context,
+            layout=self._table_layout,
         )
 
     def _show_library(self) -> None:
@@ -449,7 +464,7 @@ class SetTagApp(App[TuiOutcome]):
         table = self.query_one("#tracks", DataTable)
         table.clear()
         for index in self.visible_indices:
-            table.add_row(*self._visible_row_cells(index), key=str(index))
+            table.add_row(*self._visible_cells(index), key=str(index))
 
         if refresh_surrounding:
             self._update_context()
@@ -470,117 +485,6 @@ class SetTagApp(App[TuiOutcome]):
         table.move_cursor(row=cursor_row)
         if refresh_surrounding:
             self._update_inspector(self.visible_indices[cursor_row])
-
-    def _visible_row_cells(self, index: int) -> tuple[str, ...]:
-        cells = self._row_cells(index)
-        return tuple(cells[column.cell_index] for column, _width in self._table_layout)
-
-    def _row_cells(
-        self,
-        index: int,
-    ) -> tuple[str, str, str, str, str, str, str]:
-        entry = self.entries[index]
-        plan = entry.plan
-        metadata = entry.metadata
-        selected = (
-            index in self.analysis_selected
-            if self.phase == "choose"
-            else index in self.write_selected
-        )
-        predictions = self._primary_review_predictions(entry)
-        primary = predictions[0] if predictions else None
-
-        if plan is not None:
-            before = ", ".join(plan.file_genre) or "None"
-            if plan.target_file_genre is not None:
-                after = ", ".join(plan.target_file_genre) or "None"
-                file_genre = f"{before} → {after}"
-            else:
-                file_genre = before
-        elif metadata is not None:
-            file_genre = ", ".join(metadata.genre_state.standard) or "None"
-        else:
-            file_genre = "Unknown"
-
-        return (
-            "✓" if selected else "",
-            entry.path.name,
-            file_genre,
-            self._entry_analysis(entry),
-            suggested_label(predictions) or "—",
-            f"{primary.score:.3f}" if primary else "—",
-            str(len(plan.readable_changes)) if plan is not None else "—",
-        )
-
-    def _entry_analysis(self, entry: TrackEntry) -> str:
-        if entry.metadata_error is not None:
-            return "Metadata error"
-        if entry.analysis_error is not None:
-            return "Analysis error"
-
-        analyzed_at = self._entry_analyzed_at(entry)
-        if entry.plan is not None:
-            state = "Ready" if entry.plan_cached else "New"
-        else:
-            assert entry.metadata is not None
-            if entry.metadata.cache_status == "stale":
-                state = "Reanalyze"
-            elif entry.metadata.status == "not_analyzed":
-                return "Never"
-            else:
-                state = {
-                    "current": "Up to date",
-                    "stale": "Reanalyze",
-                    "invalid": "Incomplete",
-                }[entry.metadata.status]
-
-        return f"{state} · {analyzed_at}" if analyzed_at != "—" else state
-
-    def _entry_analyzed_at(self, entry: TrackEntry) -> str:
-        if entry.plan is not None:
-            value = self._latest_analyzed_at(entry.plan.desired)
-        elif entry.metadata is not None and entry.metadata.cached_plan is not None:
-            value = self._latest_analyzed_at(entry.metadata.cached_plan.desired)
-        else:
-            value = entry.metadata.analyzed_at if entry.metadata is not None else None
-        return value[:10] if value else "—"
-
-    def _primary_review_predictions(
-        self,
-        entry: TrackEntry,
-    ) -> list[Prediction]:
-        owned: OwnedValues | None
-        if entry.plan is not None:
-            owned = entry.plan.desired
-        elif entry.metadata is not None:
-            owned = entry.metadata.owned
-        else:
-            owned = None
-        if owned is None:
-            return []
-
-        evidence_by_task = task_evidence_from_owned(owned)
-        for task in self.analysis_tasks:
-            evidence = evidence_by_task.get(task, ())
-            if not evidence and task == "genre" and entry.metadata is not None:
-                evidence = entry.metadata.stored_predictions
-            selected = self._select_for_review(evidence)
-            if selected:
-                return selected
-        return []
-
-    def _latest_analyzed_at(self, owned: OwnedValues) -> str | None:
-        provenance = read_task_provenance(owned)
-        values: list[str] = []
-        for task in self.analysis_tasks:
-            entry = provenance.get(task)
-            analyzed_at = entry.get("analyzed_at") if entry is not None else None
-            if isinstance(analyzed_at, str) and analyzed_at:
-                values.append(analyzed_at)
-        if values:
-            return max(values)
-        legacy = owned.get("SETTAG_ANALYZED_AT")
-        return legacy[0] if legacy and len(legacy) == 1 else None
 
     def _update_context(self) -> None:
         task_text = ", ".join(TASK_LABELS[task] for task in self.analysis_tasks)
@@ -725,9 +629,12 @@ class SetTagApp(App[TuiOutcome]):
 
     def _full_analyzed_at(self, entry: TrackEntry) -> str:
         if entry.plan is not None:
-            return self._latest_analyzed_at(entry.plan.desired) or "Never"
+            return latest_analyzed_at(entry.plan.desired, self.analysis_tasks) or "Never"
         if entry.metadata is not None and entry.metadata.cached_plan is not None:
-            return self._latest_analyzed_at(entry.metadata.cached_plan.desired) or "Never"
+            return (
+                latest_analyzed_at(entry.metadata.cached_plan.desired, self.analysis_tasks)
+                or "Never"
+            )
         if entry.metadata is not None:
             return entry.metadata.analyzed_at or "Never"
         return "Never"
@@ -813,7 +720,7 @@ class SetTagApp(App[TuiOutcome]):
                 lines.extend(
                     self._candidate_lines(
                         evidence,
-                        self._select_for_review(evidence),
+                        self._row_context.select_for_review(evidence),
                     )
                 )
             elif task in provenance:
@@ -853,7 +760,7 @@ class SetTagApp(App[TuiOutcome]):
             return
         row = self.visible_indices.index(index)
         table = self.query_one("#tracks", DataTable)
-        for column, value in enumerate(self._visible_row_cells(index)):
+        for column, value in enumerate(self._visible_cells(index)):
             table.update_cell_at(
                 Coordinate(row, column),
                 value,
@@ -1708,7 +1615,7 @@ class SetTagApp(App[TuiOutcome]):
             owned=owned,
             stored_predictions=stored_genre,
             status=status,
-            analyzed_at=self._latest_analyzed_at(owned),
+            analyzed_at=latest_analyzed_at(owned, self.analysis_tasks),
             cached_plan=None,
             cache_status=None,
             cache_reason=None,
