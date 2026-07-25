@@ -28,7 +28,7 @@ settag = "settag.cli:main"
 [dependency-groups]
 dev = [
   "pytest>=8,<10",
-  "ruff>=0.12,<1",
+  "ruff>=0.16,<1",
   "ty>=0.0.18,<0.1",
 ]
 
@@ -47,4 +47,44 @@ line-length = 100
 target-version = "py310"
 
 [tool.ruff.lint]
-select = ["E", "F", "I", "UP", "B", "SIM"]
+select = [
+  "A",     # shadowing a builtin
+  "ARG",   # arguments that are never used
+  "ASYNC", # blocking calls in async code
+  "B",     # bugbear
+  "C4",    # comprehensions
+  "DTZ",   # naive datetimes; every timestamp SetTag stores is UTC
+  "E",     # pycodestyle errors
+  "EXE",   # shebang and executable-bit mismatches
+  "F",     # pyflakes
+  "FA",    # missing `from __future__ import annotations`
+  "FLY",   # static string joins
+  "FURB",  # outdated idioms
+  "G",     # logging call formatting
+  "I",     # import order
+  "ISC",   # implicit string concatenation
+  "LOG",   # logging misuse
+  "PERF",  # avoidable overhead
+  "PIE",   # unnecessary code
+  "PLC",   # pylint conventions
+  "PLE",   # pylint errors
+  "PT",    # pytest style
+  "RET",   # return statements
+  "RUF",   # ruff-specific
+  "SIM",   # simplification
+  "TID",   # import hygiene
+  "UP",    # pyupgrade
+  "W",     # pycodestyle warnings
+]
+ignore = [
+  # Per-item error isolation is the point in the analyze and write loops: one
+  # bad track must not abandon the batch.
+  "PERF203",
+  # Textual declares BINDINGS and CSS as plain class attributes; annotating
+  # each one ClassVar fights the framework's own idiom.
+  "RUF012",
+]
+
+[tool.ruff.lint.per-file-ignores]
+# Fixture and monkeypatch signatures often accept arguments they do not read.
+"tests/*" = ["ARG"]

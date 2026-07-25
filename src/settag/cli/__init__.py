@@ -9,4 +9,4 @@ module name, so ``settag.cli:main`` and existing imports still resolve.
 
 from settag.cli.commands import _analyze_one, main
 
-__all__ = ["main", "_analyze_one"]
+__all__ = ["_analyze_one", "main"]

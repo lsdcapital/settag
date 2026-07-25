@@ -55,7 +55,7 @@ def _owned_values(
     config_sha256: str = "config/current",
 ) -> dict[str, list[str] | None]:
     return build_task_owned_values(
-        {field: None for field in OWNED_DESCRIPTIONS},
+        dict.fromkeys(OWNED_DESCRIPTIONS),
         {"genre": [Prediction("Electronic---House", 0.72)]},
         {
             "genre": {
@@ -126,7 +126,7 @@ def test_metadata_inspection_is_task_aware_for_effnet_only_metadata(
         tasks=("instrument",),
     )
     desired = build_task_owned_values(
-        {field: None for field in OWNED_DESCRIPTIONS},
+        dict.fromkeys(OWNED_DESCRIPTIONS),
         {"instrument": [Prediction("synthesizer", 0.81)]},
         {
             "instrument": {
@@ -175,7 +175,7 @@ def test_metadata_inspection_rejects_invalid_selected_task_evidence(
         tasks=("instrument",),
     )
     desired = build_task_owned_values(
-        {field: None for field in OWNED_DESCRIPTIONS},
+        dict.fromkeys(OWNED_DESCRIPTIONS),
         {"instrument": [Prediction("synthesizer", 0.81)]},
         {
             "instrument": {

@@ -53,7 +53,7 @@ def require_models(
 
 
 def _default_urlopen(url: str) -> BinaryIO:
-    return urllib.request.urlopen(url)  # noqa: S310 - URLs are fixed in the model catalogue.
+    return urllib.request.urlopen(url)
 
 
 def _print_license_notice() -> None:

@@ -69,7 +69,7 @@ def _metadata_track(path: Path) -> MetadataTrack:
     return MetadataTrack(
         path=path,
         genre_state=GenreState(standard=(), settag=()),
-        owned={description: None for description in OWNED_DESCRIPTIONS},
+        owned=dict.fromkeys(OWNED_DESCRIPTIONS),
         stored_predictions=(),
         status="not_analyzed",
         analyzed_at=None,

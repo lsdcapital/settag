@@ -14,7 +14,7 @@ from settag.tags import OWNED_DESCRIPTIONS
 
 
 def _empty_owned() -> dict[str, list[str] | None]:
-    return {description: None for description in OWNED_DESCRIPTIONS}
+    return dict.fromkeys(OWNED_DESCRIPTIONS)
 
 
 def _owned(genre: str = "Electronic---House") -> dict[str, list[str] | None]:

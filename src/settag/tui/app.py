@@ -685,8 +685,10 @@ class SetTagApp(App[TuiOutcome]):
             [
                 "",
                 "SetTag analysis bundle",
-                f"  {evidence_count} ranked scores across {task_count} task"
-                f"{'s' if task_count != 1 else ''} with provenance",
+                (
+                    f"  {evidence_count} ranked scores across {task_count} task"
+                    f"{'s' if task_count != 1 else ''} with provenance"
+                ),
                 f"  Analysis metadata: {len(item.owned_changes)} internal field changes",
             ]
         )
@@ -735,8 +737,7 @@ class SetTagApp(App[TuiOutcome]):
         selected: Sequence[Prediction],
     ) -> list[str]:
         cutoff = f"{self.score_cutoff:.3f}"
-        if cutoff.endswith("0"):
-            cutoff = cutoff[:-1]
+        cutoff = cutoff.removesuffix("0")
         lines = [
             f"  Score cutoff ≥ {cutoff} · maximum {self.review_top}",
         ]

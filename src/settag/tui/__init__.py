@@ -17,12 +17,12 @@ from settag.tui.screens import (
 )
 
 __all__ = [
-    "SetTagApp",
-    "TrackEntry",
-    "TuiOutcome",
     "ConfirmUndoScreen",
     "ConfirmWriteScreen",
     "ErrorScreen",
     "GenreEditScreen",
+    "SetTagApp",
+    "TrackEntry",
+    "TuiOutcome",
     "UndoScreen",
 ]

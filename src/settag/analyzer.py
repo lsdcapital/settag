@@ -68,8 +68,11 @@ class EssentiaGenreAnalyzer:
         self.labels: list[str] = labels
 
         try:
-            import essentia.standard as standard
-            from essentia import Pool, log
+            # Imported lazily: essentia/TensorFlow is heavy, and a missing or broken
+            # install must surface as AnalyzerError rather than an import failure at
+            # startup, so commands that need no model keep working.
+            import essentia.standard as standard  # noqa: PLC0415
+            from essentia import Pool, log  # noqa: PLC0415
 
             MonoLoader = vars(standard)["MonoLoader"]
             TensorflowPredict = vars(standard)["TensorflowPredict"]
@@ -149,8 +152,9 @@ class EssentiaEffnetAnalyzer:
         self.backend_version = _package_version("essentia-tensorflow")
 
         try:
-            import essentia.standard as standard
-            from essentia import log
+            # Lazy for the same reason as above.
+            import essentia.standard as standard  # noqa: PLC0415
+            from essentia import log  # noqa: PLC0415
 
             MonoLoader = vars(standard)["MonoLoader"]
             TensorflowPredict2D = vars(standard)["TensorflowPredict2D"]

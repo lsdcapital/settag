@@ -30,7 +30,7 @@ def _track(
     predictions: tuple[Prediction, ...] = (),
     analyzed_at: str | None = None,
 ) -> MetadataTrack:
-    owned: dict[str, list[str] | None] = {field: None for field in OWNED_DESCRIPTIONS}
+    owned: dict[str, list[str] | None] = dict.fromkeys(OWNED_DESCRIPTIONS)
     return MetadataTrack(
         path=path,
         genre_state=GenreState(standard=standard, settag=()),

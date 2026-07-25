@@ -74,7 +74,7 @@ def _desired(
     if selected is None:
         selected = [Prediction("Electronic---Deep House", 0.72)]
     return build_task_owned_values(
-        {field: None for field in OWNED_DESCRIPTIONS},
+        dict.fromkeys(OWNED_DESCRIPTIONS),
         {"genre": selected},
         {
             "genre": {

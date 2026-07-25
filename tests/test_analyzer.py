@@ -40,12 +40,15 @@ def test_tensorflow_startup_noise_is_filtered_but_other_stderr_survives(capfd) -
 
 
 def test_native_stderr_is_replayed_when_analysis_fails(capfd) -> None:
+    def fail_after_writing_native_stderr() -> None:
+        os.write(2, b"real native failure detail\n")
+        raise RuntimeError("analysis failed")
+
     with (
         pytest.raises(RuntimeError, match="analysis failed"),
         _filter_tensorflow_startup_stderr(),
     ):
-        os.write(2, b"real native failure detail\n")
-        raise RuntimeError("analysis failed")
+        fail_after_writing_native_stderr()
 
     assert capfd.readouterr().err == "real native failure detail\n"
 

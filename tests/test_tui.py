@@ -129,7 +129,7 @@ def _metadata_track(
             standard=standard_genre,
             settag=tuple(prediction.label for prediction in predictions),
         ),
-        owned={description: None for description in OWNED_DESCRIPTIONS},
+        owned=dict.fromkeys(OWNED_DESCRIPTIONS),
         stored_predictions=predictions,
         status=status,
         analyzed_at="2026-07-23T12:00:00Z" if status == "current" else None,
