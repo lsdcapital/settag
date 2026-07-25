@@ -263,9 +263,9 @@ def test_explicit_instrument_task_does_not_construct_genre_analyzer(
     def unexpected_genre(_model_dir):
         raise AssertionError("instrument-only analysis must not load MAEST")
 
-    monkeypatch.setattr("settag.cli.EssentiaGenreAnalyzer", unexpected_genre)
+    monkeypatch.setattr("settag.cli.commands.EssentiaGenreAnalyzer", unexpected_genre)
     monkeypatch.setattr(
-        "settag.cli.EssentiaTaskAnalyzer",
+        "settag.cli.commands.EssentiaTaskAnalyzer",
         lambda _model_dir, tasks: FakeInstrumentAnalyzer(),
     )
 
@@ -342,7 +342,7 @@ def test_unhandled_ctrl_c_exits_without_a_traceback(monkeypatch, capsys) -> None
     def interrupt(_args) -> int:
         raise KeyboardInterrupt
 
-    monkeypatch.setattr("settag.cli._run_inspect", interrupt)
+    monkeypatch.setattr("settag.cli.commands._run_inspect", interrupt)
 
     result = main(["inspect", "unused"])
 
@@ -373,7 +373,10 @@ def test_path_shorthand_runs_a_noninteractive_dry_run_without_writing(
     path = tmp_path / "track.wav"
     _silent_wav(path)
     monkeypatch.setattr(sys, "stdin", StringIO(""))
-    monkeypatch.setattr("settag.cli.EssentiaGenreAnalyzer", lambda _model_dir: FakeAnalyzer())
+    monkeypatch.setattr(
+        "settag.cli.commands.EssentiaGenreAnalyzer",
+        lambda _model_dir: FakeAnalyzer(),
+    )
 
     result = main([str(path), "--tasks", "genre"])
     captured = capsys.readouterr()
@@ -393,7 +396,10 @@ def test_no_tui_forces_the_plain_dry_run(
 ) -> None:
     path = tmp_path / "track.wav"
     _silent_wav(path)
-    monkeypatch.setattr("settag.cli.EssentiaGenreAnalyzer", lambda _model_dir: FakeAnalyzer())
+    monkeypatch.setattr(
+        "settag.cli.commands.EssentiaGenreAnalyzer",
+        lambda _model_dir: FakeAnalyzer(),
+    )
 
     result = main(["run", str(path), "--no-tui", "--tasks", "genre"])
     stderr = capsys.readouterr().err
@@ -433,8 +439,8 @@ def test_interactive_default_reads_metadata_without_constructing_analyzer(
 
     monkeypatch.setattr(sys, "stdin", TtyStringIO())
     monkeypatch.setattr(sys, "stdout", TtyStringIO())
-    monkeypatch.setattr("settag.cli.EssentiaGenreAnalyzer", construct_analyzer)
-    monkeypatch.setattr("settag.cli.SetTagApp", FakeApp)
+    monkeypatch.setattr("settag.cli.commands.EssentiaGenreAnalyzer", construct_analyzer)
+    monkeypatch.setattr("settag.cli.commands.SetTagApp", FakeApp)
 
     result = main(
         [
@@ -516,10 +522,10 @@ def test_interactive_run_uses_configured_tasks_and_task_analyzer(
     monkeypatch.setattr(sys, "stdin", TtyStringIO())
     monkeypatch.setattr(sys, "stdout", TtyStringIO())
     monkeypatch.setattr(
-        "settag.cli.SubprocessAnalysisLoader",
+        "settag.cli.commands.SubprocessAnalysisLoader",
         FakeSubprocessAnalysisLoader,
     )
-    monkeypatch.setattr("settag.cli.SetTagApp", FakeApp)
+    monkeypatch.setattr("settag.cli.commands.SetTagApp", FakeApp)
 
     result = main(["run", str(path), "--config", str(config_path)])
 
@@ -538,7 +544,7 @@ def test_run_tasks_override_does_not_read_config(
     _silent_wav(path)
     config_path.write_text("[analysis\n", encoding="utf-8")
     monkeypatch.setattr(
-        "settag.cli.EssentiaGenreAnalyzer",
+        "settag.cli.commands.EssentiaGenreAnalyzer",
         lambda _model_dir: FakeAnalyzer(),
     )
 
@@ -597,8 +603,8 @@ def test_interactive_default_restores_ready_workbench_plan(
 
     monkeypatch.setattr(sys, "stdin", TtyStringIO())
     monkeypatch.setattr(sys, "stdout", TtyStringIO())
-    monkeypatch.setattr("settag.cli.EssentiaGenreAnalyzer", construct_analyzer)
-    monkeypatch.setattr("settag.cli.SetTagApp", FakeApp)
+    monkeypatch.setattr("settag.cli.commands.EssentiaGenreAnalyzer", construct_analyzer)
+    monkeypatch.setattr("settag.cli.commands.SetTagApp", FakeApp)
 
     result = main(
         [
@@ -650,7 +656,7 @@ def test_current_embedded_metadata_supersedes_workbench_plan(
 
     monkeypatch.setattr(sys, "stdin", TtyStringIO())
     monkeypatch.setattr(sys, "stdout", TtyStringIO())
-    monkeypatch.setattr("settag.cli.SetTagApp", FakeApp)
+    monkeypatch.setattr("settag.cli.commands.SetTagApp", FakeApp)
 
     assert (
         main(
@@ -687,7 +693,10 @@ def test_compact_plan_is_human_readable_and_applies_after_one_confirmation(
     path = tmp_path / "track.wav"
     plan_path = tmp_path / "plan.jsonl"
     _silent_wav(path)
-    monkeypatch.setattr("settag.cli.EssentiaGenreAnalyzer", lambda _model_dir: FakeAnalyzer())
+    monkeypatch.setattr(
+        "settag.cli.commands.EssentiaGenreAnalyzer",
+        lambda _model_dir: FakeAnalyzer(),
+    )
 
     analyzed = main(["analyze", str(path), "--plan", str(plan_path)])
     analyze_stderr = capsys.readouterr().err
@@ -752,7 +761,10 @@ def test_preview_renders_a_saved_plan_without_external_json_tools_or_writing(
     path = tmp_path / "track.wav"
     plan_path = tmp_path / "plan.jsonl"
     _silent_wav(path)
-    monkeypatch.setattr("settag.cli.EssentiaGenreAnalyzer", lambda _model_dir: FakeAnalyzer())
+    monkeypatch.setattr(
+        "settag.cli.commands.EssentiaGenreAnalyzer",
+        lambda _model_dir: FakeAnalyzer(),
+    )
 
     assert main(["analyze", str(path), "--plan", str(plan_path)]) == 0
     capsys.readouterr()
@@ -871,7 +883,10 @@ def test_batch_apply_aborts_all_writes_when_any_source_is_stale(
     plan_path = tmp_path / "plan.jsonl"
     _silent_wav(first)
     _silent_wav(second)
-    monkeypatch.setattr("settag.cli.EssentiaGenreAnalyzer", lambda _model_dir: FakeAnalyzer())
+    monkeypatch.setattr(
+        "settag.cli.commands.EssentiaGenreAnalyzer",
+        lambda _model_dir: FakeAnalyzer(),
+    )
 
     assert main(["analyze", str(tmp_path), "--plan", str(plan_path)]) == 0
     capsys.readouterr()
@@ -900,7 +915,7 @@ def test_batch_apply_rejects_a_partial_plan_with_analysis_errors(
     _silent_wav(good)
     _silent_wav(bad)
     monkeypatch.setattr(
-        "settag.cli.EssentiaGenreAnalyzer",
+        "settag.cli.commands.EssentiaGenreAnalyzer",
         lambda _model_dir: PartiallyFailingAnalyzer(),
     )
 
