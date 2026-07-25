@@ -37,6 +37,30 @@ restores, and the human-readable change lines come from one place
 (`WriteRecord.readable_changes`, reusing `plans.friendly_change`) so the two
 never drift.
 
+### Where the presentations live
+
+```text
+settag/cli/     args      the accepted command grammar
+                commands  dispatch and the work each command performs
+                render    everything printed, prompted, or logged
+
+settag/tui/     app       phases, selection, background work
+                screens   modal dialogs
+                table     column layout and row rendering
+                entries   the per-track state a row displays
+                style     the stylesheet
+```
+
+Both are packages named for the modules they replaced, so `settag.cli:main`
+and existing imports resolve unchanged.
+
+The rule that keeps the two honest: **no count or human-readable phrase
+derived from `PlannedWrite`, `PreparedWrite`, `WriteRecord`, or
+`MetadataTrack` belongs in `cli/` or `tui/`.** UI modules choose layout; the
+domain layer decides what the numbers and words are. `WriteSummary` exists
+because that rule was broken once — the CLI counted genre evidence while the
+app counted every task, and one batch reported two different totals.
+
 When the first argument is a file or directory, it is normalized to
 `run PATH`.
 
