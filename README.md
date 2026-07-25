@@ -265,17 +265,10 @@ It does not suppress source, metadata, or plan validation:
 uv run settag apply settag-plan.jsonl --yes
 ```
 
-An immediate evidence-only write is also available:
-
-```sh
-uv run settag analyze "/path/to/music" \
-  --write \
-  --output applied.jsonl
-```
-
-`analyze --write` updates SetTag-owned evidence only. Standard genre editing is
-available through the app or a saved v4 plan because it must be staged
-explicitly per track.
+`analyze` never writes. A reviewed plan is the only route to disk, in the app
+or through `apply`, so every write in SetTag passes the same preflight and
+verification. Standard genre editing is available in the app or in a saved v4
+plan because it must be staged explicitly per track.
 
 ### Logging
 

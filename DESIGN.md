@@ -156,7 +156,8 @@ metadata is authoritative and causes an obsolete local entry to be removed.
 3. Only visible tracks explicitly selected in the current library filter are
    sent to the analyzer.
 4. Interactive writes require `W` plus a batch confirmation.
-5. Plain writes require `analyze --write`, confirmed `apply`, or `apply --yes`.
+5. Plain writes require a reviewed plan through confirmed `apply` or
+   `apply --yes`; `analyze` never writes.
 6. `apply --yes` bypasses only confirmation, never validation.
 7. Only formats with an approved native metadata adapter are writable.
 8. Ranked evidence is immutable in review and always written to SetTag-owned
@@ -260,13 +261,13 @@ confidence or probabilities.
 
 ## Complete analysis record
 
-`settag.analysis/v2` records the source fingerprint, analysis time, backend,
+`settag.analysis/v3` records the source fingerprint, analysis time, backend,
 requested tasks, exact model files and SHA-256 values, evidence configuration,
 review policy, task-keyed full predictions, bounded evidence, review-selected
-subsets, native SetTag plan, and write result.
+subsets, and the native SetTag plan.
 
-The immediate `analyze --write` path remains evidence-only. It does not stage
-or write a conventional genre.
+`analyze` never writes, so the record carries no write result. Every write goes
+through a reviewed plan, `preflight_plan`, and `apply_prepared`.
 
 Failed records use `settag.error/v1` and never claim analysis or writing
 succeeded.

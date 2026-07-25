@@ -16,7 +16,6 @@ from settag.analysis_worker import SubprocessAnalysisLoader
 from settag.analyzer import EssentiaGenreAnalyzer, EssentiaTaskAnalyzer
 from settag.catalog import MODEL_SPECS_BY_TASK
 from settag.config import DEFAULT_CONFIG_PATH, load_config
-from settag.hashing import sha256_file
 from settag.model_store import (
     DEFAULT_MODEL_DIR,
     download_task_models,
@@ -35,7 +34,6 @@ from settag.scanner import scan_audio
 from settag.state import DEFAULT_STATE_DB, WorkbenchStore
 from settag.tags import (
     GenreState,
-    apply_metadata_tags,
     read_genre_state,
     read_owned_values,
 )
@@ -121,11 +119,6 @@ def build_parser() -> argparse.ArgumentParser:
     analyze.add_argument("path", type=Path)
     _add_analysis_options(analyze)
     _add_tasks(analyze)
-    analyze.add_argument(
-        "--write",
-        action="store_true",
-        help="Write each SetTag analysis bundle without prompting.",
-    )
     analyze.add_argument(
         "--output",
         type=Path,
@@ -502,12 +495,6 @@ def _run_models(args: argparse.Namespace) -> int:
 
 
 def _run_analyze(args: argparse.Namespace) -> int:
-    if args.plan and args.write:
-        print(
-            "settag: --plan is a dry-run artifact and cannot be combined with writing",
-            file=sys.stderr,
-        )
-        return 2
     if (
         args.plan
         and args.output
@@ -558,7 +545,6 @@ def _run_analyze(args: argparse.Namespace) -> int:
                     analyzer=analyzer,
                     top=args.top,
                     threshold=args.threshold,
-                    write=args.write,
                     output=output,
                     plan_output=plan_output,
                 )
@@ -842,7 +828,6 @@ def _analyze_one(
     analyzer: Any,
     top: int,
     threshold: float,
-    write: bool,
     output: TextIO | None,
     plan_output: TextIO | None = None,
 ) -> None:
@@ -856,27 +841,8 @@ def _analyze_one(
     analyzed_at = track.analyzed_at
     config = track.config
     evidence = track.evidence
-    desired = track.desired
     genre_state = track.genre_state
     tag_plan = track.tag_plan
-
-    if write:
-        applied_plan = apply_metadata_tags(
-            path,
-            desired,
-            expected_plan=tag_plan,
-            expected_standard=genre_state.standard,
-        )
-        if applied_plan != tag_plan:
-            raise RuntimeError("Applied tag plan did not match the displayed plan")
-        _verify_file_genre_tag(path, genre_state.standard)
-        write_status = "written" if tag_plan.changes else "unchanged"
-        write_requested = True
-        result_sha256 = sha256_file(path)
-    else:
-        write_status = "not_requested"
-        write_requested = False
-        result_sha256 = None
 
     record = analysis_record(
         source=source,
@@ -893,25 +859,15 @@ def _analyze_one(
             for task in track.task_predictions
         },
         tag_plan=tag_plan,
-        write_requested=write_requested,
-        write_status=write_status,
-        result_sha256=result_sha256,
     )
     _log_summary(
         genre_state=genre_state,
         evidence=evidence,
         change_count=len(tag_plan.changes),
-        write_status=write_status,
     )
     _emit(output, record)
     if plan_output is not None:
         _emit_jsonl(plan_output, plan_record_for_track(track))
-
-
-def _verify_file_genre_tag(path: Path, expected: tuple[str, ...]) -> None:
-    after = read_genre_state(path)
-    if after.standard != expected:
-        raise RuntimeError(f"File genre tag changed unexpectedly while writing {path}")
 
 
 def _log_inspection(genre_state: GenreState, owned: dict[str, list[str] | None]) -> None:
@@ -956,7 +912,6 @@ def _log_summary(
     genre_state: GenreState,
     evidence: Sequence[Prediction],
     change_count: int,
-    write_status: str,
 ) -> None:
     standard = ", ".join(genre_state.standard) or "none"
     existing_settag = ", ".join(genre_state.settag) or "none"
@@ -971,19 +926,10 @@ def _log_summary(
     else:
         LOGGER.info("  SetTag genres: %s -> %s", existing_settag, desired_settag)
 
-    if write_status == "not_requested":
-        action = (
-            "dry run: SetTag analysis bundle would change"
-            f" ({change_count} internal fields); nothing written"
-        )
-    elif write_status == "written":
-        action = (
-            f"write: SetTag analysis bundle changed and verified ({change_count} internal fields)"
-        )
-    else:
-        action = "write: SetTag analysis bundle already up to date"
-
-    LOGGER.info("  %s", action)
+    LOGGER.info(
+        "  dry run: SetTag analysis bundle would change (%d internal fields); nothing written",
+        change_count,
+    )
 
 
 def _emit(output: TextIO | None, record: dict[str, object]) -> None:

@@ -87,19 +87,14 @@ def analysis_record(
     config: dict[str, object],
     tasks: dict[str, dict[str, object]],
     tag_plan: TagPlan,
-    write_requested: bool,
-    write_status: str,
-    result_sha256: str | None,
 ) -> dict[str, Any]:
-    write: dict[str, object] = {
-        "requested": write_requested,
-        "status": write_status,
-    }
-    if result_sha256 is not None:
-        write["result_sha256"] = result_sha256
+    """Build one audit record for an analysis run.
 
+    ``analyze`` never writes; the only route to disk is a reviewed plan applied
+    through ``preflight_plan`` and ``apply_prepared``.
+    """
     return {
-        "schema": "settag.analysis/v2",
+        "schema": "settag.analysis/v3",
         "source": source,
         "analyzed_at": analyzed_at,
         "analyzer": {
@@ -111,7 +106,6 @@ def analysis_record(
         "config": config,
         "tasks": tasks,
         "tag_plan": tag_plan.to_dict(),
-        "write": write,
     }
 
 

@@ -29,8 +29,11 @@ from settag.tags import apply_metadata_tags, task_evidence_from_owned
 from settag.tasks import AnalysisTask
 from settag.workflow import (
     AnalysisBatch,
+    Analyzer,
     analyze_paths,
+    apply_prepared,
     planned_write_for_track,
+    preflight_plan,
     prepare_track,
 )
 
@@ -122,6 +125,18 @@ def _add_genre(path: Path, genre: str) -> None:
     audio.save()
 
 
+def _write_analysis(
+    path: Path,
+    analyzer: Analyzer,
+    *,
+    top: int = 5,
+    threshold: float = 0.10,
+) -> None:
+    """Write one analysis through the plan path, the only remaining route to disk."""
+    track = prepare_track(path, analyzer=analyzer, top=top, threshold=threshold)
+    apply_prepared(preflight_plan([planned_write_for_track(track)]))
+
+
 def test_analyze_dry_run_emits_plan_without_writing(tmp_path: Path) -> None:
     path = tmp_path / "track.wav"
     _silent_wav(path)
@@ -132,7 +147,6 @@ def test_analyze_dry_run_emits_plan_without_writing(tmp_path: Path) -> None:
         analyzer=FakeAnalyzer(),
         top=5,
         threshold=0.10,
-        write=False,
         output=output,
     )
 
@@ -140,11 +154,11 @@ def test_analyze_dry_run_emits_plan_without_writing(tmp_path: Path) -> None:
     audio = WAVE(path)
     assert record["tag_plan"]["format"] == "id3"
     assert record["tag_plan"]["changes"][0]["field"] == "TXXX:SETTAG_GENRE"
-    assert record["write"] == {"requested": False, "status": "not_requested"}
+    assert "write" not in record
     assert audio.tags is None
 
 
-def test_analyze_write_applies_exact_planned_fields(tmp_path: Path) -> None:
+def test_analysis_record_reports_evidence_and_selection(tmp_path: Path) -> None:
     path = tmp_path / "track.wav"
     _silent_wav(path)
     output = StringIO()
@@ -154,21 +168,11 @@ def test_analyze_write_applies_exact_planned_fields(tmp_path: Path) -> None:
         analyzer=FakeAnalyzer(),
         top=5,
         threshold=0.10,
-        write=True,
         output=output,
     )
 
     record = json.loads(output.getvalue())
-    tags = WAVE(path).tags
-    assert record["write"]["requested"] is True
-    assert record["write"]["status"] == "written"
-    assert record["write"]["result_sha256"] != record["source"]["sha256"]
-    assert tags is not None
-    assert tags["TXXX:SETTAG_GENRE"].text == [
-        "Electronic---Deep House",
-        "Electronic---House",
-    ]
-    assert record["schema"] == "settag.analysis/v2"
+    assert record["schema"] == "settag.analysis/v3"
     assert record["tasks"]["genre"]["evidence"] == [
         {"label": "Electronic---Deep House", "score": 0.72},
         {"label": "Electronic---House", "score": 0.05},
@@ -176,6 +180,7 @@ def test_analyze_write_applies_exact_planned_fields(tmp_path: Path) -> None:
     assert record["tasks"]["genre"]["selected"] == [
         {"label": "Electronic---Deep House", "score": 0.72},
     ]
+    assert WAVE(path).tags is None
 
 
 def test_score_cutoff_and_top_do_not_remove_portable_evidence(
@@ -190,9 +195,9 @@ def test_score_cutoff_and_top_do_not_remove_portable_evidence(
         analyzer=FakeAnalyzer(),
         top=1,
         threshold=0.80,
-        write=True,
         output=output,
     )
+    _write_analysis(path, FakeAnalyzer(), top=1, threshold=0.80)
 
     record = json.loads(output.getvalue())
     tags = WAVE(path).tags
@@ -215,14 +220,7 @@ def test_instrument_only_run_preserves_genre_and_publishes_task_provenance(
     _silent_wav(path)
     _add_genre(path, "Existing genre")
 
-    _analyze_one(
-        path,
-        analyzer=FakeAnalyzer(),
-        top=5,
-        threshold=0.10,
-        write=True,
-        output=StringIO(),
-    )
+    _write_analysis(path, FakeAnalyzer())
     genre_tags = WAVE(path).tags
     assert genre_tags is not None
     genre_before = list(genre_tags["TXXX:SETTAG_GENRE"].text)
@@ -233,9 +231,9 @@ def test_instrument_only_run_preserves_genre_and_publishes_task_provenance(
         analyzer=FakeInstrumentAnalyzer(),
         top=5,
         threshold=0.10,
-        write=True,
         output=output,
     )
+    _write_analysis(path, FakeInstrumentAnalyzer())
 
     tags = WAVE(path).tags
     record = json.loads(output.getvalue())
@@ -321,7 +319,6 @@ def test_analyze_without_output_logs_summary_and_complete_debug_record(
             analyzer=FakeAnalyzer(),
             top=5,
             threshold=0.10,
-            write=False,
             output=None,
         )
 
@@ -357,14 +354,7 @@ def test_inspect_reads_existing_tags_without_running_the_model(tmp_path: Path, c
     path = tmp_path / "track.wav"
     _silent_wav(path)
     _add_genre(path, "Existing genre")
-    _analyze_one(
-        path,
-        analyzer=FakeAnalyzer(),
-        top=5,
-        threshold=0.10,
-        write=True,
-        output=StringIO(),
-    )
+    _write_analysis(path, FakeAnalyzer())
 
     result = main(["inspect", str(path)])
     stderr = capsys.readouterr().err
@@ -932,16 +922,9 @@ def test_batch_apply_rejects_a_partial_plan_with_analysis_errors(
     assert WAVE(good).tags is None
 
 
-def test_plan_cannot_be_combined_with_immediate_writing(tmp_path: Path, capsys) -> None:
-    result = main(
-        [
-            "analyze",
-            str(tmp_path),
-            "--plan",
-            str(tmp_path / "plan.jsonl"),
-            "--write",
-        ]
-    )
+def test_analyze_rejects_an_unknown_write_flag(tmp_path: Path, capsys) -> None:
+    with pytest.raises(SystemExit) as caught:
+        main(["analyze", str(tmp_path), "--write"])
 
-    assert result == 2
-    assert "--plan is a dry-run artifact" in capsys.readouterr().err
+    assert caught.value.code == 2
+    assert "unrecognized arguments: --write" in capsys.readouterr().err
