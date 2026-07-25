@@ -54,6 +54,7 @@ from settag.workflow import (
     PartialWriteError,
     PreparedWrite,
     UndoPreflight,
+    WriteSummary,
     analyze_paths,
     apply_prepared,
     apply_undo,
@@ -62,6 +63,7 @@ from settag.workflow import (
     preflight_plan,
     preflight_undo,
     prepare_track,
+    summarize_writes,
 )
 
 LOGGER = logging.getLogger("settag")
@@ -781,8 +783,9 @@ def _run_apply(args: argparse.Namespace) -> int:
         print("No files were written.", file=sys.stderr)
         return 2
 
-    write_count = sum(item.has_changes for item in prepared)
-    _print_batch_plan_summary(plan_path, prepared, write_count)
+    summary = summarize_writes(prepared)
+    write_count = summary.write_count
+    _print_batch_plan_summary(plan_path, summary)
     if write_count == 0:
         print("Everything in this plan is already up to date.", file=sys.stderr)
         return 0
@@ -883,7 +886,7 @@ def _run_undo(args: argparse.Namespace) -> int:
         if not sys.stdin.isatty():
             print("settag: undo requires an interactive terminal or --yes", file=sys.stderr)
             return 2
-        if not _prompt_for_undo(len(preflight.restorable)):
+        if not _prompt_for_undo(preflight.restore_count):
             print("Cancelled; nothing changed.", file=sys.stderr)
             return 0
 
@@ -942,10 +945,9 @@ def _print_undo_summary(batch: JournalBatch, preflight: UndoPreflight) -> None:
         print(f"      skipped: {blocked.reason}", file=sys.stderr)
 
     print(file=sys.stderr)
-    restorable = len(preflight.restorable)
-    print(f"  Files to restore: {restorable}", file=sys.stderr)
-    if preflight.blocked:
-        print(f"  Files skipped:    {len(preflight.blocked)}", file=sys.stderr)
+    print(f"  Files to restore: {preflight.restore_count}", file=sys.stderr)
+    if preflight.blocked_count:
+        print(f"  Files skipped:    {preflight.blocked_count}", file=sys.stderr)
     print(file=sys.stderr)
     print(
         "Only the SetTag metadata and staged genre edits above are rewritten.",
@@ -966,29 +968,22 @@ def _prompt_for_undo(restore_count: int) -> bool:
 
 def _print_batch_plan_summary(
     plan_path: Path,
-    prepared: Sequence[PreparedWrite],
-    write_count: int,
+    summary: WriteSummary,
 ) -> None:
-    field_changes = sum(len(item.owned_plan.changes) for item in prepared)
-    bundle_changes = sum(bool(item.owned_plan.changes) for item in prepared)
-    standard_edits = sum(item.standard_genre_change is not None for item in prepared)
-    empty_file_genres = sum(not item.item.file_genre for item in prepared)
-    evidence_scores = sum(len(item.item.evidence) for item in prepared)
-
     print(file=sys.stderr)
     print("Batch write plan", file=sys.stderr)
     print(plan_path, file=sys.stderr)
     print(file=sys.stderr)
-    print(f"  Tracks reviewed:        {len(prepared)}", file=sys.stderr)
-    print(f"  Files to write:         {write_count}", file=sys.stderr)
-    print(f"  SetTag bundles:         {bundle_changes}", file=sys.stderr)
-    print(f"  Internal field changes: {field_changes}", file=sys.stderr)
-    print(f"  Standard genre edits:   {standard_edits}", file=sys.stderr)
-    print(f"  Stored evidence scores: {evidence_scores}", file=sys.stderr)
-    print(f"  Empty file genre tags:  {empty_file_genres}", file=sys.stderr)
+    print(f"  Tracks reviewed:        {summary.track_count}", file=sys.stderr)
+    print(f"  Files to write:         {summary.write_count}", file=sys.stderr)
+    print(f"  SetTag bundles:         {summary.bundle_changes}", file=sys.stderr)
+    print(f"  Internal field changes: {summary.field_changes}", file=sys.stderr)
+    print(f"  Standard genre edits:   {summary.standard_genre_edits}", file=sys.stderr)
+    print(f"  Stored evidence scores: {summary.evidence_scores}", file=sys.stderr)
+    print(f"  Empty file genre tags:  {summary.empty_file_genres}", file=sys.stderr)
     print(file=sys.stderr)
     print("Every source SHA-256 and metadata plan matches the reviewed file.", file=sys.stderr)
-    if standard_edits:
+    if summary.standard_genre_edits:
         print(
             "Only the explicitly staged standard genre edits will change.",
             file=sys.stderr,

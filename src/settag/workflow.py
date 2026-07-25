@@ -164,6 +164,41 @@ class PreparedWrite:
 
 
 @dataclass(frozen=True)
+class WriteSummary:
+    """What a batch of prepared writes would do, counted once.
+
+    Both UIs describe a pending write before asking for confirmation. Deriving
+    these counts in each of them let the two drift: the confirm dialog counted
+    ranked scores across every task while the plain CLI counted genre evidence
+    only, so one batch had two different answers. The counts belong here.
+    """
+
+    track_count: int
+    write_count: int
+    bundle_changes: int
+    field_changes: int
+    standard_genre_edits: int
+    evidence_scores: int
+    empty_file_genres: int
+
+
+def summarize_writes(prepared: Sequence[PreparedWrite]) -> WriteSummary:
+    return WriteSummary(
+        track_count=len(prepared),
+        write_count=sum(item.has_changes for item in prepared),
+        bundle_changes=sum(bool(item.owned_plan.changes) for item in prepared),
+        field_changes=sum(len(item.owned_plan.changes) for item in prepared),
+        standard_genre_edits=sum(item.standard_genre_change is not None for item in prepared),
+        evidence_scores=sum(
+            len(evidence)
+            for item in prepared
+            for evidence in task_evidence_from_owned(item.item.desired).values()
+        ),
+        empty_file_genres=sum(not item.item.file_genre for item in prepared),
+    )
+
+
+@dataclass(frozen=True)
 class BlockedUndo:
     entry: WriteRecord
     reason: str
@@ -175,6 +210,18 @@ class UndoPreflight:
 
     restorable: tuple[WriteRecord, ...]
     blocked: tuple[BlockedUndo, ...]
+
+    @property
+    def restore_count(self) -> int:
+        return len(self.restorable)
+
+    @property
+    def blocked_count(self) -> int:
+        return len(self.blocked)
+
+    @property
+    def standard_genre_edits(self) -> int:
+        return sum(entry.standard_genre_change is not None for entry in self.restorable)
 
 
 class PartialWriteError(RuntimeError):

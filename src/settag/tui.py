@@ -48,13 +48,16 @@ from settag.workflow import (
     MetadataStatus,
     MetadataTrack,
     PartialWriteError,
+    PreparedWrite,
     ProgressCallback,
     UndoPreflight,
+    WriteSummary,
     apply_prepared,
     apply_undo,
     preflight_plan,
     preflight_undo,
     save_plan,
+    summarize_writes,
 )
 
 MetadataLoader = Callable[[ProgressCallback], MetadataBatch]
@@ -348,17 +351,21 @@ class ConfirmWriteScreen(ModalScreen[bool]):
         Binding("n,escape", "cancel", "Cancel"),
     ]
 
-    def __init__(
-        self,
-        *,
-        track_count: int,
-        standard_genre_count: int,
-        evidence_count: int,
-    ) -> None:
+    def __init__(self, summary: WriteSummary) -> None:
         super().__init__()
-        self.track_count = track_count
-        self.standard_genre_count = standard_genre_count
-        self.evidence_count = evidence_count
+        self.summary = summary
+
+    @property
+    def track_count(self) -> int:
+        return self.summary.track_count
+
+    @property
+    def standard_genre_count(self) -> int:
+        return self.summary.standard_genre_edits
+
+    @property
+    def evidence_count(self) -> int:
+        return self.summary.evidence_scores
 
     def compose(self) -> ComposeResult:
         noun = "track" if self.track_count == 1 else "tracks"
@@ -475,17 +482,18 @@ class ConfirmUndoScreen(ModalScreen[bool]):
         Binding("n,escape", "cancel", "Cancel"),
     ]
 
-    def __init__(
-        self,
-        *,
-        batch: JournalBatch,
-        restore_count: int,
-        blocked_count: int,
-    ) -> None:
+    def __init__(self, *, batch: JournalBatch, preflight: UndoPreflight) -> None:
         super().__init__()
         self.journal_batch = batch
-        self.restore_count = restore_count
-        self.blocked_count = blocked_count
+        self.preflight = preflight
+
+    @property
+    def restore_count(self) -> int:
+        return self.preflight.restore_count
+
+    @property
+    def blocked_count(self) -> int:
+        return self.preflight.blocked_count
 
     def compose(self) -> ComposeResult:
         noun = "file" if self.restore_count == 1 else "files"
@@ -2072,21 +2080,10 @@ class SetTagApp(App[TuiOutcome]):
             return
         self.call_from_thread(self._confirm_preflight, prepared)
 
-    def _confirm_preflight(self, _prepared: Sequence[object]) -> None:
+    def _confirm_preflight(self, prepared: Sequence[PreparedWrite]) -> None:
         self.busy = False
-        track_count = len(self._pending_write)
-        standard_count = sum(item.standard_genre_change is not None for item in self._pending_write)
-        evidence_count = sum(
-            len(evidence)
-            for item in self._pending_write
-            for evidence in task_evidence_from_owned(item.desired).values()
-        )
         self.push_screen(
-            ConfirmWriteScreen(
-                track_count=track_count,
-                standard_genre_count=standard_count,
-                evidence_count=evidence_count,
-            ),
+            ConfirmWriteScreen(summarize_writes(prepared)),
             self._write_confirmation,
         )
 
@@ -2276,11 +2273,7 @@ class SetTagApp(App[TuiOutcome]):
             )
             return
         self.push_screen(
-            ConfirmUndoScreen(
-                batch=batch,
-                restore_count=len(preflight.restorable),
-                blocked_count=len(preflight.blocked),
-            ),
+            ConfirmUndoScreen(batch=batch, preflight=preflight),
             self._undo_confirmation,
         )
 

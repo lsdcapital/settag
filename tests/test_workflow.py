@@ -13,6 +13,7 @@ from settag.tags import (
     read_genre_state,
     read_owned_values,
 )
+from settag.tasks import AnalysisTask
 from settag.workflow import (
     apply_prepared,
     apply_undo,
@@ -21,6 +22,7 @@ from settag.workflow import (
     preflight_plan,
     preflight_undo,
     prepare_track,
+    summarize_writes,
 )
 
 
@@ -322,3 +324,73 @@ def test_undo_reports_a_missing_file_instead_of_failing(tmp_path: Path) -> None:
 
     assert preflight.restorable == ()
     assert [blocked.reason for blocked in preflight.blocked] == ["file is missing"]
+
+
+class FakeMultiTaskAnalyzer:
+    model_manifests: dict[AnalysisTask, dict[str, object]] = {
+        task: {"schema": "settag.models/v1", "id": f"model/{task}/v1", "files": {}}
+        for task in ("genre", "instrument")
+    }
+
+    def analyze_tasks(self, path: Path) -> dict[AnalysisTask, list[Prediction]]:
+        return {
+            "genre": [Prediction("Electronic---House", 0.72)],
+            "instrument": [
+                Prediction("synthesizer", 0.81),
+                Prediction("drum machine", 0.44),
+            ],
+        }
+
+
+def test_summary_counts_evidence_from_every_task_not_just_genre(tmp_path: Path) -> None:
+    """Regression: the CLI counted genre evidence while the TUI counted all tasks.
+
+    One batch reported two different numbers depending on which UI asked.
+    """
+    path = tmp_path / "track.wav"
+    _silent_wav(path)
+    plan = planned_write_for_track(
+        prepare_track(path, analyzer=FakeMultiTaskAnalyzer(), top=5, threshold=0.10)
+    )
+
+    summary = summarize_writes(preflight_plan([plan]))
+
+    assert len(plan.evidence) == 1
+    assert summary.evidence_scores == 3
+
+
+def test_summary_counts_writes_bundles_and_staged_genre_edits(tmp_path: Path) -> None:
+    changed = tmp_path / "changed.wav"
+    staged = tmp_path / "staged.wav"
+    for path in (changed, staged):
+        _silent_wav(path)
+
+    prepared = preflight_plan([_plan(changed), stage_file_genre(_plan(staged), ("House",))])
+    summary = summarize_writes(prepared)
+
+    assert summary.track_count == 2
+    assert summary.write_count == 2
+    assert summary.bundle_changes == 2
+    assert summary.standard_genre_edits == 1
+    assert summary.empty_file_genres == 2
+
+
+def test_undo_preflight_counts_match_its_contents(tmp_path: Path) -> None:
+    present = tmp_path / "present.wav"
+    removed = tmp_path / "removed.wav"
+    for path in (present, removed):
+        _silent_wav(path)
+
+    journal = WriteJournal(tmp_path / "journal.sqlite3")
+    recorder = BatchRecorder(journal)
+    plans = [stage_file_genre(_plan(present), ("House",)), _plan(removed)]
+    apply_prepared(preflight_plan(plans), on_write=recorder)
+    removed.unlink()
+
+    batch = journal.batch(recorder.batch_id)
+    assert batch is not None
+    preflight = preflight_undo(batch.entries)
+
+    assert preflight.restore_count == 1
+    assert preflight.blocked_count == 1
+    assert preflight.standard_genre_edits == 1
