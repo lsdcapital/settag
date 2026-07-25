@@ -65,6 +65,16 @@ class PlannedWrite:
         return (*self.owned_changes, friendly_standard_genre_change(standard_change))
 
     @property
+    def evidence_score_count(self) -> int:
+        """Ranked scores stored for this track across every task.
+
+        ``evidence`` holds genre predictions only, so counting that instead
+        under-reports a multi-task run. Both UIs made exactly that mistake
+        independently, which is why the count lives here.
+        """
+        return sum(len(values) for values in task_evidence_from_owned(self.desired).values())
+
+    @property
     def standard_genre_change(self) -> TagChange | None:
         if self.target_file_genre is None or self.target_file_genre == self.file_genre:
             return None

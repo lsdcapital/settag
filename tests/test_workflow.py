@@ -24,6 +24,7 @@ from settag.workflow import (
     preflight_plan,
     preflight_undo,
     prepare_track,
+    summarize_planned,
     summarize_writes,
 )
 
@@ -406,3 +407,29 @@ def test_undo_preflight_counts_match_its_contents(tmp_path: Path) -> None:
     assert preflight.restore_count == 1
     assert preflight.blocked_count == 1
     assert preflight.standard_genre_edits == 1
+
+
+def test_planned_and_prepared_summaries_agree(tmp_path: Path) -> None:
+    """A batch must not read differently before and after preflight."""
+    path = tmp_path / "track.wav"
+    _silent_wav(path)
+    plan = stage_file_genre(
+        planned_write_for_track(
+            prepare_track(path, analyzer=FakeMultiTaskAnalyzer(), top=5, threshold=0.10)
+        ),
+        ("House",),
+    )
+
+    assert summarize_planned([plan]) == summarize_writes(preflight_plan([plan]))
+
+
+def test_evidence_score_count_covers_every_task(tmp_path: Path) -> None:
+    """Regression: `evidence` is genre-only, so counting it under-reports."""
+    path = tmp_path / "track.wav"
+    _silent_wav(path)
+    plan = planned_write_for_track(
+        prepare_track(path, analyzer=FakeMultiTaskAnalyzer(), top=5, threshold=0.10)
+    )
+
+    assert len(plan.evidence) == 1
+    assert plan.evidence_score_count == 3

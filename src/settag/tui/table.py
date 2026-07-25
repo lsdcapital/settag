@@ -82,13 +82,15 @@ def _track_table_layout(
     def render_width(key: str) -> int:
         return widths[key] + column_padding
 
+    # ui-count: terminal column arithmetic, unrelated to any domain object
     total_width = sum(render_width(key) for key in widths)
     if total_width > available:
         widths["track"] = max(
             1,
             available - render_width("selected") - column_padding,
         )
-        total_width = sum(render_width(key) for key in widths)
+        # ui-count: terminal column arithmetic, unrelated to any domain object
+    total_width = sum(render_width(key) for key in widths)
 
     for key in TRACK_TABLE_COLUMN_PRIORITY:
         column = TRACK_TABLE_COLUMN_BY_KEY[key]

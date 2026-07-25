@@ -181,20 +181,39 @@ class WriteSummary:
     evidence_scores: int
     empty_file_genres: int
 
+    @property
+    def unchanged_count(self) -> int:
+        return self.track_count - self.write_count
+
 
 def summarize_writes(prepared: Sequence[PreparedWrite]) -> WriteSummary:
+    """Summarize writes that have passed preflight."""
     return WriteSummary(
         track_count=len(prepared),
         write_count=sum(item.has_changes for item in prepared),
         bundle_changes=sum(bool(item.owned_plan.changes) for item in prepared),
         field_changes=sum(len(item.owned_plan.changes) for item in prepared),
         standard_genre_edits=sum(item.standard_genre_change is not None for item in prepared),
-        evidence_scores=sum(
-            len(evidence)
-            for item in prepared
-            for evidence in task_evidence_from_owned(item.item.desired).values()
-        ),
+        evidence_scores=sum(item.item.evidence_score_count for item in prepared),
         empty_file_genres=sum(not item.item.file_genre for item in prepared),
+    )
+
+
+def summarize_planned(planned: Sequence[PlannedWrite]) -> WriteSummary:
+    """Summarize plans that have not been preflighted against their files.
+
+    Used by the dry run and saved-plan output, which describe a plan without
+    opening the audio again. The counts match ``summarize_writes`` so a batch
+    never reads differently before and after preflight.
+    """
+    return WriteSummary(
+        track_count=len(planned),
+        write_count=sum(bool(item.readable_changes) for item in planned),
+        bundle_changes=sum(bool(item.owned_changes) for item in planned),
+        field_changes=sum(len(item.owned_changes) for item in planned),
+        standard_genre_edits=sum(item.standard_genre_change is not None for item in planned),
+        evidence_scores=sum(item.evidence_score_count for item in planned),
+        empty_file_genres=sum(not item.file_genre for item in planned),
     )
 
 

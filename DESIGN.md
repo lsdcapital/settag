@@ -58,8 +58,21 @@ The rule that keeps the two honest: **no count or human-readable phrase
 derived from `PlannedWrite`, `PreparedWrite`, `WriteRecord`, or
 `MetadataTrack` belongs in `cli/` or `tui/`.** UI modules choose layout; the
 domain layer decides what the numbers and words are. `WriteSummary` exists
-because that rule was broken once — the CLI counted genre evidence while the
-app counted every task, and one batch reported two different totals.
+because that rule was broken twice — the CLI counted genre evidence while the
+app counted every task, so one batch reported two different totals in the
+confirm dialog, `settag apply`, and `settag preview`.
+
+`tests/test_architecture.py` enforces the count half of the rule: a `sum()` in
+`cli/` or `tui/` fails the suite unless it carries a `# ui-count: <reason>`
+marker declaring that it aggregates the UI's own state (rows in the current
+view, the current selection, terminal widths) rather than domain objects.
+Aggregates over a batch or a track belong in `summarize_writes`,
+`summarize_planned`, or a property on the domain object —
+`PlannedWrite.evidence_score_count` is there for exactly that reason.
+
+The phrasing half stays a convention: `plans.friendly_change` and
+`WriteRecord.readable_changes` are the only places change text is produced,
+but nothing mechanical stops a UI from writing its own wording.
 
 When the first argument is a file or directory, it is normalized to
 `run PATH`.

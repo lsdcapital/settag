@@ -489,7 +489,9 @@ class SetTagApp(App[TuiOutcome]):
     def _update_context(self) -> None:
         task_text = ", ".join(TASK_LABELS[task] for task in self.analysis_tasks)
         if self.phase == "choose":
+            # ui-count: rows in the library view, not a property of any batch
             needs = sum(entry.needs_analysis for entry in self.entries)
+            # ui-count: tracks whose tags could not be read into this view
             errors = sum(entry.metadata_error is not None for entry in self.entries)
             ready = len(self.review_indices)
             ready_text = f"  ·  {ready} ready to review" if ready else ""
@@ -502,6 +504,7 @@ class SetTagApp(App[TuiOutcome]):
                 f"  ·  Filter: {FILTER_LABELS[self.library_filter]}"
             )
         else:
+            # ui-count: analysis failures in this session's review set
             failures = sum(
                 self.entries[index].analysis_error is not None for index in self.review_indices
             )
@@ -678,8 +681,7 @@ class SetTagApp(App[TuiOutcome]):
         )
         lines.extend(self._task_candidate_sections(item.desired))
 
-        all_evidence = task_evidence_from_owned(item.desired)
-        evidence_count = sum(len(evidence) for evidence in all_evidence.values())
+        evidence_count = item.evidence_score_count
         task_count = len(read_task_provenance(item.desired))
         lines.extend(
             [
@@ -805,6 +807,7 @@ class SetTagApp(App[TuiOutcome]):
             return
 
         if self.phase == "choose":
+            # ui-count: how much of the current filtered view is selected
             selected = sum(index in self.analysis_selected for index in self.visible_indices)
             review_hint = (
                 f"  ·  V review {len(self.review_indices)} ready" if self.review_indices else ""
@@ -817,6 +820,7 @@ class SetTagApp(App[TuiOutcome]):
             )
         else:
             selected = len(self.write_selected)
+            # ui-count: staged edits among the currently checked rows, before any preflight
             genre_edits = sum(
                 self.entries[index].has_standard_genre_change for index in self.write_selected
             )

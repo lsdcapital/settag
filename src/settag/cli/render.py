@@ -20,7 +20,7 @@ from settag.journal import BatchRecorder, JournalBatch, WriteJournal
 from settag.plans import PlannedWrite
 from settag.policy import Prediction
 from settag.tags import GenreState
-from settag.workflow import AnalysisBatch, UndoPreflight, WriteSummary
+from settag.workflow import AnalysisBatch, UndoPreflight, WriteSummary, summarize_planned
 
 LOGGER = logging.getLogger("settag")
 
@@ -42,18 +42,16 @@ def _configure_logging() -> None:
 
 def _print_plain_batch(source: Path, batch: AnalysisBatch) -> None:
     planned = batch.planned
-    write_count = sum(bool(item.readable_changes) for item in planned)
-    unchanged = len(planned) - write_count
-    missing_genre = sum(not item.file_genre for item in planned)
+    summary = summarize_planned(planned)
 
     print(file=sys.stderr)
     print("SetTag dry run", file=sys.stderr)
     print(source.expanduser().resolve(), file=sys.stderr)
     print(file=sys.stderr)
-    print(f"  Analyzed:            {len(planned)}", file=sys.stderr)
-    print(f"  Would write:         {write_count}", file=sys.stderr)
-    print(f"  Already current:     {unchanged}", file=sys.stderr)
-    print(f"  Without file genre:  {missing_genre}", file=sys.stderr)
+    print(f"  Analyzed:            {summary.track_count}", file=sys.stderr)
+    print(f"  Would write:         {summary.write_count}", file=sys.stderr)
+    print(f"  Already current:     {summary.unchanged_count}", file=sys.stderr)
+    print(f"  Without file genre:  {summary.empty_file_genres}", file=sys.stderr)
     print(f"  Errors:              {len(batch.failures)}", file=sys.stderr)
 
     for item in planned:
@@ -167,17 +165,14 @@ def _print_plan_preview(plan_path: Path, planned: Sequence[PlannedWrite]) -> Non
         print(f"  Model: {model[0] if model else 'not set'}")
         print(f"  Analyzed: {analyzed_at[0] if analyzed_at else 'not set'}")
 
-    write_count = sum(bool(item.readable_changes) for item in planned)
-    evidence_count = sum(len(item.evidence) for item in planned)
-    empty_file_genres = sum(not item.file_genre for item in planned)
-    standard_edits = sum(item.standard_genre_change is not None for item in planned)
+    summary = summarize_planned(planned)
     print()
     print("Summary")
-    print(f"  Tracks reviewed:        {len(planned)}")
-    print(f"  Files to write:         {write_count}")
-    print(f"  Stored evidence scores: {evidence_count}")
-    print(f"  Empty file genre tags:  {empty_file_genres}")
-    print(f"  Standard genre edits:   {standard_edits}")
+    print(f"  Tracks reviewed:        {summary.track_count}")
+    print(f"  Files to write:         {summary.write_count}")
+    print(f"  Stored evidence scores: {summary.evidence_scores}")
+    print(f"  Empty file genre tags:  {summary.empty_file_genres}")
+    print(f"  Standard genre edits:   {summary.standard_genre_edits}")
     print()
     print("This preview reads only the saved plan; no audio files were checked or written.")
     print("Apply verifies every source and asks once before writing:")
