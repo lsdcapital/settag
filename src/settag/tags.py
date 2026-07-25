@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import os
+import shutil
 from abc import ABC, abstractmethod
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -243,8 +245,56 @@ class OwnedTagStore(ABC):
             self.write_value(description, values)
         if standard_genres is not None:
             self.write_standard_genres(list(standard_genres))
-        self.audio.save()
+        self._commit(desired, standard_genres)
         return plan
+
+    def _commit(
+        self,
+        desired: OwnedValues,
+        standard_genres: tuple[str, ...] | None,
+    ) -> None:
+        """Save into a temporary copy, verify it, then swap it in with one atomic rename.
+
+        Mutagen writes metadata in place, and growing a tag past the container's available
+        padding rewrites the whole file. An interruption partway through that rewrite would
+        leave the DJ's original damaged, and music files are not regenerable. So tag writes
+        follow the same write-temp-then-replace discipline `model_store` already uses for
+        downloads: the original is only ever exchanged for a candidate that has been written
+        and read back successfully, and any failure leaves it untouched.
+
+        The temporary keeps the original suffix so container detection behaves identically.
+        """
+        if not self.path.exists():
+            # No original exists, so there is nothing an interrupted write could damage and
+            # nothing to read a candidate back from. Write directly.
+            self.audio.save()
+            return
+
+        temporary = self.path.with_name(f"{self.path.stem}.settag-part{self.path.suffix}")
+        try:
+            shutil.copy2(self.path, temporary)
+            self.audio.save(temporary)
+            self._verify_candidate(temporary, desired, standard_genres)
+            os.replace(temporary, self.path)
+        finally:
+            temporary.unlink(missing_ok=True)
+
+    def _verify_candidate(
+        self,
+        candidate: Path,
+        desired: OwnedValues,
+        standard_genres: tuple[str, ...] | None,
+    ) -> None:
+        """Read the candidate back from disk and refuse to commit anything incomplete."""
+        written = owned_tag_store(candidate)
+        remaining = written.plan(desired)
+        if remaining.changes:
+            fields = ", ".join(change.field for change in remaining.changes)
+            raise TagVerificationError(
+                f"SetTag metadata verification failed for {self.path}: {fields}"
+            )
+        if standard_genres is not None and written.genre_state().standard != standard_genres:
+            raise TagVerificationError(f"File genre tag verification failed for {self.path}")
 
     def plan_standard_genres(
         self,

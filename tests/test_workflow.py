@@ -1,14 +1,34 @@
 import wave
 from pathlib import Path
+from types import SimpleNamespace
 
+from settag.journal import BatchRecorder, WriteJournal
+from settag.plans import PlannedWrite, stage_file_genre
 from settag.policy import Prediction
 from settag.records import config_record
 from settag.tags import (
     OWNED_DESCRIPTIONS,
     apply_metadata_tags,
     build_task_owned_values,
+    read_genre_state,
+    read_owned_values,
 )
-from settag.workflow import inspect_paths
+from settag.workflow import (
+    apply_prepared,
+    apply_undo,
+    inspect_paths,
+    planned_write_for_track,
+    preflight_plan,
+    preflight_undo,
+    prepare_track,
+)
+
+
+class FakeAnalyzer:
+    spec = SimpleNamespace(id="model/v1")
+
+    def analyze(self, path: Path) -> list[Prediction]:
+        return [Prediction("Electronic---House", 0.72)]
 
 
 def _silent_wav(path: Path) -> None:
@@ -17,6 +37,12 @@ def _silent_wav(path: Path) -> None:
         output.setsampwidth(2)
         output.setframerate(8_000)
         output.writeframes(b"\0\0" * 80)
+
+
+def _plan(path: Path) -> PlannedWrite:
+    return planned_write_for_track(
+        prepare_track(path, analyzer=FakeAnalyzer(), top=5, threshold=0.10)
+    )
 
 
 def _owned_values(
@@ -169,3 +195,130 @@ def test_metadata_inspection_rejects_invalid_selected_task_evidence(
     ).tracks[0]
 
     assert track.status == "invalid"
+
+
+def test_undo_restores_the_metadata_a_write_replaced(tmp_path: Path) -> None:
+    path = tmp_path / "track.wav"
+    _silent_wav(path)
+    owned_before = read_owned_values(path)
+    genre_before = read_genre_state(path).standard
+
+    journal = WriteJournal(tmp_path / "journal.sqlite3")
+    recorder = BatchRecorder(journal)
+    plan = stage_file_genre(_plan(path), ("House",))
+    apply_prepared(preflight_plan([plan]), on_write=recorder)
+    assert read_genre_state(path).standard == ("House",)
+
+    batch = journal.batch(recorder.batch_id)
+    assert batch is not None
+    preflight = preflight_undo(batch.entries)
+    restored = apply_undo(preflight.restorable)
+
+    assert preflight.blocked == ()
+    assert restored == 1
+    assert read_owned_values(path) == owned_before
+    assert read_genre_state(path).standard == genre_before
+
+
+def test_undo_restores_the_older_settag_bundle_a_rewrite_replaced(tmp_path: Path) -> None:
+    path = tmp_path / "track.wav"
+    _silent_wav(path)
+    apply_metadata_tags(path, _owned_values(model_id="model/older"))
+    owned_before = read_owned_values(path)
+
+    journal = WriteJournal(tmp_path / "journal.sqlite3")
+    recorder = BatchRecorder(journal)
+    apply_prepared(preflight_plan([_plan(path)]), on_write=recorder)
+    assert read_owned_values(path)["SETTAG_MODEL"] == ["model/v1"]
+
+    batch = journal.batch(recorder.batch_id)
+    assert batch is not None
+    apply_undo(preflight_undo(batch.entries).restorable)
+
+    assert read_owned_values(path) == owned_before
+
+
+def test_a_write_is_journaled_once_per_written_file(tmp_path: Path) -> None:
+    written = tmp_path / "written.wav"
+    unchanged = tmp_path / "unchanged.wav"
+    for path in (written, unchanged):
+        _silent_wav(path)
+
+    journal = WriteJournal(tmp_path / "journal.sqlite3")
+    first = BatchRecorder(journal)
+    apply_prepared(preflight_plan([_plan(unchanged)]), on_write=first)
+
+    second = BatchRecorder(journal)
+    plans = [_plan(written), _plan(unchanged)]
+    apply_prepared(preflight_plan(plans), on_write=second)
+
+    batch = journal.batch(second.batch_id)
+    assert batch is not None
+    assert [entry.path for entry in batch.entries] == [written]
+
+
+def test_a_failing_recorder_never_fails_the_write(tmp_path: Path) -> None:
+    path = tmp_path / "track.wav"
+    _silent_wav(path)
+
+    def explode(_entry: object) -> None:
+        raise RuntimeError("journal is unavailable")
+
+    written = apply_prepared(preflight_plan([_plan(path)]), on_write=explode)
+
+    assert written == 1
+    assert read_owned_values(path)["SETTAG_GENRE"] == ["Electronic---House"]
+
+
+def test_undo_skips_a_file_that_changed_after_the_write(tmp_path: Path) -> None:
+    path = tmp_path / "track.wav"
+    _silent_wav(path)
+    journal = WriteJournal(tmp_path / "journal.sqlite3")
+    recorder = BatchRecorder(journal)
+    apply_prepared(preflight_plan([_plan(path)]), on_write=recorder)
+
+    apply_metadata_tags(path, _owned_values(model_id="model/elsewhere"))
+
+    batch = journal.batch(recorder.batch_id)
+    assert batch is not None
+    preflight = preflight_undo(batch.entries)
+
+    assert preflight.restorable == ()
+    assert [blocked.reason for blocked in preflight.blocked] == [
+        "file changed after SetTag wrote it"
+    ]
+
+
+def test_force_restores_a_file_that_changed_after_the_write(tmp_path: Path) -> None:
+    path = tmp_path / "track.wav"
+    _silent_wav(path)
+    owned_before = read_owned_values(path)
+    journal = WriteJournal(tmp_path / "journal.sqlite3")
+    recorder = BatchRecorder(journal)
+    apply_prepared(preflight_plan([_plan(path)]), on_write=recorder)
+
+    apply_metadata_tags(path, _owned_values(model_id="model/elsewhere"))
+
+    batch = journal.batch(recorder.batch_id)
+    assert batch is not None
+    preflight = preflight_undo(batch.entries, force=True)
+    apply_undo(preflight.restorable)
+
+    assert preflight.blocked == ()
+    assert read_owned_values(path) == owned_before
+
+
+def test_undo_reports_a_missing_file_instead_of_failing(tmp_path: Path) -> None:
+    path = tmp_path / "track.wav"
+    _silent_wav(path)
+    journal = WriteJournal(tmp_path / "journal.sqlite3")
+    recorder = BatchRecorder(journal)
+    apply_prepared(preflight_plan([_plan(path)]), on_write=recorder)
+    path.unlink()
+
+    batch = journal.batch(recorder.batch_id)
+    assert batch is not None
+    preflight = preflight_undo(batch.entries, force=True)
+
+    assert preflight.restorable == ()
+    assert [blocked.reason for blocked in preflight.blocked] == ["file is missing"]

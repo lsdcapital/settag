@@ -23,11 +23,19 @@ but should not install, invoke, bundle, or write through SetTag.
 - prepare a track and its evidence
 - build a batch while isolating analysis errors
 - preflight saved or in-memory plans
-- apply and verify prepared writes
+- apply and verify prepared writes, journaling each completed one
+- preflight and apply an undo of a previous write
 - persist compact plans
 
 The Textual app and plain CLI are presentation and input adapters over those
 operations. Metadata policy does not live in either UI.
+
+Undo is deliberately built the same way: `preflight_undo` and `apply_undo`
+mirror `preflight_plan` and `apply_prepared`, and both the `U` key in the app
+and `settag undo` are adapters over them. Neither UI decides what an undo
+restores, and the human-readable change lines come from one place
+(`WriteRecord.readable_changes`, reusing `plans.friendly_change`) so the two
+never drift.
 
 When the first argument is a file or directory, it is normalized to
 `run PATH`.
@@ -148,6 +156,32 @@ standard genre. Review-only changes to the score cutoff or displayed-result
 limit reuse the existing evidence. A true evidence mismatch retains the old
 evidence for inspection but requires reanalysis. Current embedded SetTag
 metadata is authoritative and causes an obsolete local entry to be removed.
+
+## Write journal
+
+The journal is durable history, not cache, so it is a separate database
+(`journal.sqlite3`, `SETTAG_JOURNAL_DB`, `--journal-db PATH`) beside the
+workbench. Clearing the workbench to recover from a problem must not destroy
+the ability to undo a write.
+
+One apply operation is one batch. Each entry stores the complete SetTag-owned
+bundle and conventional genre exactly as they were before that file was
+written, plus the size and mtime immediately after. The before-state is
+captured during preflight and is trustworthy at write time because
+`apply_prepared` rechecks the source SHA-256 and `apply_metadata_tags` rechecks
+the plan before saving.
+
+An entry is recorded only after a file is written and verified, so the journal
+never claims a change that did not land. Recording is failure-absorbing: a
+journal that cannot be written is surfaced as a warning beside an otherwise
+successful write, never as a failed write.
+
+Undo restores by rewriting the recorded before-state through the same verified
+`apply_metadata_tags` path a normal write uses. Files whose size or mtime no
+longer match what was recorded are skipped with a reason rather than restored,
+using the same staleness signal the workbench cache uses; `--force` overrides.
+This restores tag values, not bytes: mutagen rewrites the tag block on save, so
+a reverted file does not regain its pre-write SHA-256.
 
 ## Safety invariants
 

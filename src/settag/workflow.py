@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import json
 from collections.abc import Callable, Mapping, Sequence
+from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal, Protocol, runtime_checkable
 
 from settag.hashing import sha256_file
+from settag.journal import WriteRecord
 from settag.plans import (
     PLAN_ERROR_SCHEMA,
     PlannedWrite,
@@ -74,6 +76,7 @@ Analyzer = GenreAnalyzer | TaskAnalyzer
 ProgressCallback = Callable[[int, int, Path], None]
 WriteProgressCallback = Callable[[int, int, Path], None]
 CancelCallback = Callable[[], bool]
+WriteCallback = Callable[[WriteRecord], None]
 MetadataStatus = Literal["not_analyzed", "current", "stale", "invalid"]
 CacheStatus = Literal["ready", "stale"]
 
@@ -153,10 +156,25 @@ class PreparedWrite:
     genre_state: GenreState
     owned_plan: TagPlan
     standard_genre_change: TagChange | None
+    owned_before: OwnedValues
 
     @property
     def has_changes(self) -> bool:
         return bool(self.owned_plan.changes or self.standard_genre_change)
+
+
+@dataclass(frozen=True)
+class BlockedUndo:
+    entry: WriteRecord
+    reason: str
+
+
+@dataclass(frozen=True)
+class UndoPreflight:
+    """Journal entries split into what can be restored now and what cannot."""
+
+    restorable: tuple[WriteRecord, ...]
+    blocked: tuple[BlockedUndo, ...]
 
 
 class PartialWriteError(RuntimeError):
@@ -492,6 +510,7 @@ def preflight_plan(planned: Sequence[PlannedWrite]) -> list[PreparedWrite]:
                     genre_state=genre_state,
                     owned_plan=owned_plan,
                     standard_genre_change=standard_change,
+                    owned_before=read_owned_values(item.path),
                 )
             )
         except Exception as error:
@@ -506,7 +525,15 @@ def apply_prepared(
     prepared: Sequence[PreparedWrite],
     *,
     on_progress: WriteProgressCallback | None = None,
+    on_write: WriteCallback | None = None,
 ) -> int:
+    """Apply verified writes, handing each completed one to ``on_write``.
+
+    ``on_write`` is called only after a file is written and verified, so the
+    journal never claims a change that did not land. It must not raise: the
+    audio write has already succeeded by then, and a storage failure there is
+    not a failed write.
+    """
     changed = [item for item in prepared if item.has_changes]
     total = len(changed)
     completed = 0
@@ -526,8 +553,99 @@ def apply_prepared(
             if applied != prepared_item.owned_plan:
                 raise RuntimeError(f"Applied tag plan differed for {item.path}")
             completed += 1
+            if on_write is not None:
+                _record_write(prepared_item, on_write)
             if on_progress is not None:
                 on_progress(completed, total, item.path)
+    except KeyboardInterrupt:
+        raise
+    except Exception as error:
+        raise PartialWriteError(completed, total, error) from error
+    return completed
+
+
+def _record_write(prepared: PreparedWrite, on_write: WriteCallback) -> None:
+    item = prepared.item
+    stat = item.path.stat()
+    record = WriteRecord(
+        path=item.path,
+        metadata_format=item.metadata_format,
+        owned_before=dict(prepared.owned_before),
+        owned_after=dict(item.desired),
+        standard_before=prepared.genre_state.standard,
+        standard_after=item.target_file_genre,
+        sha256_before=item.source_sha256,
+        size_after=stat.st_size,
+        mtime_ns_after=stat.st_mtime_ns,
+        written_at=utc_now(),
+    )
+    # The file was already written and verified. Losing the journal entry must
+    # never be reported as a failed write; recorders surface their own storage
+    # failures through BatchRecorder.error.
+    with suppress(Exception):
+        on_write(record)
+
+
+def preflight_undo(
+    entries: Sequence[WriteRecord],
+    *,
+    force: bool = False,
+) -> UndoPreflight:
+    """Split journal entries into what can be safely restored and what cannot.
+
+    Unlike ``preflight_plan`` this reports per entry instead of raising, so a
+    partly recoverable batch can still be shown and acted on.
+    """
+    restorable: list[WriteRecord] = []
+    blocked: list[BlockedUndo] = []
+    for entry in entries:
+        reason = _undo_blocker(entry, force=force)
+        if reason is None:
+            restorable.append(entry)
+        else:
+            blocked.append(BlockedUndo(entry=entry, reason=reason))
+    return UndoPreflight(restorable=tuple(restorable), blocked=tuple(blocked))
+
+
+def _undo_blocker(entry: WriteRecord, *, force: bool) -> str | None:
+    if not entry.path.is_file():
+        return "file is missing"
+    if force:
+        return None
+    stat = entry.path.stat()
+    if stat.st_size != entry.size_after or stat.st_mtime_ns != entry.mtime_ns_after:
+        return "file changed after SetTag wrote it"
+    return None
+
+
+def apply_undo(
+    entries: Sequence[WriteRecord],
+    *,
+    on_progress: WriteProgressCallback | None = None,
+) -> int:
+    """Restore the tag values each write replaced, newest write first.
+
+    Only the SetTag-owned bundle and an explicitly staged conventional genre
+    edit are rewritten. This is not a byte-level restore: mutagen rewrites the
+    tag block on save, so the file will not regain its pre-write SHA-256.
+    """
+    total = len(entries)
+    completed = 0
+    try:
+        for entry in entries:
+            standard = entry.standard_before if entry.standard_after is not None else None
+            expected_standard_change = (
+                plan_standard_genres(entry.path, standard) if standard is not None else None
+            )
+            apply_metadata_tags(
+                entry.path,
+                dict(entry.owned_before),
+                standard_genres=standard,
+                expected_standard_change=expected_standard_change,
+            )
+            completed += 1
+            if on_progress is not None:
+                on_progress(completed, total, entry.path)
     except KeyboardInterrupt:
         raise
     except Exception as error:

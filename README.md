@@ -108,6 +108,7 @@ The library keys are:
 | `V` | Open saved results that are ready to review, when available |
 | `Enter` / `R` | Analyze the selected tracks |
 | `Esc` | Stop after the track currently being analyzed |
+| `U` | Undo a previous write |
 | `Q` | Quit |
 
 Cancellation is cooperative because Essentia/TensorFlow inference cannot be
@@ -149,6 +150,7 @@ The review keys are:
 | `S` | Save the included tracks as a reusable JSONL plan |
 | `Enter` / `W` | Preflight, confirm once, write, and verify completed tracks |
 | `B` | Return to the metadata library to choose another analysis batch |
+| `U` | Undo a previous write |
 | `Q` | Quit |
 
 Newly analyzed tracks with SetTag changes are checked for writing by default.
@@ -344,6 +346,49 @@ Before any batch write, SetTag verifies:
 After each write it reopens the file and verifies both the evidence and the
 expected standard genre. A batch preflight is all-or-nothing, although native
 file writes cannot form one transaction across multiple files.
+
+## Undoing a write
+
+Every verified write is journaled with the tag values it replaced, so a write
+can be reverted. Press `U` in the app, or use the CLI:
+
+```bash
+# What has SetTag written?
+settag undo --list
+
+# Preview reverting the most recent write
+settag undo --dry-run
+
+# Revert the most recent write, or a named one
+settag undo
+settag undo 20260725T110349-8993c143
+```
+
+The journal lives in its own database, separate from the workbench cache, so
+clearing the cache never destroys undo history:
+
+| Purpose | Location |
+|---|---|
+| Write journal (durable) | `journal.sqlite3`, overridable with `SETTAG_JOURNAL_DB` |
+| Workbench cache (disposable) | `state.sqlite3`, overridable with `SETTAG_STATE_DB` |
+
+Undo restores exactly what a write changed: the SetTag-owned fields listed
+above, and the conventional genre tag when that write explicitly staged an edit.
+A track that had no SetTag metadata beforehand is returned to having none rather
+than being left with debris.
+
+Some limits worth knowing:
+
+- **It restores tag values, not bytes.** mutagen rewrites the tag block on save,
+  so the file will not regain its pre-write SHA-256 even after a perfect undo.
+- **It is per write, not "restore original".** Two writes to one file produce two
+  journal entries; undoing the newest returns the state after the first write.
+- **It leaves other software alone.** Edits made elsewhere between the write and
+  the undo are untouched.
+- **It refuses changed files.** If a file was modified after SetTag wrote it,
+  that file is skipped and named; `--force` overrides.
+
+Entries older than 90 days are pruned.
 
 ## Saved plans
 

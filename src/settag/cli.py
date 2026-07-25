@@ -16,6 +16,14 @@ from settag.analysis_worker import SubprocessAnalysisLoader
 from settag.analyzer import EssentiaGenreAnalyzer, EssentiaTaskAnalyzer
 from settag.catalog import MODEL_SPECS_BY_TASK
 from settag.config import DEFAULT_CONFIG_PATH, load_config
+from settag.journal import (
+    DEFAULT_JOURNAL_DB,
+    BatchRecorder,
+    JournalBatch,
+    JournalError,
+    WriteJournal,
+    default_journal_db,
+)
 from settag.model_store import (
     DEFAULT_MODEL_DIR,
     download_task_models,
@@ -45,16 +53,19 @@ from settag.workflow import (
     MetadataBatch,
     PartialWriteError,
     PreparedWrite,
+    UndoPreflight,
     analyze_paths,
     apply_prepared,
+    apply_undo,
     inspect_paths,
     plan_record_for_track,
     preflight_plan,
+    preflight_undo,
     prepare_track,
 )
 
 LOGGER = logging.getLogger("settag")
-COMMANDS = frozenset({"run", "models", "analyze", "inspect", "preview", "apply"})
+COMMANDS = frozenset({"run", "models", "analyze", "inspect", "preview", "apply", "undo"})
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -89,6 +100,7 @@ def build_parser() -> argparse.ArgumentParser:
         default=DEFAULT_STATE_DB,
         help=f"Local TUI workbench database (default: {DEFAULT_STATE_DB}).",
     )
+    _add_journal_db(run)
 
     models = subparsers.add_parser("models", help="Manage Essentia model files.")
     model_commands = models.add_subparsers(dest="models_command", required=True)
@@ -152,7 +164,61 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Apply a valid plan without the single confirmation prompt.",
     )
+    _add_journal_db(apply)
+
+    undo = subparsers.add_parser(
+        "undo",
+        help="Restore the tag values a previous SetTag write replaced.",
+    )
+    undo.add_argument(
+        "batch",
+        nargs="?",
+        metavar="BATCH_ID",
+        help="Write batch to revert (default: the most recent one).",
+    )
+    undo.add_argument(
+        "--list",
+        action="store_true",
+        help="List recent write batches instead of reverting one.",
+    )
+    undo.add_argument(
+        "--limit",
+        type=_positive_int,
+        default=10,
+        help="How many batches --list shows (default: 10).",
+    )
+    undo.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Show what would be restored without changing any file.",
+    )
+    undo.add_argument(
+        "--force",
+        action="store_true",
+        help="Restore even if a file changed after SetTag wrote it.",
+    )
+    undo.add_argument(
+        "--yes",
+        action="store_true",
+        help="Revert without the single confirmation prompt.",
+    )
+    _add_journal_db(undo)
     return parser
+
+
+def _add_journal_db(parser: argparse.ArgumentParser) -> None:
+    # Resolved lazily in _journal_db so SETTAG_JOURNAL_DB is honoured at run
+    # time rather than only at import time.
+    parser.add_argument(
+        "--journal-db",
+        type=Path,
+        default=None,
+        help=f"Write journal database (default: {DEFAULT_JOURNAL_DB}).",
+    )
+
+
+def _journal_db(args: argparse.Namespace) -> WriteJournal:
+    return WriteJournal(args.journal_db or default_journal_db())
 
 
 def _add_model_dir(parser: argparse.ArgumentParser) -> None:
@@ -249,6 +315,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             return _run_preview(args)
         if args.command == "apply":
             return _run_apply(args)
+        if args.command == "undo":
+            return _run_undo(args)
         raise AssertionError(f"Unhandled command: {args.command}")
     except KeyboardInterrupt:
         print("\nsettag: interrupted", file=sys.stderr)
@@ -394,6 +462,7 @@ def _run_default(args: argparse.Namespace) -> int:
                 analysis_loader=analysis_loader,
                 persist_plan=store.save,
                 discard_plans=store.delete,
+                journal=_journal_db(args),
                 review_top=args.top,
                 score_cutoff=args.threshold,
                 analysis_tasks=tasks,
@@ -733,12 +802,14 @@ def _run_apply(args: argparse.Namespace) -> int:
         print("No files were written.", file=sys.stderr)
         return 2
 
-    return _write_prepared(prepared, write_count)
+    return _write_prepared(prepared, write_count, journal=_journal_db(args))
 
 
 def _write_prepared(
     prepared: Sequence[PreparedWrite],
     write_count: int,
+    *,
+    journal: WriteJournal,
 ) -> int:
     print(file=sys.stderr)
     print(
@@ -749,13 +820,15 @@ def _write_prepared(
     def progress(completed: int, total: int, path: Path) -> None:
         print(f"  [{completed}/{total}] {path}", file=sys.stderr)
 
+    recorder = BatchRecorder(journal)
     try:
-        written = apply_prepared(prepared, on_progress=progress)
+        written = apply_prepared(prepared, on_progress=progress, on_write=recorder)
     except KeyboardInterrupt:
         raise
     except PartialWriteError as error:
         print(file=sys.stderr)
         print(str(error), file=sys.stderr)
+        _print_recorder_outcome(recorder)
         return 1
 
     print(file=sys.stderr)
@@ -763,7 +836,132 @@ def _write_prepared(
         f"Done. {written} file{'s' if written != 1 else ''} written and verified.",
         file=sys.stderr,
     )
+    _print_recorder_outcome(recorder)
     return 0
+
+
+def _print_recorder_outcome(recorder: BatchRecorder) -> None:
+    error = recorder.error
+    if error is not None:
+        print(f"Warning: {error}", file=sys.stderr)
+    if recorder.recorded:
+        print(f"Revert with: settag undo {recorder.batch_id}", file=sys.stderr)
+
+
+def _run_undo(args: argparse.Namespace) -> int:
+    journal = _journal_db(args)
+    try:
+        if args.list:
+            return _print_recent_batches(journal, limit=args.limit)
+        batch = journal.batch(args.batch) if args.batch else journal.latest()
+    except JournalError as error:
+        print(f"Cannot read the write journal: {error}", file=sys.stderr)
+        return 2
+
+    if batch is None:
+        if args.batch:
+            print(f"No write batch named {args.batch}", file=sys.stderr)
+            print("List recent writes with: settag undo --list", file=sys.stderr)
+            return 1
+        print("There is nothing to undo; no SetTag writes have been journaled.", file=sys.stderr)
+        return 0
+
+    preflight = preflight_undo(batch.entries, force=args.force)
+    _print_undo_summary(batch, preflight)
+
+    if not preflight.restorable:
+        print("Nothing can be restored from this batch.", file=sys.stderr)
+        if preflight.blocked and not args.force:
+            print("Restore anyway with --force.", file=sys.stderr)
+        return 1
+
+    if args.dry_run:
+        print("Dry run; no files were changed.", file=sys.stderr)
+        return 0
+
+    if not args.yes:
+        if not sys.stdin.isatty():
+            print("settag: undo requires an interactive terminal or --yes", file=sys.stderr)
+            return 2
+        if not _prompt_for_undo(len(preflight.restorable)):
+            print("Cancelled; nothing changed.", file=sys.stderr)
+            return 0
+
+    def progress(completed: int, total: int, path: Path) -> None:
+        print(f"  [{completed}/{total}] {path}", file=sys.stderr)
+
+    print(file=sys.stderr)
+    try:
+        restored = apply_undo(preflight.restorable, on_progress=progress)
+    except KeyboardInterrupt:
+        raise
+    except PartialWriteError as error:
+        print(file=sys.stderr)
+        print(str(error), file=sys.stderr)
+        return 1
+
+    journal.mark_reverted(batch.batch_id)
+    print(file=sys.stderr)
+    print(
+        f"Done. {restored} file{'s' if restored != 1 else ''} restored and verified.",
+        file=sys.stderr,
+    )
+    return 0
+
+
+def _print_recent_batches(journal: WriteJournal, *, limit: int) -> int:
+    batches = journal.recent(limit=limit)
+    if not batches:
+        print("No SetTag writes have been journaled yet.", file=sys.stderr)
+        return 0
+
+    print(file=sys.stderr)
+    print("Recent SetTag writes", file=sys.stderr)
+    print(file=sys.stderr)
+    for batch in batches:
+        print(f"  {batch.batch_id}  {batch.started_at}  {batch.summary}", file=sys.stderr)
+    print(file=sys.stderr)
+    print("Revert one with: settag undo BATCH_ID", file=sys.stderr)
+    return 0
+
+
+def _print_undo_summary(batch: JournalBatch, preflight: UndoPreflight) -> None:
+    print(file=sys.stderr)
+    print(f"Write batch {batch.batch_id}", file=sys.stderr)
+    print(f"Written {batch.started_at}", file=sys.stderr)
+    if batch.reverted_at is not None:
+        print(f"Already reverted {batch.reverted_at}", file=sys.stderr)
+    print(file=sys.stderr)
+
+    for entry in preflight.restorable:
+        print(f"  {entry.path}", file=sys.stderr)
+        for line in entry.readable_changes:
+            print(f"      undo {line}", file=sys.stderr)
+    for blocked in preflight.blocked:
+        print(f"  {blocked.entry.path}", file=sys.stderr)
+        print(f"      skipped: {blocked.reason}", file=sys.stderr)
+
+    print(file=sys.stderr)
+    restorable = len(preflight.restorable)
+    print(f"  Files to restore: {restorable}", file=sys.stderr)
+    if preflight.blocked:
+        print(f"  Files skipped:    {len(preflight.blocked)}", file=sys.stderr)
+    print(file=sys.stderr)
+    print(
+        "Only the SetTag metadata and staged genre edits above are rewritten.",
+        file=sys.stderr,
+    )
+    print(
+        "This restores tag values, not the original bytes; the file checksum will differ.",
+        file=sys.stderr,
+    )
+    print(file=sys.stderr)
+
+
+def _prompt_for_undo(restore_count: int) -> bool:
+    return _prompt_yes_no(
+        f"Restore the previous metadata on {restore_count} file{'s' if restore_count != 1 else ''}?"
+    )
 
 
 def _print_batch_plan_summary(
@@ -802,10 +1000,15 @@ def _print_batch_plan_summary(
 
 
 def _prompt_for_batch_apply(write_count: int) -> bool:
+    return _prompt_yes_no(
+        f"Apply this exact plan to {write_count} file{'s' if write_count != 1 else ''}?"
+    )
+
+
+def _prompt_yes_no(question: str) -> bool:
     while True:
         print(
-            f"Apply this exact plan to {write_count} file"
-            f"{'s' if write_count != 1 else ''}? [y] yes  [n] no > ",
+            f"{question} [y] yes  [n] no > ",
             end="",
             file=sys.stderr,
             flush=True,

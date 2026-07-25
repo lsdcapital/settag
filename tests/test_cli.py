@@ -928,3 +928,114 @@ def test_analyze_rejects_an_unknown_write_flag(tmp_path: Path, capsys) -> None:
 
     assert caught.value.code == 2
     assert "unrecognized arguments: --write" in capsys.readouterr().err
+
+
+def _retag_outside_settag(path: Path, genre: str) -> None:
+    """Change the file the way another tagger would, after SetTag wrote it."""
+    audio = WAVE(path)
+    tags = audio.tags
+    assert tags is not None
+    tags.delall("TCON")
+    tags.add(TCON(encoding=3, text=[genre]))
+    audio.save()
+
+
+def _apply_one_track(tmp_path: Path, *, genre: tuple[str, ...] = ("Deep House",)) -> Path:
+    """Write one track through the CLI so the journal has a batch to undo."""
+    path = tmp_path / "track.wav"
+    plan_path = tmp_path / "plan.jsonl"
+    _silent_wav(path)
+    planned = stage_file_genre(
+        planned_write_for_track(
+            prepare_track(path, analyzer=FakeAnalyzer(), top=5, threshold=0.10)
+        ),
+        genre,
+    )
+    plan_path.write_text(
+        json.dumps(planned_write_record(planned)) + "\n",
+        encoding="utf-8",
+    )
+    assert main(["apply", str(plan_path), "--yes"]) == 0
+    return path
+
+
+def test_undo_list_is_empty_before_anything_is_written(capsys) -> None:
+    assert main(["undo", "--list"]) == 0
+
+    assert "No SetTag writes have been journaled yet." in capsys.readouterr().err
+
+
+def test_undo_reports_nothing_to_undo_before_anything_is_written(capsys) -> None:
+    assert main(["undo", "--yes"]) == 0
+
+    assert "There is nothing to undo" in capsys.readouterr().err
+
+
+def test_a_cli_write_is_listed_and_can_be_undone(tmp_path: Path, capsys) -> None:
+    path = _apply_one_track(tmp_path)
+    capsys.readouterr()
+
+    assert main(["undo", "--list"]) == 0
+    listing = capsys.readouterr().err
+    assert "1 track, 1 file genre edit" in listing
+
+    assert main(["undo", "--yes"]) == 0
+    capsys.readouterr()
+
+    tags = WAVE(path).tags
+    assert tags is None or "TCON" not in tags
+    assert tags is None or "TXXX:SETTAG_GENRE" not in tags
+
+
+def test_undo_dry_run_changes_nothing(tmp_path: Path, capsys) -> None:
+    path = _apply_one_track(tmp_path)
+    capsys.readouterr()
+
+    assert main(["undo", "--dry-run"]) == 0
+    output = capsys.readouterr().err
+
+    assert "Dry run; no files were changed." in output
+    tags = WAVE(path).tags
+    assert tags is not None
+    assert tags["TCON"].text == ["Deep House"]
+
+
+def test_undo_names_an_unknown_batch(tmp_path: Path, capsys) -> None:
+    _apply_one_track(tmp_path)
+    capsys.readouterr()
+
+    assert main(["undo", "no-such-batch"]) == 1
+
+    assert "No write batch named no-such-batch" in capsys.readouterr().err
+
+
+def test_undo_refuses_a_file_that_changed_and_force_overrides(tmp_path: Path, capsys) -> None:
+    path = _apply_one_track(tmp_path)
+    capsys.readouterr()
+    _retag_outside_settag(path, "Techno")
+
+    assert main(["undo", "--yes"]) == 1
+    blocked = capsys.readouterr().err
+    assert "file changed after SetTag wrote it" in blocked
+    assert "Restore anyway with --force." in blocked
+
+    assert main(["undo", "--yes", "--force"]) == 0
+    capsys.readouterr()
+    tags = WAVE(path).tags
+    assert tags is None or "TCON" not in tags
+
+
+def test_undo_requires_a_terminal_or_yes(tmp_path: Path, capsys, monkeypatch) -> None:
+    _apply_one_track(tmp_path)
+    capsys.readouterr()
+    monkeypatch.setattr(sys, "stdin", StringIO())
+
+    assert main(["undo"]) == 2
+
+    assert "requires an interactive terminal or --yes" in capsys.readouterr().err
+
+
+def test_a_cli_write_points_at_the_command_that_reverts_it(tmp_path: Path, capsys) -> None:
+    _apply_one_track(tmp_path)
+
+    assert "Revert with: settag undo " in capsys.readouterr().err

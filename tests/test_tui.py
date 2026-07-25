@@ -11,10 +11,17 @@ from mutagen.wave import WAVE
 from textual.containers import VerticalScroll
 from textual.widgets import Button, DataTable, ProgressBar, Static
 
+from settag.journal import WriteJournal
 from settag.policy import Prediction
 from settag.tags import OWNED_DESCRIPTIONS, GenreState, task_evidence_from_owned
 from settag.tasks import AnalysisTask
-from settag.tui import ConfirmWriteScreen, GenreEditScreen, SetTagApp
+from settag.tui import (
+    ConfirmUndoScreen,
+    ConfirmWriteScreen,
+    GenreEditScreen,
+    SetTagApp,
+    UndoScreen,
+)
 from settag.workflow import (
     AnalysisBatch,
     MetadataBatch,
@@ -1046,3 +1053,130 @@ def test_tui_requires_confirmation_then_writes_and_verifies(tmp_path: Path) -> N
         "Electronic---Progressive House",
         "Electronic---Techno",
     ]
+
+
+def test_tui_write_is_journaled_and_can_be_undone_in_app(tmp_path: Path) -> None:
+    path = tmp_path / "track.wav"
+    _silent_wav(path)
+    journal = WriteJournal(tmp_path / "journal.sqlite3")
+    app = SetTagApp(
+        source=path,
+        initial_metadata=MetadataBatch(
+            tracks=(_metadata_track(path),),
+            failures=(),
+        ),
+        analysis_loader=lambda paths, _progress, _cancel: _analysis_batch(paths),
+        journal=journal,
+    )
+
+    async def exercise() -> None:
+        async with app.run_test(size=(140, 42)) as pilot:
+            await pilot.pause()
+            status = app.query_one("#status", Static)
+            await pilot.press("r")
+            for _ in range(30):
+                await pilot.pause(0.05)
+                if app.phase == "review":
+                    break
+            await pilot.press("enter")
+            await pilot.pause(0.2)
+            assert isinstance(app.screen, ConfirmWriteScreen)
+            await pilot.press("enter")
+            await pilot.pause(0.3)
+            assert app.entries[0].metadata is not None
+            assert app.entries[0].metadata.status == "current"
+
+            tags = WAVE(path).tags
+            assert isinstance(tags, ID3)
+            assert tags["TCON"].text == ["House"]
+
+            await pilot.press("u")
+            for _ in range(30):
+                await pilot.pause(0.05)
+                if isinstance(app.screen, UndoScreen):
+                    break
+            assert isinstance(app.screen, UndoScreen)
+            undo_table = app.screen.query_one("#undo-table", DataTable)
+            assert undo_table.row_count == 1
+            assert "1 track, 1 file genre edit" in undo_table.get_row_at(0)[2]
+
+            await pilot.press("enter")
+            for _ in range(30):
+                await pilot.pause(0.05)
+                if isinstance(app.screen, ConfirmUndoScreen):
+                    break
+            assert isinstance(app.screen, ConfirmUndoScreen)
+            await pilot.press("enter")
+            for _ in range(40):
+                await pilot.pause(0.05)
+                if not app.busy and app.phase == "choose":
+                    break
+
+            assert app.busy is False
+            assert app.entries[0].metadata is not None
+            assert app.entries[0].metadata.status == "not_analyzed"
+            assert app.entries[0].metadata.genre_state.standard == ()
+            assert "Restored 1 file" in str(status.render())
+
+    asyncio.run(exercise())
+    restored = WAVE(path).tags
+    assert restored is None or "TCON" not in restored
+    assert restored is None or "TXXX:SETTAG_GENRE" not in restored
+
+    batch = journal.latest()
+    assert batch is not None
+    assert batch.reverted_at is not None
+
+
+def test_tui_undo_reports_an_empty_journal(tmp_path: Path) -> None:
+    path = tmp_path / "track.wav"
+    _silent_wav(path)
+    app = SetTagApp(
+        source=path,
+        initial_metadata=MetadataBatch(
+            tracks=(_metadata_track(path),),
+            failures=(),
+        ),
+        analysis_loader=lambda paths, _progress, _cancel: _analysis_batch(paths),
+        journal=WriteJournal(tmp_path / "journal.sqlite3"),
+    )
+
+    async def exercise() -> None:
+        async with app.run_test(size=(140, 42)) as pilot:
+            await pilot.pause()
+            status = app.query_one("#status", Static)
+            await pilot.press("u")
+            for _ in range(30):
+                await pilot.pause(0.05)
+                if not app.busy:
+                    break
+
+            assert not isinstance(app.screen, UndoScreen)
+            assert app.busy is False
+            assert "nothing to undo" in str(status.render())
+
+    asyncio.run(exercise())
+
+
+def test_tui_without_a_journal_declines_to_undo(tmp_path: Path) -> None:
+    path = tmp_path / "track.wav"
+    _silent_wav(path)
+    app = SetTagApp(
+        source=path,
+        initial_metadata=MetadataBatch(
+            tracks=(_metadata_track(path),),
+            failures=(),
+        ),
+        analysis_loader=lambda paths, _progress, _cancel: _analysis_batch(paths),
+    )
+
+    async def exercise() -> None:
+        async with app.run_test(size=(140, 42)) as pilot:
+            await pilot.pause()
+            await pilot.press("u")
+            await pilot.pause(0.2)
+
+            assert not isinstance(app.screen, UndoScreen)
+            assert app.busy is False
+
+    asyncio.run(exercise())

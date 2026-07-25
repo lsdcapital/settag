@@ -17,6 +17,7 @@ from settag.tags import (
     OWNED_DESCRIPTIONS,
     GenreState,
     Mp4OwnedTagStore,
+    OwnedTagStore,
     TagStateChangedError,
     UnsupportedTagFormatError,
     VorbisOwnedTagStore,
@@ -436,3 +437,33 @@ def test_unrecognized_container_is_rejected(tmp_path: Path) -> None:
 
     with pytest.raises(UnsupportedTagFormatError, match="metadata container"):
         plan_owned_tags(path, _desired())
+
+
+def test_successful_write_leaves_no_temporary_beside_the_original(tmp_path: Path) -> None:
+    path = _copy_fixture("tagged.flac", tmp_path)
+
+    apply_metadata_tags(path, _desired())
+
+    assert sorted(item.name for item in tmp_path.iterdir()) == [path.name]
+
+
+@pytest.mark.parametrize("fixture", ["tagged.flac", "tagged.m4a"])
+def test_failed_write_leaves_the_original_byte_identical(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    fixture: str,
+) -> None:
+    """The whole point of committing through a copy: a failure must not touch the original."""
+    path = _copy_fixture(fixture, tmp_path)
+    before = path.read_bytes()
+
+    def explode(self: OwnedTagStore, *args: object, **kwargs: object) -> None:
+        raise RuntimeError("interrupted mid-write")
+
+    monkeypatch.setattr(OwnedTagStore, "_verify_candidate", explode)
+
+    with pytest.raises(RuntimeError, match="interrupted mid-write"):
+        apply_metadata_tags(path, _desired())
+
+    assert path.read_bytes() == before
+    assert sorted(item.name for item in tmp_path.iterdir()) == [path.name]

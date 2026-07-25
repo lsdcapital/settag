@@ -24,6 +24,13 @@ from textual.widgets import (
     Static,
 )
 
+from settag.journal import (
+    BatchRecorder,
+    JournalBatch,
+    JournalError,
+    WriteJournal,
+    WriteRecord,
+)
 from settag.plans import (
     PlannedWrite,
     stage_default_file_genre,
@@ -38,11 +45,15 @@ from settag.workflow import (
     AnalysisFailure,
     CancelCallback,
     MetadataBatch,
+    MetadataStatus,
     MetadataTrack,
     PartialWriteError,
     ProgressCallback,
+    UndoPreflight,
     apply_prepared,
+    apply_undo,
     preflight_plan,
+    preflight_undo,
     save_plan,
 )
 
@@ -76,6 +87,7 @@ CHOOSE_ACTIONS = frozenset(
         "cycle_filter",
         "review",
         "analyze",
+        "undo",
         "quit",
     }
 )
@@ -88,6 +100,7 @@ REVIEW_ACTIONS = frozenset(
         "edit_genre",
         "save",
         "write",
+        "undo",
         "quit",
     }
 )
@@ -230,6 +243,18 @@ def _track_table_layout(
     return tuple(
         (column, widths[column.key]) for column in TRACK_TABLE_COLUMNS if column.key in widths
     )
+
+
+def _restored_status(owned: OwnedValues) -> MetadataStatus:
+    """Describe a track after its SetTag metadata was rolled back.
+
+    A restored bundle cannot be shown as up to date without re-inspecting it
+    against the current model and config, so anything still carrying SetTag
+    metadata is reported as needing reanalysis rather than over-claimed.
+    """
+    if all(values is None for values in owned.values()):
+        return "not_analyzed"
+    return "stale"
 
 
 def _suggested_label(predictions: Sequence[Prediction]) -> str | None:
@@ -380,6 +405,140 @@ class ConfirmWriteScreen(ModalScreen[bool]):
         self.dismiss(False)
 
 
+class UndoScreen(ModalScreen[str | None]):
+    """Pick a previous write batch to revert."""
+
+    # Enter is not bound here: DataTable has its own Enter binding, so the row
+    # selection event below is what confirms a choice from the table.
+    BINDINGS = [Binding("escape", "cancel", "Cancel")]
+
+    def __init__(self, batches: Sequence[JournalBatch]) -> None:
+        super().__init__()
+        self.batches = tuple(batches)
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="undo-dialog"):
+            yield Label("Undo a previous write", id="dialog-title")
+            table: DataTable[str] = DataTable(id="undo-table", cursor_type="row")
+            table.add_columns("Written", "Files", "What changed")
+            for batch in self.batches:
+                table.add_row(
+                    batch.started_at,
+                    str(batch.track_count),
+                    batch.summary,
+                    key=batch.batch_id,
+                )
+            yield table
+            yield Static(
+                "Restores the tag values that write replaced. Tag values are "
+                "restored, not the original bytes, so the file checksum will differ.",
+                markup=False,
+                id="dialog-help",
+            )
+            with Horizontal(classes="dialog-actions"):
+                yield Button("Cancel", id="cancel")
+                yield Button("Revert selected", variant="primary", id="confirm")
+
+    def on_mount(self) -> None:
+        self.query_one("#undo-table", DataTable).focus()
+
+    def _selected_batch(self) -> str | None:
+        table: DataTable[str] = self.query_one("#undo-table", DataTable)
+        if table.row_count == 0:
+            return None
+        row = table.coordinate_to_cell_key(table.cursor_coordinate).row_key
+        return None if row.value is None else str(row.value)
+
+    @on(DataTable.RowSelected, "#undo-table")
+    def row_selected(self, event: DataTable.RowSelected) -> None:
+        value = event.row_key.value
+        self.dismiss(None if value is None else str(value))
+
+    @on(Button.Pressed, "#confirm")
+    def confirm_button(self) -> None:
+        self.action_choose()
+
+    @on(Button.Pressed, "#cancel")
+    def cancel_button(self) -> None:
+        self.dismiss(None)
+
+    def action_choose(self) -> None:
+        self.dismiss(self._selected_batch())
+
+    def action_cancel(self) -> None:
+        self.dismiss(None)
+
+
+class ConfirmUndoScreen(ModalScreen[bool]):
+    BINDINGS = [
+        Binding("enter,y", "confirm", "Restore"),
+        Binding("n,escape", "cancel", "Cancel"),
+    ]
+
+    def __init__(
+        self,
+        *,
+        batch: JournalBatch,
+        restore_count: int,
+        blocked_count: int,
+    ) -> None:
+        super().__init__()
+        self.journal_batch = batch
+        self.restore_count = restore_count
+        self.blocked_count = blocked_count
+
+    def compose(self) -> ComposeResult:
+        noun = "file" if self.restore_count == 1 else "files"
+        skipped = (
+            f"\n{self.blocked_count} skipped because the file changed since"
+            if self.blocked_count
+            else ""
+        )
+        reverted = (
+            f"\nThis batch was already reverted {self.journal_batch.reverted_at}"
+            if self.journal_batch.reverted_at is not None
+            else ""
+        )
+        with Vertical(id="confirm-dialog"):
+            yield Label("Restore the previous metadata?", id="dialog-title")
+            yield Static(
+                f"{self.restore_count} {noun} from the write of {self.journal_batch.started_at}"
+                f"{skipped}{reverted}",
+                markup=False,
+                id="confirm-summary",
+            )
+            yield Static(
+                "Only the SetTag metadata and staged genre edits are rewritten. "
+                "SetTag will verify each file afterwards.",
+                markup=False,
+                id="dialog-help",
+            )
+            with Horizontal(classes="dialog-actions"):
+                yield Button("Cancel", id="cancel")
+                yield Button(
+                    f"Restore {self.restore_count} {noun}",
+                    variant="primary",
+                    id="confirm",
+                )
+
+    def on_mount(self) -> None:
+        self.query_one("#confirm", Button).focus()
+
+    @on(Button.Pressed, "#confirm")
+    def confirm_button(self) -> None:
+        self.dismiss(True)
+
+    @on(Button.Pressed, "#cancel")
+    def cancel_button(self) -> None:
+        self.dismiss(False)
+
+    def action_confirm(self) -> None:
+        self.dismiss(True)
+
+    def action_cancel(self) -> None:
+        self.dismiss(False)
+
+
 class ErrorScreen(ModalScreen[None]):
     BINDINGS = [Binding("escape,enter", "close", "Close")]
 
@@ -419,6 +578,7 @@ class SetTagApp(App[TuiOutcome]):
         Binding("e", "edit_genre", "Genre"),
         Binding("s", "save", "Save plan"),
         Binding("w", "write", "Write"),
+        Binding("u", "undo", "Undo"),
         Binding("q", "quit", "Quit"),
     ]
 
@@ -596,6 +756,23 @@ class SetTagApp(App[TuiOutcome]):
         border: solid #3a4744;
     }
 
+    #undo-dialog {
+        width: 88;
+        max-width: 92%;
+        height: auto;
+        max-height: 86%;
+        padding: 1 2;
+        background: #16201e;
+        border: solid #3a4744;
+    }
+
+    #undo-table {
+        height: auto;
+        max-height: 14;
+        margin-bottom: 1;
+        background: #0f1413;
+    }
+
     #dialog-title {
         text-style: bold;
         color: #eef2f1;
@@ -640,18 +817,22 @@ class SetTagApp(App[TuiOutcome]):
         align-horizontal: right;
     }
 
-    #confirm-dialog #cancel {
+    #confirm-dialog #cancel,
+    #undo-dialog #cancel {
         background: #25302d;
         color: #c3cecb;
     }
 
-    #confirm-dialog #cancel:focus {
+    #confirm-dialog #cancel:focus,
+    #undo-dialog #cancel:focus {
         background: #3a4744;
         color: #eef2f1;
     }
 
     #confirm-dialog #confirm,
-    #confirm-dialog #confirm:focus {
+    #confirm-dialog #confirm:focus,
+    #undo-dialog #confirm,
+    #undo-dialog #confirm:focus {
         background: #d0794f;
         color: #1f0e05;
         text-style: bold;
@@ -691,6 +872,7 @@ class SetTagApp(App[TuiOutcome]):
         initial_metadata: MetadataBatch | None = None,
         persist_plan: PlanPersister | None = None,
         discard_plans: PlanDiscarder | None = None,
+        journal: WriteJournal | None = None,
         review_top: int = 5,
         score_cutoff: float = 0.10,
         analysis_tasks: Sequence[AnalysisTask] = ("genre",),
@@ -704,6 +886,7 @@ class SetTagApp(App[TuiOutcome]):
         self.initial_metadata = initial_metadata
         self.persist_plan = persist_plan
         self.discard_plans = discard_plans
+        self.journal = journal
         self.review_top = review_top
         self.score_cutoff = score_cutoff
         self.analysis_tasks = ordered_tasks(analysis_tasks)
@@ -725,6 +908,8 @@ class SetTagApp(App[TuiOutcome]):
         self._analysis_current_path: Path | None = None
         self._analysis_navigation_changed = False
         self._pending_write: tuple[PlannedWrite, ...] = ()
+        self._pending_undo: tuple[WriteRecord, ...] = ()
+        self._pending_undo_batch: str | None = None
         self._written_count = 0
         self._table_layout: tuple[tuple[TrackTableColumn, int], ...] = ()
         self.sub_title = "Reading existing metadata"
@@ -1916,11 +2101,13 @@ class SetTagApp(App[TuiOutcome]):
 
     @work(thread=True, exclusive=True, group="write", exit_on_error=False)
     def _apply_pending_write(self) -> None:
+        recorder = BatchRecorder(self.journal) if self.journal is not None else None
         try:
             prepared = preflight_plan(self._pending_write)
             completed = apply_prepared(
                 prepared,
                 on_progress=self._write_progress_from_worker,
+                on_write=recorder,
             )
         except PartialWriteError as error:
             written = self._pending_write[: error.completed]
@@ -1928,6 +2115,9 @@ class SetTagApp(App[TuiOutcome]):
             message = str(error)
             if cleanup_error is not None:
                 message += f"\n\nLocal workbench cleanup also failed: {cleanup_error}"
+            journal_error = recorder.error if recorder is not None else None
+            if journal_error is not None:
+                message += f"\n\n{journal_error}"
             self.call_from_thread(
                 self._partial_write_failed,
                 "Write stopped",
@@ -1943,12 +2133,18 @@ class SetTagApp(App[TuiOutcome]):
             )
             return
         cleanup_error = self._discard_written(self._pending_write)
-        self.call_from_thread(self._write_complete, completed, cleanup_error)
+        self.call_from_thread(
+            self._write_complete,
+            completed,
+            cleanup_error,
+            recorder.error if recorder is not None else None,
+        )
 
     def _write_complete(
         self,
         completed: int,
         cleanup_error: str | None,
+        journal_error: str | None = None,
     ) -> None:
         written = self._pending_write
         self._accept_written(written)
@@ -1966,6 +2162,9 @@ class SetTagApp(App[TuiOutcome]):
                 severity="warning",
                 timeout=8,
             )
+        if journal_error is not None:
+            message += f" {journal_error}"
+            self.notify(journal_error, severity="warning", timeout=8)
         if self.review_indices:
             self._show_review()
         else:
@@ -1987,41 +2186,250 @@ class SetTagApp(App[TuiOutcome]):
             self._show_library()
         self._write_failed(title, message)
 
-    def _accept_written(self, items: Sequence[PlannedWrite]) -> None:
+    def action_undo(self) -> None:
+        if self.busy:
+            return
+        if self.analysis_running:
+            self.notify(
+                "Analysis is still running. Press Esc to stop it before undoing a write.",
+                severity="warning",
+            )
+            return
+        if self.journal is None:
+            self.notify(
+                "Undo is unavailable because no write journal is configured.",
+                severity="warning",
+            )
+            return
+        self.busy = True
+        self._update_status("Reading the write journal…")
+        self._load_undo_batches()
+
+    @work(thread=True, exclusive=True, group="undo", exit_on_error=False)
+    def _load_undo_batches(self) -> None:
+        assert self.journal is not None
+        try:
+            batches = self.journal.recent(limit=20)
+        except JournalError as error:
+            self.call_from_thread(
+                self._undo_failed,
+                "Could not read the write journal",
+                str(error),
+            )
+            return
+        self.call_from_thread(self._choose_undo_batch, batches)
+
+    def _choose_undo_batch(self, batches: Sequence[JournalBatch]) -> None:
+        self.busy = False
+        if not batches:
+            self._update_status("There is nothing to undo yet")
+            self.notify("No SetTag writes have been journaled yet.")
+            return
+        self.push_screen(UndoScreen(batches), self._undo_batch_chosen)
+
+    def _undo_batch_chosen(self, batch_id: str | None) -> None:
+        if not batch_id:
+            self._update_status("Undo cancelled; nothing changed")
+            return
+        self.busy = True
+        self._update_status("Checking every file in that write…")
+        self._preflight_undo_batch(batch_id)
+
+    @work(thread=True, exclusive=True, group="undo", exit_on_error=False)
+    def _preflight_undo_batch(self, batch_id: str) -> None:
+        assert self.journal is not None
+        try:
+            batch = self.journal.batch(batch_id)
+        except JournalError as error:
+            self.call_from_thread(
+                self._undo_failed,
+                "Could not read the write journal",
+                str(error),
+            )
+            return
+        if batch is None:
+            self.call_from_thread(
+                self._undo_failed,
+                "Write batch is missing",
+                f"The write journal no longer holds a batch named {batch_id}.",
+            )
+            return
+        preflight = preflight_undo(batch.entries)
+        self.call_from_thread(self._confirm_undo, batch, preflight)
+
+    def _confirm_undo(self, batch: JournalBatch, preflight: UndoPreflight) -> None:
+        self.busy = False
+        self._pending_undo = preflight.restorable
+        self._pending_undo_batch = batch.batch_id
+        if not preflight.restorable:
+            blockers = "\n".join(
+                f"{blocked.entry.path.name}: {blocked.reason}" for blocked in preflight.blocked
+            )
+            self._pending_undo = ()
+            self._pending_undo_batch = None
+            self._update_status("Nothing could be restored from that write")
+            self.push_screen(
+                ErrorScreen(
+                    "Nothing can be restored",
+                    f"No file from that write can be safely restored.\n\n{blockers}",
+                )
+            )
+            return
+        self.push_screen(
+            ConfirmUndoScreen(
+                batch=batch,
+                restore_count=len(preflight.restorable),
+                blocked_count=len(preflight.blocked),
+            ),
+            self._undo_confirmation,
+        )
+
+    def _undo_confirmation(self, confirmed: bool | None) -> None:
+        if not confirmed:
+            self._pending_undo = ()
+            self._pending_undo_batch = None
+            self._update_status("Undo cancelled; nothing changed")
+            return
+        self.busy = True
+        self._update_status("Restoring the previous metadata…")
+        self._apply_pending_undo()
+
+    @work(thread=True, exclusive=True, group="undo", exit_on_error=False)
+    def _apply_pending_undo(self) -> None:
+        entries = self._pending_undo
+        try:
+            restored = apply_undo(entries, on_progress=self._undo_progress_from_worker)
+        except PartialWriteError as error:
+            self.call_from_thread(
+                self._undo_partly_failed,
+                str(error),
+                entries[: error.completed],
+            )
+            return
+        except Exception as error:
+            self.call_from_thread(self._undo_failed, "Undo failed", str(error))
+            return
+        if self.journal is not None and self._pending_undo_batch is not None:
+            try:
+                self.journal.mark_reverted(self._pending_undo_batch)
+            except JournalError as error:
+                # The files are already restored, so this is not a failure of the undo. Say so
+                # rather than swallowing it: the batch will still look undoable in the list,
+                # and a DJ who is not told why would reasonably think the undo did not work.
+                self.call_from_thread(
+                    self.notify,
+                    f"Files restored, but the journal could not be updated: {error}",
+                    severity="warning",
+                )
+        self.call_from_thread(self._undo_complete, restored, entries)
+
+    def _undo_progress_from_worker(self, completed: int, total: int, path: Path) -> None:
+        self.call_from_thread(
+            self._update_status,
+            f"Restoring {completed} of {total}: {path.name}",
+        )
+
+    def _undo_complete(self, restored: int, entries: Sequence[WriteRecord]) -> None:
+        self._accept_reverted(entries)
+        self.busy = False
+        self._pending_undo = ()
+        self._pending_undo_batch = None
+        self._show_library()
+        message = f"Restored {restored} file{'s' if restored != 1 else ''} to their previous tags."
+        self._update_status(message)
+        self.notify(message, title="Undo complete", timeout=6)
+
+    def _undo_partly_failed(self, message: str, restored: Sequence[WriteRecord]) -> None:
+        self._accept_reverted(restored)
+        self._show_library()
+        self._undo_failed("Undo stopped", message)
+
+    def _undo_failed(self, title: str, message: str) -> None:
+        self.busy = False
+        self._pending_undo = ()
+        self._pending_undo_batch = None
+        self._update_status("Nothing else will be restored")
+        self.push_screen(ErrorScreen(title, message))
+
+    def _accept_reverted(self, entries: Sequence[WriteRecord]) -> None:
         by_path = {entry.path: index for index, entry in enumerate(self.entries)}
-        for item in items:
-            index = by_path[item.path]
+        for record in entries:
+            index = by_path.get(record.path)
+            if index is None:
+                continue
             entry = self.entries[index]
-            if entry.metadata is not None:
-                analyzed_at = self._latest_analyzed_at(item.desired)
-                stored_by_task = task_evidence_from_owned(item.desired)
-                stored_genre = stored_by_task.get("genre", ())
-                standard_genre = (
-                    item.target_file_genre
-                    if item.target_file_genre is not None
-                    else item.file_genre
-                )
-                entry.metadata = replace(
-                    entry.metadata,
-                    genre_state=replace(
-                        entry.metadata.genre_state,
-                        standard=standard_genre,
-                        settag=tuple(prediction.label for prediction in stored_genre),
-                    ),
-                    owned=item.desired,
-                    stored_predictions=stored_genre,
-                    status="current",
-                    analyzed_at=analyzed_at,
-                    cached_plan=None,
-                    cache_status=None,
-                    cache_reason=None,
-                )
+            standard_genre = (
+                record.standard_before
+                if record.standard_after is not None or entry.metadata is None
+                else entry.metadata.genre_state.standard
+            )
+            self._refresh_entry_metadata(
+                index,
+                owned=dict(record.owned_before),
+                standard_genre=standard_genre,
+                status=_restored_status(record.owned_before),
+            )
             entry.plan = None
             entry.plan_cached = False
             entry.analysis_error = None
             self.analysis_selected.discard(index)
             self.write_selected.discard(index)
             self.review_indices.discard(index)
+
+    def _accept_written(self, items: Sequence[PlannedWrite]) -> None:
+        by_path = {entry.path: index for index, entry in enumerate(self.entries)}
+        for item in items:
+            index = by_path[item.path]
+            standard_genre = (
+                item.target_file_genre if item.target_file_genre is not None else item.file_genre
+            )
+            self._refresh_entry_metadata(
+                index,
+                owned=item.desired,
+                standard_genre=standard_genre,
+                status="current",
+            )
+            entry = self.entries[index]
+            entry.plan = None
+            entry.plan_cached = False
+            entry.analysis_error = None
+            self.analysis_selected.discard(index)
+            self.write_selected.discard(index)
+            self.review_indices.discard(index)
+
+    def _refresh_entry_metadata(
+        self,
+        index: int,
+        *,
+        owned: OwnedValues,
+        standard_genre: tuple[str, ...],
+        status: MetadataStatus,
+    ) -> None:
+        """Point one row at the metadata a file now holds.
+
+        Shared by the write and undo paths so a row never describes a state the
+        file is no longer in.
+        """
+        entry = self.entries[index]
+        if entry.metadata is None:
+            return
+        stored_by_task = task_evidence_from_owned(owned)
+        stored_genre = stored_by_task.get("genre", ())
+        entry.metadata = replace(
+            entry.metadata,
+            genre_state=replace(
+                entry.metadata.genre_state,
+                standard=standard_genre,
+                settag=tuple(prediction.label for prediction in stored_genre),
+            ),
+            owned=owned,
+            stored_predictions=stored_genre,
+            status=status,
+            analyzed_at=self._latest_analyzed_at(owned),
+            cached_plan=None,
+            cache_status=None,
+            cache_reason=None,
+        )
 
     def _discard_written(
         self,

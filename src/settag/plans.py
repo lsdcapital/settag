@@ -69,7 +69,7 @@ class PlannedWrite:
         if self.target_file_genre is None or self.target_file_genre == self.file_genre:
             return None
         return TagChange(
-            field=_standard_genre_field(self.metadata_format),
+            field=standard_genre_field(self.metadata_format),
             before=list(self.file_genre) or None,
             after=list(self.target_file_genre) or None,
         )
@@ -431,7 +431,7 @@ def _friendly_genres(values: list[str] | None) -> str:
     return ", ".join(values) if values else "None"
 
 
-def _standard_genre_field(metadata_format: str) -> str:
+def standard_genre_field(metadata_format: str) -> str:
     fields = {
         "id3": "TCON",
         "vorbis-comments": "GENRE",

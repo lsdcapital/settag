@@ -3,7 +3,18 @@ from __future__ import annotations
 from collections.abc import Iterable
 from dataclasses import dataclass
 
-EVIDENCE_LIMIT = 20
+# Ranked evidence retained per task. This must cover a whole taxonomy, not a shortlist:
+# a consumer computing a signed composite (high-arousal labels minus low-arousal ones)
+# needs both ends, and truncating to a shortlist silently drops the low end because those
+# labels rank last by construction. Measured at 20 on a 56-class mood taxonomy, `fast` and
+# `slow` were never written at all and `calm`/`soft`/`powerful`/`heavy` landed on 2-4% of
+# tracks, so any composite using them was computed against zeros.
+#
+# 60 covers the mood (56) and instrument (40) taxonomies completely and keeps the 519-class
+# genre taxonomy bounded, where a ranked shortlist is what its consumer wants. Cost is a few
+# KB per file. Changing this changes the evidence configuration digest, so previously
+# analysed tracks are correctly reported as stale.
+EVIDENCE_LIMIT = 60
 
 
 @dataclass(frozen=True)
