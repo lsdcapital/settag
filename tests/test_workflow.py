@@ -2,6 +2,8 @@ import wave
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 from settag.journal import BatchRecorder, WriteJournal
 from settag.plans import PlannedWrite, stage_file_genre
 from settag.policy import Prediction
@@ -240,7 +242,17 @@ def test_undo_restores_the_older_settag_bundle_a_rewrite_replaced(tmp_path: Path
     assert read_owned_values(path) == owned_before
 
 
-def test_a_write_is_journaled_once_per_written_file(tmp_path: Path) -> None:
+def test_a_write_is_journaled_once_per_written_file(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An already-up-to-date track is skipped, so it earns no journal entry.
+
+    The analysis timestamp is pinned because it has one-second resolution: left
+    real, whether the second analysis counts as a change depends on which side
+    of a second boundary the two calls land on.
+    """
+    monkeypatch.setattr("settag.workflow.utc_now", lambda: "2026-07-25T10:00:00Z")
     written = tmp_path / "written.wav"
     unchanged = tmp_path / "unchanged.wav"
     for path in (written, unchanged):

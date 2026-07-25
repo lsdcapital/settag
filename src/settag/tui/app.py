@@ -1,10 +1,11 @@
+"""The SetTag application: phases, selection, and the background work."""
+
 from __future__ import annotations
 
-from collections.abc import Callable, Sequence
-from dataclasses import dataclass, replace
+from collections.abc import Sequence
+from dataclasses import replace
 from pathlib import Path
 from threading import Event
-from typing import Literal
 
 from textual import events, on, work
 from textual.app import App, ComposeResult
@@ -12,14 +13,10 @@ from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.coordinate import Coordinate
 from textual.css.query import NoMatches
-from textual.screen import ModalScreen
 from textual.widgets import (
-    Button,
     DataTable,
     Footer,
     Header,
-    Input,
-    Label,
     ProgressBar,
     Static,
 )
@@ -40,18 +37,41 @@ from settag.plans import (
 from settag.policy import Prediction, select_predictions
 from settag.tags import OwnedValues, read_task_provenance, task_evidence_from_owned
 from settag.tasks import AnalysisTask, ordered_tasks
+from settag.tui.entries import (
+    STATUS_LABELS,
+    TASK_LABELS,
+    AnalysisLoader,
+    AppPhase,
+    LibraryFilter,
+    MetadataLoader,
+    PlanDiscarder,
+    PlanPersister,
+    TrackEntry,
+    TuiOutcome,
+    suggested_label,
+)
+from settag.tui.screens import (
+    ConfirmUndoScreen,
+    ConfirmWriteScreen,
+    ErrorScreen,
+    GenreEditScreen,
+    UndoScreen,
+)
+from settag.tui.style import APP_CSS
+from settag.tui.table import (
+    ResponsiveTrackTable,
+    TrackTableColumn,
+    _track_table_layout,
+)
 from settag.workflow import (
     AnalysisBatch,
     AnalysisFailure,
-    CancelCallback,
     MetadataBatch,
     MetadataStatus,
     MetadataTrack,
     PartialWriteError,
     PreparedWrite,
-    ProgressCallback,
     UndoPreflight,
-    WriteSummary,
     apply_prepared,
     apply_undo,
     preflight_plan,
@@ -60,28 +80,20 @@ from settag.workflow import (
     summarize_writes,
 )
 
-MetadataLoader = Callable[[ProgressCallback], MetadataBatch]
-AnalysisLoader = Callable[
-    [Sequence[Path], ProgressCallback, CancelCallback],
-    AnalysisBatch,
-]
-PlanPersister = Callable[[PlannedWrite], None]
-PlanDiscarder = Callable[[Sequence[Path]], None]
-AppPhase = Literal["choose", "review"]
-LibraryFilter = Literal["all", "needs_analysis", "missing_genre", "current"]
-
 FILTER_ORDER: tuple[LibraryFilter, ...] = (
     "all",
     "needs_analysis",
     "missing_genre",
     "current",
 )
+
 FILTER_LABELS: dict[LibraryFilter, str] = {
     "all": "All",
     "needs_analysis": "Needs analysis",
     "missing_genre": "Missing genre",
     "current": "Up to date",
 }
+
 CHOOSE_ACTIONS = frozenset(
     {
         "toggle_track",
@@ -94,6 +106,7 @@ CHOOSE_ACTIONS = frozenset(
         "quit",
     }
 )
+
 REVIEW_ACTIONS = frozenset(
     {
         "toggle_track",
@@ -107,145 +120,6 @@ REVIEW_ACTIONS = frozenset(
         "quit",
     }
 )
-STATUS_LABELS = {
-    "not_analyzed": "Never analyzed",
-    "current": "Up to date",
-    "stale": "Reanalyze (model/config changed)",
-    "invalid": "Incomplete metadata",
-}
-TASK_LABELS: dict[AnalysisTask, str] = {
-    "genre": "Genre",
-    "mood-theme": "Mood/theme",
-    "instrument": "Instrument",
-}
-
-
-@dataclass(frozen=True)
-class TuiOutcome:
-    status: int
-    message: str
-
-
-@dataclass
-class TrackEntry:
-    path: Path
-    metadata: MetadataTrack | None = None
-    metadata_error: AnalysisFailure | None = None
-    plan: PlannedWrite | None = None
-    plan_cached: bool = False
-    analysis_error: AnalysisFailure | None = None
-
-    @property
-    def can_analyze(self) -> bool:
-        return self.metadata is not None and self.metadata_error is None
-
-    @property
-    def needs_analysis(self) -> bool:
-        return self.metadata is not None and self.plan is None and self.metadata.needs_analysis
-
-    @property
-    def has_changes(self) -> bool:
-        return self.plan is not None and bool(self.plan.readable_changes)
-
-    @property
-    def has_standard_genre_change(self) -> bool:
-        return self.plan is not None and self.plan.standard_genre_change is not None
-
-    @property
-    def is_missing_standard_genre(self) -> bool:
-        return self.metadata is not None and not self.metadata.genre_state.standard
-
-    @property
-    def is_current_unplanned(self) -> bool:
-        return self.metadata is not None and self.metadata.status == "current" and self.plan is None
-
-
-@dataclass(frozen=True)
-class TrackTableColumn:
-    key: str
-    label: str
-    cell_index: int
-    min_width: int
-    max_width: int
-
-
-class ResponsiveTrackTable(DataTable):
-    """Notify the app after this table receives its final layout width."""
-
-    def on_resize(self, _event: events.Resize) -> None:
-        app = self.app
-        if isinstance(app, SetTagApp):
-            app.call_after_refresh(app._sync_table_columns)
-
-
-TRACK_TABLE_COLUMNS = (
-    TrackTableColumn("selected", "", 0, 1, 1),
-    TrackTableColumn("track", "Track", 1, 8, 1_000),
-    TrackTableColumn("file_genre", "File genre", 2, 10, 18),
-    TrackTableColumn("analysis", "Analysis", 3, 12, 24),
-    TrackTableColumn("suggested", "Suggested", 4, 10, 20),
-    TrackTableColumn("score", "Score", 5, 5, 5),
-    TrackTableColumn("changes", "Changes", 6, 7, 7),
-)
-TRACK_TABLE_COLUMN_BY_KEY = {column.key: column for column in TRACK_TABLE_COLUMNS}
-TRACK_TABLE_COLUMN_PRIORITY = (
-    "analysis",
-    "file_genre",
-    "suggested",
-    "changes",
-    "score",
-)
-
-
-def _track_table_layout(
-    viewport_width: int,
-    *,
-    cell_padding: int = 1,
-    scrollbar_width: int = 2,
-) -> tuple[tuple[TrackTableColumn, int], ...]:
-    """Fit the most useful columns inside the table's visible width."""
-    available = max(1, viewport_width - scrollbar_width)
-    column_padding = 2 * cell_padding
-    widths = {
-        "selected": TRACK_TABLE_COLUMN_BY_KEY["selected"].min_width,
-        "track": max(
-            TRACK_TABLE_COLUMN_BY_KEY["track"].min_width,
-            available // 3,
-        ),
-    }
-
-    def render_width(key: str) -> int:
-        return widths[key] + column_padding
-
-    total_width = sum(render_width(key) for key in widths)
-    if total_width > available:
-        widths["track"] = max(
-            1,
-            available - render_width("selected") - column_padding,
-        )
-        total_width = sum(render_width(key) for key in widths)
-
-    for key in TRACK_TABLE_COLUMN_PRIORITY:
-        column = TRACK_TABLE_COLUMN_BY_KEY[key]
-        candidate_width = column.min_width + column_padding
-        if total_width + candidate_width > available:
-            break
-        widths[key] = column.min_width
-        total_width += candidate_width
-
-    remaining = max(0, available - total_width)
-    for key in ("analysis", "file_genre", "suggested"):
-        if key not in widths:
-            continue
-        column = TRACK_TABLE_COLUMN_BY_KEY[key]
-        expansion = min(remaining, column.max_width - widths[key])
-        widths[key] += expansion
-        remaining -= expansion
-    widths["track"] += remaining
-
-    return tuple(
-        (column, widths[column.key]) for column in TRACK_TABLE_COLUMNS if column.key in widths
-    )
 
 
 def _restored_status(owned: OwnedValues) -> MetadataStatus:
@@ -258,315 +132,6 @@ def _restored_status(owned: OwnedValues) -> MetadataStatus:
     if all(values is None for values in owned.values()):
         return "not_analyzed"
     return "stale"
-
-
-def _suggested_label(predictions: Sequence[Prediction]) -> str | None:
-    """Return the direct child label without performing taxonomy mapping."""
-    if not predictions:
-        return None
-    return predictions[0].label.rsplit("---", 1)[-1].strip() or None
-
-
-class GenreEditScreen(ModalScreen[str | None]):
-    BINDINGS = [Binding("escape", "cancel", "Cancel")]
-
-    def __init__(self, item: PlannedWrite) -> None:
-        super().__init__()
-        self.item = item
-
-    def compose(self) -> ComposeResult:
-        current = (
-            self.item.target_file_genre
-            if self.item.target_file_genre is not None
-            else self.item.file_genre
-        )
-        suggestion = suggested_file_genre(self.item)
-        with Vertical(id="genre-dialog"):
-            yield Label("Set standard file genre", id="dialog-title")
-            yield Static(
-                "Enter one or more genres, separated by commas.\n"
-                "An empty field clears the conventional genre tag.",
-                markup=False,
-                id="dialog-help",
-            )
-            yield Input(
-                value=", ".join(current),
-                placeholder="Genre",
-                id="genre-input",
-            )
-            if suggestion:
-                model_child = _suggested_label(self.item.selected)
-                source = (
-                    f" (from model label {model_child})"
-                    if model_child and model_child != suggestion
-                    else ""
-                )
-                yield Static(
-                    f"Standard genre suggestion: {suggestion}{source}",
-                    markup=False,
-                    id="dialog-suggestion",
-                )
-            with Horizontal(classes="dialog-actions"):
-                yield Button("Cancel", id="cancel")
-                if suggestion:
-                    yield Button("Use suggestion", id="use-suggestion")
-                yield Button("Stage entered genre", variant="primary", id="stage")
-
-    def on_mount(self) -> None:
-        self.set_class(self.size.width < 64, "narrow")
-        self.query_one("#genre-input", Input).focus()
-
-    def on_resize(self, event: events.Resize) -> None:
-        self.set_class(event.size.width < 64, "narrow")
-
-    @on(Input.Submitted)
-    def submit_genre(self) -> None:
-        self._submit()
-
-    @on(Button.Pressed, "#stage")
-    def stage_genre(self) -> None:
-        self._submit()
-
-    @on(Button.Pressed, "#use-suggestion")
-    def use_suggestion(self) -> None:
-        suggestion = suggested_file_genre(self.item)
-        if suggestion is not None:
-            self.dismiss(suggestion)
-
-    @on(Button.Pressed, "#cancel")
-    def cancel_button(self) -> None:
-        self.dismiss(None)
-
-    def action_cancel(self) -> None:
-        self.dismiss(None)
-
-    def _submit(self) -> None:
-        value = self.query_one("#genre-input", Input).value.strip()
-        self.dismiss(value)
-
-
-class ConfirmWriteScreen(ModalScreen[bool]):
-    BINDINGS = [
-        Binding("enter,y", "confirm", "Write"),
-        Binding("n,escape", "cancel", "Cancel"),
-    ]
-
-    def __init__(self, summary: WriteSummary) -> None:
-        super().__init__()
-        self.summary = summary
-
-    @property
-    def track_count(self) -> int:
-        return self.summary.track_count
-
-    @property
-    def standard_genre_count(self) -> int:
-        return self.summary.standard_genre_edits
-
-    @property
-    def evidence_count(self) -> int:
-        return self.summary.evidence_scores
-
-    def compose(self) -> ComposeResult:
-        noun = "track" if self.track_count == 1 else "tracks"
-        bundle_noun = "bundle" if self.track_count == 1 else "bundles"
-        edit_noun = "edit" if self.standard_genre_count == 1 else "edits"
-        with Vertical(id="confirm-dialog"):
-            yield Label("Write selected tracks?", id="dialog-title")
-            yield Static(
-                f"{self.track_count} {noun}\n"
-                f"{self.track_count} SetTag analysis {bundle_noun}"
-                f" · {self.evidence_count} ranked scores\n"
-                f"{self.standard_genre_count} standard genre {edit_noun}",
-                markup=False,
-                id="confirm-summary",
-            )
-            yield Static(
-                "The files passed preflight. SetTag will verify each file after writing.",
-                markup=False,
-                id="dialog-help",
-            )
-            with Horizontal(classes="dialog-actions"):
-                yield Button("Back to review", id="cancel")
-                yield Button(
-                    f"Write {self.track_count} {noun}",
-                    variant="primary",
-                    id="confirm",
-                )
-
-    def on_mount(self) -> None:
-        self.query_one("#confirm", Button).focus()
-
-    @on(Button.Pressed, "#confirm")
-    def confirm_button(self) -> None:
-        self.dismiss(True)
-
-    @on(Button.Pressed, "#cancel")
-    def cancel_button(self) -> None:
-        self.dismiss(False)
-
-    def action_confirm(self) -> None:
-        self.dismiss(True)
-
-    def action_cancel(self) -> None:
-        self.dismiss(False)
-
-
-class UndoScreen(ModalScreen[str | None]):
-    """Pick a previous write batch to revert."""
-
-    # Enter is not bound here: DataTable has its own Enter binding, so the row
-    # selection event below is what confirms a choice from the table.
-    BINDINGS = [Binding("escape", "cancel", "Cancel")]
-
-    def __init__(self, batches: Sequence[JournalBatch]) -> None:
-        super().__init__()
-        self.batches = tuple(batches)
-
-    def compose(self) -> ComposeResult:
-        with Vertical(id="undo-dialog"):
-            yield Label("Undo a previous write", id="dialog-title")
-            table: DataTable[str] = DataTable(id="undo-table", cursor_type="row")
-            table.add_columns("Written", "Files", "What changed")
-            for batch in self.batches:
-                table.add_row(
-                    batch.started_at,
-                    str(batch.track_count),
-                    batch.summary,
-                    key=batch.batch_id,
-                )
-            yield table
-            yield Static(
-                "Restores the tag values that write replaced. Tag values are "
-                "restored, not the original bytes, so the file checksum will differ.",
-                markup=False,
-                id="dialog-help",
-            )
-            with Horizontal(classes="dialog-actions"):
-                yield Button("Cancel", id="cancel")
-                yield Button("Revert selected", variant="primary", id="confirm")
-
-    def on_mount(self) -> None:
-        self.query_one("#undo-table", DataTable).focus()
-
-    def _selected_batch(self) -> str | None:
-        table: DataTable[str] = self.query_one("#undo-table", DataTable)
-        if table.row_count == 0:
-            return None
-        row = table.coordinate_to_cell_key(table.cursor_coordinate).row_key
-        return None if row.value is None else str(row.value)
-
-    @on(DataTable.RowSelected, "#undo-table")
-    def row_selected(self, event: DataTable.RowSelected) -> None:
-        value = event.row_key.value
-        self.dismiss(None if value is None else str(value))
-
-    @on(Button.Pressed, "#confirm")
-    def confirm_button(self) -> None:
-        self.action_choose()
-
-    @on(Button.Pressed, "#cancel")
-    def cancel_button(self) -> None:
-        self.dismiss(None)
-
-    def action_choose(self) -> None:
-        self.dismiss(self._selected_batch())
-
-    def action_cancel(self) -> None:
-        self.dismiss(None)
-
-
-class ConfirmUndoScreen(ModalScreen[bool]):
-    BINDINGS = [
-        Binding("enter,y", "confirm", "Restore"),
-        Binding("n,escape", "cancel", "Cancel"),
-    ]
-
-    def __init__(self, *, batch: JournalBatch, preflight: UndoPreflight) -> None:
-        super().__init__()
-        self.journal_batch = batch
-        self.preflight = preflight
-
-    @property
-    def restore_count(self) -> int:
-        return self.preflight.restore_count
-
-    @property
-    def blocked_count(self) -> int:
-        return self.preflight.blocked_count
-
-    def compose(self) -> ComposeResult:
-        noun = "file" if self.restore_count == 1 else "files"
-        skipped = (
-            f"\n{self.blocked_count} skipped because the file changed since"
-            if self.blocked_count
-            else ""
-        )
-        reverted = (
-            f"\nThis batch was already reverted {self.journal_batch.reverted_at}"
-            if self.journal_batch.reverted_at is not None
-            else ""
-        )
-        with Vertical(id="confirm-dialog"):
-            yield Label("Restore the previous metadata?", id="dialog-title")
-            yield Static(
-                f"{self.restore_count} {noun} from the write of {self.journal_batch.started_at}"
-                f"{skipped}{reverted}",
-                markup=False,
-                id="confirm-summary",
-            )
-            yield Static(
-                "Only the SetTag metadata and staged genre edits are rewritten. "
-                "SetTag will verify each file afterwards.",
-                markup=False,
-                id="dialog-help",
-            )
-            with Horizontal(classes="dialog-actions"):
-                yield Button("Cancel", id="cancel")
-                yield Button(
-                    f"Restore {self.restore_count} {noun}",
-                    variant="primary",
-                    id="confirm",
-                )
-
-    def on_mount(self) -> None:
-        self.query_one("#confirm", Button).focus()
-
-    @on(Button.Pressed, "#confirm")
-    def confirm_button(self) -> None:
-        self.dismiss(True)
-
-    @on(Button.Pressed, "#cancel")
-    def cancel_button(self) -> None:
-        self.dismiss(False)
-
-    def action_confirm(self) -> None:
-        self.dismiss(True)
-
-    def action_cancel(self) -> None:
-        self.dismiss(False)
-
-
-class ErrorScreen(ModalScreen[None]):
-    BINDINGS = [Binding("escape,enter", "close", "Close")]
-
-    def __init__(self, title: str, message: str) -> None:
-        super().__init__()
-        self.error_title = title
-        self.error_message = message
-
-    def compose(self) -> ComposeResult:
-        with Vertical(id="error-dialog"):
-            yield Label(self.error_title, id="dialog-title")
-            yield Static(self.error_message, markup=False, id="error-message")
-            yield Button("Close", id="close", variant="primary")
-
-    @on(Button.Pressed, "#close")
-    def close_button(self) -> None:
-        self.dismiss(None)
-
-    def action_close(self) -> None:
-        self.dismiss(None)
 
 
 class SetTagApp(App[TuiOutcome]):
@@ -590,286 +155,7 @@ class SetTagApp(App[TuiOutcome]):
         Binding("q", "quit", "Quit"),
     ]
 
-    CSS = """
-    Screen {
-        background: #0b0f0e;
-        color: #eef2f1;
-    }
-
-    Header {
-        background: #16201e;
-        color: #eef2f1;
-    }
-
-    Footer {
-        background: #16201e;
-        color: #c3cecb;
-    }
-
-    Footer > .footer--highlight,
-    Footer > .footer--key {
-        background: #d0794f;
-        color: #1f0e05;
-    }
-
-    #loading {
-        align: center middle;
-        height: 1fr;
-        padding: 2 6;
-    }
-
-    #loading-title {
-        text-style: bold;
-        color: #eef2f1;
-        margin-bottom: 1;
-    }
-
-    #loading-path {
-        color: #8ea09b;
-        margin-bottom: 1;
-    }
-
-    #metadata-progress {
-        width: 72;
-        max-width: 90%;
-        margin-top: 1;
-    }
-
-    #main {
-        display: none;
-        height: 1fr;
-    }
-
-    #context {
-        height: 3;
-        padding: 1 2 0 2;
-        color: #8ea09b;
-        background: #0f1413;
-    }
-
-    #analysis-activity {
-        display: none;
-        height: 6;
-        padding: 1 2 0 2;
-        background: #16201e;
-    }
-
-    #analysis-activity-title {
-        height: 1;
-        text-style: bold;
-        color: #eef2f1;
-    }
-
-    #analysis-activity-file {
-        height: 1;
-        color: #c3cecb;
-    }
-
-    #analysis-progress {
-        width: 100%;
-        height: 1;
-        margin-top: 1;
-    }
-
-    #workspace {
-        height: 1fr;
-    }
-
-    #tracks-pane {
-        width: 2fr;
-        min-width: 48;
-        padding: 0 1 1 1;
-    }
-
-    #inspector-pane {
-        display: none;
-        width: 1fr;
-        min-width: 34;
-        padding: 0 2 1 1;
-        background: #0f1413;
-    }
-
-    SetTagApp.details-open #inspector-pane {
-        display: block;
-    }
-
-    .section-title {
-        height: 2;
-        padding: 0 1;
-        text-style: bold;
-        color: #eef2f1;
-    }
-
-    DataTable {
-        height: 1fr;
-        background: #111716;
-        color: #c3cecb;
-        scrollbar-color: #3a4744;
-        scrollbar-color-hover: #8ea09b;
-        scrollbar-color-active: #d0794f;
-    }
-
-    DataTable > .datatable--header {
-        background: #16201e;
-        color: #eef2f1;
-        text-style: bold;
-    }
-
-    DataTable > .datatable--cursor {
-        background: #d0794f;
-        color: #1f0e05;
-        text-style: bold;
-    }
-
-    #inspector-scroll {
-        height: 1fr;
-        padding: 0 1;
-        color: #c3cecb;
-        overflow-y: auto;
-        border-left: solid #3a4744;
-        scrollbar-color: #3a4744;
-        scrollbar-color-hover: #8ea09b;
-        scrollbar-color-active: #d0794f;
-    }
-
-    #inspector-scroll:focus {
-        border-left: solid #d0794f;
-    }
-
-    #inspector {
-        width: 1fr;
-    }
-
-    #status {
-        height: 3;
-        padding: 1 2;
-        background: #16201e;
-        color: #c3cecb;
-    }
-
-    ModalScreen {
-        align: center middle;
-        background: #000000 55%;
-    }
-
-    #genre-dialog,
-    #confirm-dialog,
-    #error-dialog {
-        width: 64;
-        max-width: 92%;
-        height: auto;
-        max-height: 86%;
-        padding: 1 2;
-        background: #16201e;
-        border: solid #3a4744;
-    }
-
-    #undo-dialog {
-        width: 88;
-        max-width: 92%;
-        height: auto;
-        max-height: 86%;
-        padding: 1 2;
-        background: #16201e;
-        border: solid #3a4744;
-    }
-
-    #undo-table {
-        height: auto;
-        max-height: 14;
-        margin-bottom: 1;
-        background: #0f1413;
-    }
-
-    #dialog-title {
-        text-style: bold;
-        color: #eef2f1;
-        margin-bottom: 1;
-    }
-
-    #dialog-help,
-    #dialog-suggestion {
-        color: #8ea09b;
-        margin-bottom: 1;
-    }
-
-    #genre-input {
-        margin-bottom: 1;
-        border: tall #3a4744;
-    }
-
-    #genre-input:focus {
-        border: tall #d0794f;
-    }
-
-    #confirm-summary,
-    #error-message {
-        margin-bottom: 1;
-        color: #eef2f1;
-        max-height: 16;
-        overflow-y: auto;
-    }
-
-    .dialog-actions {
-        height: 3;
-        align-horizontal: right;
-    }
-
-    .dialog-actions Button {
-        margin-left: 1;
-    }
-
-    GenreEditScreen.narrow .dialog-actions {
-        height: 9;
-        layout: vertical;
-        align-horizontal: right;
-    }
-
-    #confirm-dialog #cancel,
-    #undo-dialog #cancel {
-        background: #25302d;
-        color: #c3cecb;
-    }
-
-    #confirm-dialog #cancel:focus,
-    #undo-dialog #cancel:focus {
-        background: #3a4744;
-        color: #eef2f1;
-    }
-
-    #confirm-dialog #confirm,
-    #confirm-dialog #confirm:focus,
-    #undo-dialog #confirm,
-    #undo-dialog #confirm:focus {
-        background: #d0794f;
-        color: #1f0e05;
-        text-style: bold;
-    }
-
-    Button.-primary {
-        background: #d0794f;
-        color: #1f0e05;
-    }
-
-    SetTagApp.narrow #workspace {
-        layout: vertical;
-    }
-
-    SetTagApp.narrow #tracks-pane,
-    SetTagApp.narrow #inspector-pane {
-        width: 1fr;
-        min-width: 0;
-    }
-
-    SetTagApp.narrow #tracks-pane {
-        height: 3fr;
-    }
-
-    SetTagApp.narrow #inspector-pane {
-        height: 2fr;
-        padding: 0 1 1 1;
-    }
-    """
+    CSS = APP_CSS
 
     def __init__(
         self,
@@ -976,6 +262,10 @@ class SetTagApp(App[TuiOutcome]):
 
     def on_resize(self, event: events.Resize) -> None:
         self.set_class(event.size.width < 100, "narrow")
+        self.call_after_refresh(self._sync_table_columns)
+
+    @on(ResponsiveTrackTable.Resized)
+    def track_table_resized(self) -> None:
         self.call_after_refresh(self._sync_table_columns)
 
     def _sync_table_columns(self) -> None:
@@ -1217,7 +507,7 @@ class SetTagApp(App[TuiOutcome]):
             entry.path.name,
             file_genre,
             self._entry_analysis(entry),
-            _suggested_label(predictions) or "—",
+            suggested_label(predictions) or "—",
             f"{primary.score:.3f}" if primary else "—",
             str(len(plan.readable_changes)) if plan is not None else "—",
         )
@@ -1464,7 +754,7 @@ class SetTagApp(App[TuiOutcome]):
             genre_line = f"  {current} → {target} (staged)"
 
         suggestion = suggested_file_genre(item)
-        model_child = _suggested_label(item.selected)
+        model_child = suggested_label(item.selected)
         rollup_line = (
             f"  Suggested roll-up: {model_child} → {suggestion}"
             if suggestion and model_child and suggestion != model_child
