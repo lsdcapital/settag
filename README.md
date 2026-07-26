@@ -15,7 +15,23 @@ Supported files:
 
 ## Install
 
-Python 3.10–3.14 and [uv](https://docs.astral.sh/uv/) are recommended:
+SetTag needs Python 3.10–3.14 and [uv](https://docs.astral.sh/uv/).
+
+Platform support is inherited from `essentia-tensorflow`, which ships only
+prebuilt binary wheels. There is no pure-Python fallback and no source build
+worth attempting, so a platform without a wheel cannot install SetTag at all:
+
+| Platform | Requirement |
+| --- | --- |
+| macOS, Apple Silicon | macOS 15 (Sequoia) or newer |
+| macOS, Intel | macOS 14 (Sonoma) or newer; macOS 15 on Python 3.14 |
+| Linux, x86_64 | glibc 2.17 or newer (manylinux2014, so any current distro) |
+
+**Windows and Linux on ARM are not supported.** Upstream has never published
+wheels for either, on any release.
+
+The analysis backend is a large download — roughly 100 MB on macOS and 290 MB
+on Linux — and the models are fetched separately on top of that.
 
 ```sh
 uv sync
@@ -203,7 +219,8 @@ The workbench is private application state, not portable music metadata:
 
 - macOS: `~/Library/Application Support/settag/state.sqlite3`
 - Linux: `${XDG_DATA_HOME:-~/.local/share}/settag/state.sqlite3`
-- Windows: `%LOCALAPPDATA%\settag\state.sqlite3`
+- Windows: `%LOCALAPPDATA%\settag\state.sqlite3` — the path SetTag would use,
+  though Windows cannot install the analysis backend today (see [Install](#install))
 
 Override it for a run with `--state-db PATH`, or globally with
 `SETTAG_STATE_DB`. For example:
