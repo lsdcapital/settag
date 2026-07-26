@@ -1,0 +1,64 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Install dependencies
+        run: uv sync --group dev
+
+      # A tag can be pushed at a commit that never went through CI, so the
+      # release gate repeats the checks rather than trusting the branch.
+      - name: Lint
+        run: uv run ruff check .
+
+      - name: Format
+        run: uv run ruff format --check .
+
+      - name: Type check
+        run: uv run ty check
+
+      - name: Test
+        run: uv run pytest
+
+      - name: Build
+        run: uv build
+
+      # The version lives in src/settag/__init__.py and is stamped into the
+      # files SetTag tags. Releasing v1.2.3 from a tree that says 1.2.2 would
+      # publish artifacts that mislabel every track they touch.
+      - name: Verify the tag matches the package version
+        run: |
+          tag_version="${GITHUB_REF_NAME#v}"
+          package_version="$(uv run python -c 'import settag; print(settag.__version__)')"
+          if [ "$tag_version" != "$package_version" ]; then
+            echo "Tag ${GITHUB_REF_NAME} does not match package version ${package_version}." >&2
+            echo "Update src/settag/__init__.py or retag before releasing." >&2
+            exit 1
+          fi
+          test -f "dist/settag-${package_version}.tar.gz"
+          test -f "dist/settag-${package_version}-py3-none-any.whl"
+
+      - name: Publish the GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${GITHUB_REF_NAME}" \
+            --title "${GITHUB_REF_NAME}" \
+            --generate-notes \
+            dist/*
