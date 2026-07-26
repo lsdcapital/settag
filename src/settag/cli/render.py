@@ -296,14 +296,22 @@ def _prompt_yes_no(question: str) -> bool:
         print("Please answer y or n.", file=sys.stderr)
 
 
-def _log_inspection(genre_state: GenreState, owned: dict[str, list[str] | None]) -> None:
+def _log_inspection(
+    genre_state: GenreState,
+    owned: dict[str, list[str] | None],
+    *,
+    scores: bool = True,
+) -> None:
     """Report every SetTag field on the file, one ranked score per line.
 
     ``inspect`` is what you reach for to find out what SetTag actually wrote,
     so it reports the whole bundle rather than a chosen part of it. It read
     only ``SETTAG_GENRE*`` and the singular ``SETTAG_MODEL`` once, which hid
-    mood/theme and instrument entirely and named one model for a file two
-    models had analyzed.
+    mood/theme and instrument entirely.
+
+    ``scores=False`` keeps every field but drops the ranked lines. A complete
+    taxonomy per task is what you want for one file and roughly 130 lines per
+    track across a directory, so the caller chooses.
     """
     standard = ", ".join(genre_state.standard) or "none"
     LOGGER.info("  file genre tag: %s", standard)
@@ -321,14 +329,18 @@ def _log_inspection(genre_state: GenreState, owned: dict[str, list[str] | None])
             labels=owned[TASK_FIELDS[task][0]] or [],
             evidence=evidence.get(task, ()),
             provenance=provenance.get(task),
+            scores=scores,
         )
 
     LOGGER.info("  SetTag bundle")
+    # `SETTAG_MODEL`, `SETTAG_ANALYZED_AT` and `SETTAG_CONFIG_SHA256` are the genre
+    # task's provenance in flat fields, for consumers that read one model per file.
+    # `SETTAG_PROVENANCE`, reported per task above, is the complete record.
     bundle = (
         ("version", "SETTAG_VERSION"),
-        ("model", "SETTAG_MODEL"),
-        ("analyzed", "SETTAG_ANALYZED_AT"),
-        ("config", "SETTAG_CONFIG_SHA256"),
+        ("genre model", "SETTAG_MODEL"),
+        ("genre analyzed", "SETTAG_ANALYZED_AT"),
+        ("genre config", "SETTAG_CONFIG_SHA256"),
     )
     for label, field in bundle:
         values = owned[field]
@@ -341,10 +353,13 @@ def _log_task_inspection(
     labels: Sequence[str],
     evidence: Sequence[Prediction],
     provenance: dict[str, object] | None,
+    scores: bool,
 ) -> None:
     LOGGER.info("  %s: %d %s", task, len(labels), "label" if len(labels) == 1 else "labels")
     for name, value in _task_provenance_fields(provenance):
         LOGGER.info("    %s: %s", name, value)
+    if not scores:
+        return
 
     if not evidence:
         # Labels are written beside their scores, so labels without readable

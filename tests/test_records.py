@@ -99,18 +99,18 @@ def test_task_config_match_ignores_other_selected_tasks() -> None:
 
 def test_evidence_hash_changes_with_the_audio_sample() -> None:
     """Sampling changes which audio the model read, so stored analyses must go stale."""
-    full = config_record(top=5, threshold=0.1, sample="full")
-    middle = config_record(top=5, threshold=0.1, sample="middle")
+    full = config_record(top=5, threshold=0.1, genre_sample="full")
+    middle = config_record(top=5, threshold=0.1, genre_sample="middle")
 
     assert full["sha256"] != middle["sha256"]
     evidence = middle["evidence"]
     assert isinstance(evidence, dict)
-    assert evidence.get("sample") == "middle"
+    assert evidence.get("genre_sample") == "middle"
 
 
 def test_task_config_match_rejects_a_different_audio_sample() -> None:
-    full = config_record(top=5, threshold=0.1, sample="full")
-    middle = config_record(top=3, threshold=0.8, sample="middle")
+    full = config_record(top=5, threshold=0.1, genre_sample="full")
+    middle = config_record(top=3, threshold=0.8, genre_sample="middle")
 
     assert configs_match_for_task(full, full, "genre") is True
     assert configs_match_for_task(full, middle, "genre") is False

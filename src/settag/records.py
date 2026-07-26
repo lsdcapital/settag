@@ -89,19 +89,23 @@ def config_record(
     top: int,
     threshold: float,
     tasks: tuple[AnalysisTask, ...] = ("genre",),
-    sample: AudioSample = "full",
+    genre_sample: AudioSample = "full",
 ) -> dict[str, object]:
     """Describe the settings a stored analysis was produced under.
 
-    ``sample`` belongs in ``evidence`` rather than ``selection`` because it changes
-    which audio the model read, so a change to it must mark stored analyses stale.
-    ``top`` and ``threshold`` only change what a reviewer is shown, which is why
-    they sit outside the hashed part.
+    ``genre_sample`` belongs in ``evidence`` rather than ``selection`` because it
+    changes which audio the model read, so a change to it must mark stored analyses
+    stale. ``top`` and ``threshold`` only change what a reviewer is shown, which is
+    why they sit outside the hashed part.
+
+    One evidence record is shared by every task in a run, so this key is named for
+    the task it governs. It applies to genre alone; the EffNet tasks always read the
+    whole track, and a bare ``sample`` here read as a claim about all of them.
     """
     evidence: dict[str, object] = {
-        "schema": "settag.evidence/v3",
+        "schema": "settag.evidence/v4",
         "limit": EVIDENCE_LIMIT,
-        "sample": sample,
+        "genre_sample": genre_sample,
         "tasks": list(ordered_tasks(tasks)),
     }
     return {

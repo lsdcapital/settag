@@ -22,7 +22,7 @@ class ConfigError(ValueError):
 @dataclass(frozen=True)
 class SetTagConfig:
     tasks: tuple[AnalysisTask, ...] = ("genre",)
-    sample: AudioSample = "middle"
+    genre_sample: AudioSample = "middle"
 
 
 def default_config_path() -> Path:
@@ -69,10 +69,10 @@ def load_config(path: Path = DEFAULT_CONFIG_PATH) -> SetTagConfig:
             f"{resolved}: unknown analysis task(s): {', '.join(unknown)}; choose from {choices}"
         )
 
-    raw_sample: Any = analysis.get("sample", SetTagConfig.sample)
+    raw_sample: Any = analysis.get("genre_sample", SetTagConfig.genre_sample)
     if raw_sample not in AUDIO_SAMPLES:
         choices = ", ".join(AUDIO_SAMPLES)
         raise ConfigError(
-            f"{resolved}: unknown analysis sample {raw_sample!r}; choose from {choices}"
+            f"{resolved}: unknown analysis genre_sample {raw_sample!r}; choose from {choices}"
         )
-    return SetTagConfig(tasks=selected, sample=raw_sample)
+    return SetTagConfig(tasks=selected, genre_sample=raw_sample)

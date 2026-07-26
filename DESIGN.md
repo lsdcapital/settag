@@ -279,7 +279,7 @@ MAEST embeds one 30-second patch at a time and its graph is fixed at batch one,
 so its cost is strictly linear in patch count and it is the run: 15.5 s against
 EffNet's 1.2 s on a 482-second track. Nothing else moves that number — thread
 counts are already saturated and concurrent workers return under 1.2x — so the
-`sample` setting chooses how many patches MAEST reads: `full`, `middle` (4 from
+`genre_sample` setting chooses how many patches MAEST reads: `full`, `middle` (4 from
 the centre, the default) or `spaced` (6 across the track). It narrows the audio
 handed to MAEST only. EffNet always reads the whole track, because it is cheap
 and its taxonomies want whole-track averaging for the same reason the evidence

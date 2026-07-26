@@ -41,17 +41,19 @@ def test_invalid_config_is_rejected_with_its_path(
 
 
 def test_missing_config_defaults_to_the_middle_sample(tmp_path: Path) -> None:
-    assert load_config(tmp_path / "missing.toml").sample == "middle"
+    assert load_config(tmp_path / "missing.toml").genre_sample == "middle"
 
 
 def test_config_loads_the_analysis_sample(tmp_path: Path) -> None:
     path = tmp_path / "config.toml"
-    path.write_text('[analysis]\nsample = "full"\n', encoding="utf-8")
+    path.write_text('[analysis]\ngenre_sample = "full"\n', encoding="utf-8")
 
-    assert load_config(path).sample == "full"
+    assert load_config(path).genre_sample == "full"
 
 
-@pytest.mark.parametrize("contents", ['[analysis]\nsample = "half"\n', "[analysis]\nsample = 4\n"])
+@pytest.mark.parametrize(
+    "contents", ['[analysis]\ngenre_sample = "half"\n', "[analysis]\ngenre_sample = 4\n"]
+)
 def test_invalid_analysis_sample_is_rejected(tmp_path: Path, contents: str) -> None:
     path = tmp_path / "config.toml"
     path.write_text(contents, encoding="utf-8")

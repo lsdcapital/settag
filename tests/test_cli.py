@@ -649,7 +649,7 @@ def test_run_reads_no_config_when_every_option_is_given(
             "--no-tui",
             "--tasks",
             "genre",
-            "--sample",
+            "--genre-sample",
             "full",
             "--config",
             str(config_path),
@@ -730,7 +730,7 @@ def test_interactive_default_restores_ready_workbench_plan(
             "0.80",
             "--tasks",
             "genre",
-            "--sample",
+            "--genre-sample",
             "full",
         ]
     )
@@ -783,7 +783,7 @@ def test_current_embedded_metadata_supersedes_workbench_plan(
                 str(state_path),
                 "--tasks",
                 "genre",
-                "--sample",
+                "--genre-sample",
                 "full",
             ]
         )
@@ -1181,7 +1181,7 @@ def test_run_sample_flag_overrides_the_configured_sample(
     path = tmp_path / "track.wav"
     config_path = tmp_path / "config.toml"
     _silent_wav(path)
-    config_path.write_text('[analysis]\nsample = "spaced"\n', encoding="utf-8")
+    config_path.write_text('[analysis]\ngenre_sample = "spaced"\n', encoding="utf-8")
     constructed: list[str] = []
 
     def construct_analyzer(_model_dir, *, sample):
@@ -1200,7 +1200,7 @@ def test_run_sample_flag_overrides_the_configured_sample(
                 "genre",
                 "--config",
                 str(config_path),
-                "--sample",
+                "--genre-sample",
                 "full",
             ]
         )
@@ -1214,7 +1214,7 @@ def test_run_falls_back_to_the_configured_sample(tmp_path: Path, monkeypatch) ->
     path = tmp_path / "track.wav"
     config_path = tmp_path / "config.toml"
     _silent_wav(path)
-    config_path.write_text('[analysis]\nsample = "spaced"\n', encoding="utf-8")
+    config_path.write_text('[analysis]\ngenre_sample = "spaced"\n', encoding="utf-8")
     constructed: list[str] = []
 
     def construct_analyzer(_model_dir, *, sample):
@@ -1247,7 +1247,7 @@ def test_analyze_records_the_sample_it_ran_under(tmp_path: Path, monkeypatch) ->
     assert main(["analyze", str(path), "--output", str(output_path)]) == 0
 
     record = json.loads(output_path.read_text(encoding="utf-8").splitlines()[0])
-    assert record["config"]["evidence"]["sample"] == "spaced"
+    assert record["config"]["evidence"]["genre_sample"] == "spaced"
 
 
 def test_sample_flag_rejects_an_unknown_strategy(tmp_path: Path, capsys) -> None:
@@ -1255,6 +1255,29 @@ def test_sample_flag_rejects_an_unknown_strategy(tmp_path: Path, capsys) -> None
     _silent_wav(path)
 
     with pytest.raises(SystemExit):
-        main(["analyze", str(path), "--sample", "half"])
+        main(["analyze", str(path), "--genre-sample", "half"])
 
     assert "unknown audio sample 'half'" in capsys.readouterr().err
+
+
+def test_inspect_no_scores_keeps_every_field_but_drops_the_ranked_lines(
+    tmp_path: Path,
+    capsys,
+) -> None:
+    """A whole taxonomy per task is unreadable across a directory."""
+    path = tmp_path / "track.wav"
+    _silent_wav(path)
+    _add_genre(path, "Afro House")
+    _write_analysis(path, FakeMultiTaskAnalyzer())
+
+    assert main(["inspect", str(path), "--no-scores"]) == 0
+    quiet = capsys.readouterr().err
+    assert main(["inspect", str(path)]) == 0
+    full = capsys.readouterr().err
+
+    for expected in ("file genre tag: Afro House", "genre: 1 label", "mood-theme: 2 labels"):
+        assert expected in quiet
+    assert "model: fake/moodtheme/v1" in quiet
+    assert "1. Deep" not in quiet
+    assert "1. Deep" in full
+    assert len(quiet.splitlines()) < len(full.splitlines())

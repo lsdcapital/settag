@@ -42,7 +42,7 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("path", type=Path)
     _add_analysis_options(run)
     _add_tasks(run, default=None)
-    _add_sample(run, default=None)
+    _add_genre_sample(run, default=None)
     run.add_argument(
         "--config",
         type=Path,
@@ -91,7 +91,7 @@ def build_parser() -> argparse.ArgumentParser:
     analyze.add_argument("path", type=Path)
     _add_analysis_options(analyze)
     _add_tasks(analyze)
-    _add_sample(analyze)
+    _add_genre_sample(analyze)
     analyze.add_argument(
         "--output",
         type=Path,
@@ -108,6 +108,15 @@ def build_parser() -> argparse.ArgumentParser:
         help="Show the existing file genre tag and SetTag metadata without analysis.",
     )
     inspect.add_argument("path", type=Path)
+    inspect.add_argument(
+        "--no-scores",
+        dest="scores",
+        action="store_false",
+        help=(
+            "Omit the ranked score lines and report label counts only. A whole "
+            "taxonomy per task per track is unreadable across a directory."
+        ),
+    )
 
     preview = subparsers.add_parser(
         "preview",
@@ -237,22 +246,23 @@ def _analysis_tasks(value: str) -> tuple[AnalysisTask, ...]:
         raise argparse.ArgumentTypeError(str(error)) from error
 
 
-def _add_sample(
+def _add_genre_sample(
     parser: argparse.ArgumentParser,
     *,
     default: AudioSample | None = "middle",
 ) -> None:
     default_text = default if default is not None else "config, then middle"
     parser.add_argument(
-        "--sample",
+        "--genre-sample",
+        dest="genre_sample",
         type=_audio_sample,
         default=default,
         metavar="SAMPLE",
         help=(
             "How much audio the genre model reads: full (whole track), "
             f"middle ({MIDDLE_PATCHES}x30s from the centre), or spaced "
-            f"({SPACED_PATCHES}x30s spread across it). Other tasks always read the "
-            f"whole track (default: {default_text})."
+            f"({SPACED_PATCHES}x30s spread across it). Mood/theme and instrument "
+            f"always read the whole track (default: {default_text})."
         ),
     )
 

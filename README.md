@@ -70,11 +70,11 @@ unset.
 ### How much audio the genre model reads
 
 The genre model, MAEST, embeds one 30-second patch at a time and dominates the
-run: 15.5s against EffNet's 1.2s on a 482-second track. `--sample` chooses how
-many of those patches it reads. Mood/theme and instrument always read the whole
+run: 15.5s against EffNet's 1.2s on a 482-second track. `--genre-sample`
+chooses how many of those patches it reads. Mood/theme and instrument always read the whole
 track, because they are cheap and their taxonomies want whole-track averaging.
 
-| `--sample` | reads | relative speed |
+| `--genre-sample` | reads | relative speed |
 | --- | --- | --- |
 | `full` | every 30s patch | 1.0x |
 | `middle` (default) | 4 patches from the centre | 2.2x |
@@ -88,7 +88,7 @@ means less averaging, so scores come out more peaked.
 
 ```toml
 [analysis]
-sample = "full"
+genre_sample = "full"
 ```
 
 Changing this changes the evidence configuration digest, so tracks analyzed
@@ -297,7 +297,10 @@ uv run settag analyze "/path/to/music"
 uv run settag analyze "/path/to/music" --output analysis.jsonl
 
 # Read current tags without loading the model
-uv run settag inspect "/path/to/music"
+uv run settag inspect "/path/to/track.mp3"
+
+# Every field, but no ranked score lines: readable across a directory
+uv run settag inspect "/path/to/music" --no-scores
 
 # Create, preview, and apply a durable plan
 uv run settag analyze "/path/to/music" --plan settag-plan.jsonl
