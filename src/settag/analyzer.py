@@ -20,7 +20,7 @@ from settag.model_store import (
     require_models,
     require_task_models,
 )
-from settag.policy import Prediction, rank_predictions
+from settag.policy import AudioSample, Prediction, rank_predictions, sample_audio
 from settag.tasks import AnalysisTask, ordered_tasks
 from settag.taxonomy import readable_label
 
@@ -55,10 +55,13 @@ class EssentiaGenreAnalyzer:
         self,
         model_dir: Path,
         spec: ModelSpec = DISCOGS519_MAEST,
+        *,
+        sample: AudioSample = "full",
     ) -> None:
         require_models(model_dir, spec)
         self.model_dir = model_dir
         self.spec = spec
+        self.sample = sample
 
         metadata_path = spec.path(model_dir, "classifier_metadata")
         metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
@@ -120,7 +123,13 @@ class EssentiaGenreAnalyzer:
         return self._predict_audio(audio)
 
     def _predict_audio(self, audio: Any) -> list[Prediction]:
-        embeddings = self._embedding_model(audio)
+        # Sampling happens here rather than in `_analyze` so the shared-decode path
+        # can hand the same full array to both models: MAEST narrows it, EffNet does
+        # not. MAEST is the only expensive one, and the mood/instrument taxonomies
+        # want whole-track averaging (see the EVIDENCE_LIMIT note in `policy`).
+        embeddings = self._embedding_model(
+            sample_audio(audio, strategy=self.sample, sample_rate=self.spec.sample_rate)
+        )
 
         pool = self._pool_type()
         pool.set(self.spec.classifier_input, embeddings)
@@ -239,11 +248,20 @@ class EssentiaEffnetAnalyzer:
 class EssentiaTaskAnalyzer:
     """Load only the explicitly selected task families and expose one task result map."""
 
-    def __init__(self, model_dir: Path, tasks: Sequence[AnalysisTask]) -> None:
+    def __init__(
+        self,
+        model_dir: Path,
+        tasks: Sequence[AnalysisTask],
+        *,
+        sample: AudioSample = "full",
+    ) -> None:
         self.tasks = ordered_tasks(tasks)
         if not self.tasks:
             raise ValueError("at least one analysis task is required")
-        self._genre = EssentiaGenreAnalyzer(model_dir) if "genre" in self.tasks else None
+        self.sample = sample
+        self._genre = (
+            EssentiaGenreAnalyzer(model_dir, sample=sample) if "genre" in self.tasks else None
+        )
         effnet_tasks = tuple(task for task in self.tasks if task != "genre")
         self._effnet = EssentiaEffnetAnalyzer(model_dir, effnet_tasks) if effnet_tasks else None
         manifests: dict[AnalysisTask, dict[str, object]] = {}

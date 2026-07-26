@@ -6,10 +6,10 @@ from types import SimpleNamespace
 
 import pytest
 
-from settag.plans import stage_file_genre
+from settag.plans import planned_write_record, stage_file_genre
 from settag.policy import Prediction
 from settag.records import config_record
-from settag.state import WorkbenchError, WorkbenchStore
+from settag.state import WorkbenchStore
 from settag.tasks import AnalysisTask
 from settag.workflow import planned_write_for_track, prepare_track
 
@@ -66,16 +66,20 @@ def _instrument_plan(path: Path):
     return planned_write_for_track(track)
 
 
-def _load(store: WorkbenchStore, path: Path, plan):
+def _load_all(store: WorkbenchStore, plan):
     model = plan.desired["SETTAG_MODEL"]
     config = plan.desired["SETTAG_CONFIG_SHA256"]
     assert model is not None
     assert config is not None
     return store.load(
-        [path],
+        [plan.path],
         expected_model_ids={"genre": model[0]},
         expected_config_sha256=config[0],
-    )[path.resolve()]
+    )
+
+
+def _load(store: WorkbenchStore, path: Path, plan):
+    return _load_all(store, plan)[path.resolve()]
 
 
 def test_workbench_save_and_load_round_trip(tmp_path: Path) -> None:
@@ -237,17 +241,66 @@ def test_workbench_delete_removes_plan(tmp_path: Path) -> None:
     )
 
 
-def test_workbench_reports_corrupt_cached_record(tmp_path: Path) -> None:
+def _replace_stored_json(store: WorkbenchStore, path: Path, record: object) -> None:
+    with sqlite3.connect(store.path) as connection:
+        connection.execute(
+            "UPDATE workbench_plans SET plan_json = ? WHERE path = ?",
+            (json.dumps(record), str(path.resolve())),
+        )
+
+
+def _stored_paths(store: WorkbenchStore) -> list[str]:
+    with sqlite3.connect(store.path) as connection:
+        return [str(row[0]) for row in connection.execute("SELECT path FROM workbench_plans")]
+
+
+def test_workbench_discards_corrupt_cached_record(tmp_path: Path) -> None:
     path = tmp_path / "track.wav"
     _silent_wav(path)
     plan = _plan(path)
     store = WorkbenchStore(tmp_path / "state.sqlite3")
     store.save(plan)
-    with sqlite3.connect(store.path) as connection:
-        connection.execute(
-            "UPDATE workbench_plans SET plan_json = ? WHERE path = ?",
-            (json.dumps({"schema": "broken"}), str(path.resolve())),
-        )
+    _replace_stored_json(store, path, {"schema": "broken"})
 
-    with pytest.raises(WorkbenchError, match="Invalid cached analysis"):
-        _load(store, path, plan)
+    assert _load_all(store, plan) == {}
+    assert _stored_paths(store) == []
+
+
+def test_workbench_discards_superseded_plan_schema(tmp_path: Path) -> None:
+    """An upgrade that bumps ``PLAN_SCHEMA`` must not brick a warm cache."""
+    path = tmp_path / "track.wav"
+    _silent_wav(path)
+    plan = _plan(path)
+    store = WorkbenchStore(tmp_path / "state.sqlite3")
+    store.save(plan)
+    superseded = planned_write_record(plan) | {"schema": "settag.plan/v3"}
+    _replace_stored_json(store, path, superseded)
+
+    assert _load_all(store, plan) == {}
+    assert _stored_paths(store) == []
+
+
+def test_workbench_keeps_readable_records_beside_a_discarded_one(tmp_path: Path) -> None:
+    readable = tmp_path / "readable.wav"
+    unreadable = tmp_path / "unreadable.wav"
+    _silent_wav(readable)
+    _silent_wav(unreadable)
+    readable_plan = _plan(readable)
+    store = WorkbenchStore(tmp_path / "state.sqlite3")
+    store.save(readable_plan)
+    store.save(_plan(unreadable))
+    _replace_stored_json(store, unreadable, {"schema": "broken"})
+
+    model = readable_plan.desired["SETTAG_MODEL"]
+    config = readable_plan.desired["SETTAG_CONFIG_SHA256"]
+    assert model is not None
+    assert config is not None
+    entries = store.load(
+        [readable, unreadable],
+        expected_model_ids={"genre": model[0]},
+        expected_config_sha256=config[0],
+    )
+
+    assert set(entries) == {readable.resolve()}
+    assert entries[readable.resolve()].status == "ready"
+    assert _stored_paths(store) == [str(readable.resolve())]

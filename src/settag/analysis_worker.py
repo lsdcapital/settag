@@ -11,6 +11,7 @@ from threading import Lock
 from typing import Any, Protocol, cast
 
 from settag.analyzer import EssentiaGenreAnalyzer, EssentiaTaskAnalyzer
+from settag.policy import AudioSample
 from settag.tasks import AnalysisTask, ordered_tasks
 from settag.workflow import (
     AnalysisBatch,
@@ -19,7 +20,7 @@ from settag.workflow import (
     analyze_paths,
 )
 
-AnalyzerFactory = Callable[[Path, tuple[AnalysisTask, ...]], Any]
+AnalyzerFactory = Callable[[Path, tuple[AnalysisTask, ...], AudioSample], Any]
 
 
 class ProcessContext(Protocol):
@@ -65,16 +66,18 @@ class _Shutdown:
 def _create_analyzer(
     model_dir: Path,
     tasks: tuple[AnalysisTask, ...],
+    sample: AudioSample,
 ) -> EssentiaGenreAnalyzer | EssentiaTaskAnalyzer:
     if tasks == ("genre",):
-        return EssentiaGenreAnalyzer(model_dir)
-    return EssentiaTaskAnalyzer(model_dir, tasks)
+        return EssentiaGenreAnalyzer(model_dir, sample=sample)
+    return EssentiaTaskAnalyzer(model_dir, tasks, sample=sample)
 
 
 def _analysis_worker_main(
     connection: Connection,
     model_dir: Path,
     tasks: tuple[AnalysisTask, ...],
+    sample: AudioSample,
     analyzer_factory: AnalyzerFactory,
 ) -> None:
     analyzer: Any | None = None
@@ -95,7 +98,7 @@ def _analysis_worker_main(
             else:
                 try:
                     if analyzer is None:
-                        analyzer = analyzer_factory(model_dir, tasks)
+                        analyzer = analyzer_factory(model_dir, tasks, sample)
                     batch = analyze_paths(
                         (request.path,),
                         analyzer=analyzer,
@@ -129,6 +132,7 @@ class SubprocessAnalysisLoader:
         *,
         top: int,
         threshold: float,
+        sample: AudioSample = "full",
         analyzer_factory: AnalyzerFactory = _create_analyzer,
         context: ProcessContext | None = None,
         poll_interval: float = 0.05,
@@ -146,6 +150,7 @@ class SubprocessAnalysisLoader:
         self.tasks = selected
         self.top = top
         self.threshold = threshold
+        self.sample = sample
         self._analyzer_factory = analyzer_factory
         self._context = context or cast(ProcessContext, get_context("spawn"))
         self._poll_interval = poll_interval
@@ -247,6 +252,7 @@ class SubprocessAnalysisLoader:
                 child_connection,
                 self.model_dir,
                 self.tasks,
+                self.sample,
                 self._analyzer_factory,
             ),
             name="settag-analyzer",

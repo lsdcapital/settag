@@ -42,16 +42,18 @@ class _BusyAnalyzer(_FakeAnalyzer):
 def _recording_analyzer_factory(
     model_dir: Path,
     tasks: tuple[str, ...],
+    sample: str,
 ) -> _FakeAnalyzer:
     assert tasks == ("genre",)
     with (model_dir / "factory.log").open("a", encoding="utf-8") as marker:
-        marker.write(f"{os.getpid()}\n")
+        marker.write(f"{os.getpid()} {sample}\n")
     return _FakeAnalyzer()
 
 
 def _busy_analyzer_factory(
     model_dir: Path,
     tasks: tuple[str, ...],
+    sample: str,
 ) -> _BusyAnalyzer:
     assert tasks == ("genre",)
     return _BusyAnalyzer(model_dir / "analysis-started")
@@ -90,6 +92,7 @@ def test_worker_reuses_analyzer_and_stops_between_tracks(
         ("genre",),
         top=5,
         threshold=0.10,
+        sample="spaced",
         analyzer_factory=_recording_analyzer_factory,
         poll_interval=0.01,
     )
@@ -119,9 +122,13 @@ def test_worker_reuses_analyzer_and_stops_between_tracks(
     assert [item.path for item in cancelled_batch.planned] == [second]
     assert cancelled_batch.cancelled is True
     assert progress == [(1, 1, first), (1, 2, second)]
-    worker_pids = (tmp_path / "factory.log").read_text(encoding="utf-8").splitlines()
-    assert len(worker_pids) == 1
-    assert int(worker_pids[0]) != os.getpid()
+    constructions = (tmp_path / "factory.log").read_text(encoding="utf-8").splitlines()
+    assert len(constructions) == 1
+    worker_pid, worker_sample = constructions[0].split()
+    assert int(worker_pid) != os.getpid()
+    # The configured sample has to survive the spawn, or the subprocess would
+    # silently analyze under a different setting than the one recorded on disk.
+    assert worker_sample == "spaced"
 
 
 def test_tui_remains_responsive_during_gil_holding_analysis(

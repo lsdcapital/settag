@@ -2,6 +2,9 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 from dataclasses import dataclass
+from typing import Literal
+
+import numpy as np
 
 # Ranked evidence retained per task. This must cover a whole taxonomy, not a shortlist:
 # a consumer computing a signed composite (high-arousal labels minus low-arousal ones)
@@ -63,3 +66,58 @@ def select_predictions(
         raise ValueError("top must be at least 1")
 
     return [item for item in predictions if item.score >= threshold][:top]
+
+
+# How much of a track the genre model reads. MAEST embeds one 30s patch at a time and
+# its graph is fixed at batch 1, so its cost is strictly linear in patch count and it is
+# 92.7% of a run (15.54s against EffNet's 1.23s on a 482s track). Analyzing fewer patches
+# is the only lever that moves the total.
+#
+# Measured over 14 library tracks against the full-track answer: `middle` is 2.22x faster
+# and preserved the rolled-up conventional genre on 14/14, `spaced` is 1.62x and preserved
+# it on 13/14. Both kept a Spearman rank correlation above 0.98 across all 519 labels, so
+# the evidence keeps its shape; what churns is the densely packed 0.1-0.25 tail, where the
+# model is not confident anyway. Fewer patches also means less averaging, so scores come
+# out more peaked than a full-track run.
+AudioSample = Literal["full", "middle", "spaced"]
+AUDIO_SAMPLES: tuple[AudioSample, ...] = ("full", "middle", "spaced")
+
+PATCH_SECONDS = 30
+MIDDLE_PATCHES = 4
+SPACED_PATCHES = 6
+
+
+def parse_audio_sample(value: str) -> AudioSample:
+    requested = value.strip()
+    if requested not in AUDIO_SAMPLES:
+        choices = ", ".join(AUDIO_SAMPLES)
+        raise ValueError(f"unknown audio sample {value!r}; choose from {choices}")
+    return requested
+
+
+def sample_audio(
+    audio: np.ndarray,
+    *,
+    strategy: AudioSample,
+    sample_rate: int,
+) -> np.ndarray:
+    """Return the portion of ``audio`` the genre model should read.
+
+    Cutting on exact ``PATCH_SECONDS`` boundaries means a sampled chunk is a whole
+    number of MAEST patches, so concatenated chunks never produce a patch that
+    straddles a join. Audio shorter than the requested window is returned as-is
+    rather than padded: a short track is cheap already.
+    """
+    if strategy == "full":
+        return audio
+    patch = sample_rate * PATCH_SECONDS
+    count = MIDDLE_PATCHES if strategy == "middle" else SPACED_PATCHES
+    if len(audio) <= patch * count:
+        return audio
+
+    if strategy == "middle":
+        start = (len(audio) - patch * count) // 2
+        return audio[start : start + patch * count]
+
+    offsets = np.linspace(0, len(audio) - patch, count).astype(int)
+    return np.concatenate([audio[offset : offset + patch] for offset in offsets])

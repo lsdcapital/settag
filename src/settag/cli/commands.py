@@ -32,7 +32,7 @@ from settag.cli.render import (
     _prompt_for_batch_apply,
     _prompt_for_undo,
 )
-from settag.config import load_config
+from settag.config import SetTagConfig, load_config
 from settag.journal import BatchRecorder, JournalError, WriteJournal, default_journal_db
 from settag.model_store import (
     download_task_models,
@@ -106,7 +106,12 @@ def _journal_db(args: argparse.Namespace) -> WriteJournal:
 
 def _run_default(args: argparse.Namespace) -> int:
     try:
-        tasks = args.tasks if args.tasks is not None else load_config(args.config).tasks
+        # Read the file only when something is still unset, so explicit flags keep
+        # working against a config this build cannot parse.
+        needed = args.tasks is None or args.sample is None
+        configured = load_config(args.config) if needed else SetTagConfig()
+        tasks = args.tasks if args.tasks is not None else configured.tasks
+        sample = args.sample if args.sample is not None else configured.sample
         paths = scan_audio(args.path)
     except Exception as error:
         print(str(error), file=sys.stderr)
@@ -127,9 +132,9 @@ def _run_default(args: argparse.Namespace) -> int:
         nonlocal analyzer
         if analyzer is None:
             analyzer = (
-                EssentiaGenreAnalyzer(model_dir)
+                EssentiaGenreAnalyzer(model_dir, sample=sample)
                 if tasks == ("genre",)
-                else EssentiaTaskAnalyzer(model_dir, tasks)
+                else EssentiaTaskAnalyzer(model_dir, tasks, sample=sample)
             )
         return analyze_paths(
             selected_paths,
@@ -146,6 +151,7 @@ def _run_default(args: argparse.Namespace) -> int:
             top=args.top,
             threshold=args.threshold,
             tasks=tasks,
+            sample=sample,
         )
         config_sha256 = str(current_config["sha256"])
         expected_model_ids = {task: MODEL_SPECS_BY_TASK[task].id for task in tasks}
@@ -205,6 +211,7 @@ def _run_default(args: argparse.Namespace) -> int:
             tasks,
             top=args.top,
             threshold=args.threshold,
+            sample=sample,
         )
         try:
             try:
@@ -291,9 +298,9 @@ def _run_analyze(args: argparse.Namespace) -> int:
         paths = scan_audio(args.path)
         model_dir = args.model_dir.expanduser().resolve()
         analyzer = (
-            EssentiaGenreAnalyzer(model_dir)
+            EssentiaGenreAnalyzer(model_dir, sample=args.sample)
             if args.tasks == ("genre",)
-            else EssentiaTaskAnalyzer(model_dir, args.tasks)
+            else EssentiaTaskAnalyzer(model_dir, args.tasks, sample=args.sample)
         )
     except Exception as error:
         print(str(error), file=sys.stderr)

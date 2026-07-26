@@ -64,7 +64,35 @@ uv run settag "/path/to/music" --tasks genre,mood-theme,instrument
 
 Set `SETTAG_CONFIG` or pass `--config /path/to/config.toml` to use another
 config file. Task precedence is `--tasks`, then the config file, then the
-`genre` default.
+`genre` default. The config file is read only for options the flags left
+unset.
+
+### How much audio the genre model reads
+
+The genre model, MAEST, embeds one 30-second patch at a time and dominates the
+run: 15.5s against EffNet's 1.2s on a 482-second track. `--sample` chooses how
+many of those patches it reads. Mood/theme and instrument always read the whole
+track, because they are cheap and their taxonomies want whole-track averaging.
+
+| `--sample` | reads | relative speed |
+| --- | --- | --- |
+| `full` | every 30s patch | 1.0x |
+| `middle` (default) | 4 patches from the centre | 2.2x |
+| `spaced` | 6 patches spread across the track | 1.6x |
+
+Measured against the full-track answer over 14 tracks, `middle` preserved the
+rolled-up conventional genre on 14/14 and `spaced` on 13/14, both with a rank
+correlation above 0.98 across all 519 labels. What moves is the crowded
+0.1-0.25 tail, where the model is not confident anyway. Fewer patches also
+means less averaging, so scores come out more peaked.
+
+```toml
+[analysis]
+sample = "full"
+```
+
+Changing this changes the evidence configuration digest, so tracks analyzed
+under a different setting are correctly reported as stale and reanalyzed.
 
 Models are downloaded once into `~/.cache/settag/models`. They are not bundled
 with this repository or its Python distributions. Downloads and installed

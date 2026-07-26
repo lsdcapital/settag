@@ -19,7 +19,8 @@ from typing import TextIO
 from settag.journal import BatchRecorder, JournalBatch, WriteJournal
 from settag.plans import PlannedWrite
 from settag.policy import Prediction
-from settag.tags import GenreState
+from settag.tags import GenreState, read_task_provenance, task_evidence_from_owned
+from settag.tasks import TASK_FIELDS, TASK_ORDER, AnalysisTask
 from settag.workflow import AnalysisBatch, UndoPreflight, WriteSummary, summarize_planned
 
 LOGGER = logging.getLogger("settag")
@@ -296,40 +297,78 @@ def _prompt_yes_no(question: str) -> bool:
 
 
 def _log_inspection(genre_state: GenreState, owned: dict[str, list[str] | None]) -> None:
+    """Report every SetTag field on the file, one ranked score per line.
+
+    ``inspect`` is what you reach for to find out what SetTag actually wrote,
+    so it reports the whole bundle rather than a chosen part of it. It read
+    only ``SETTAG_GENRE*`` and the singular ``SETTAG_MODEL`` once, which hid
+    mood/theme and instrument entirely and named one model for a file two
+    models had analyzed.
+    """
     standard = ", ".join(genre_state.standard) or "none"
     LOGGER.info("  file genre tag: %s", standard)
-    LOGGER.info("  SetTag genres: %s", _format_owned_genres(genre_state, owned))
 
-    provenance = (
+    evidence = task_evidence_from_owned(owned)
+    provenance = read_task_provenance(owned)
+    analyzed = [task for task in TASK_ORDER if owned[TASK_FIELDS[task][0]]]
+    if not analyzed:
+        LOGGER.info("  SetTag metadata: none")
+        return
+
+    for task in analyzed:
+        _log_task_inspection(
+            task,
+            labels=owned[TASK_FIELDS[task][0]] or [],
+            evidence=evidence.get(task, ()),
+            provenance=provenance.get(task),
+        )
+
+    LOGGER.info("  SetTag bundle")
+    bundle = (
         ("version", "SETTAG_VERSION"),
         ("model", "SETTAG_MODEL"),
         ("analyzed", "SETTAG_ANALYZED_AT"),
         ("config", "SETTAG_CONFIG_SHA256"),
     )
-    for label, field in provenance:
+    for label, field in bundle:
         values = owned[field]
-        LOGGER.info("  SetTag %s: %s", label, ", ".join(values) if values else "none")
+        LOGGER.info("    %s: %s", label, ", ".join(values) if values else "none")
 
 
-def _format_owned_genres(
-    genre_state: GenreState,
-    owned: dict[str, list[str] | None],
-) -> str:
-    serialized = owned["SETTAG_GENRE_SCORES"]
-    if serialized:
-        try:
-            scores = json.loads(serialized[0])
-            if isinstance(scores, list):
-                formatted = [
-                    f"{item['label']} score {float(item['score']):.3f}"
-                    for item in scores
-                    if isinstance(item, dict) and "label" in item and "score" in item
-                ]
-                if formatted:
-                    return ", ".join(formatted)
-        except (KeyError, TypeError, ValueError, json.JSONDecodeError):
-            LOGGER.warning("  SetTag score metadata is invalid; showing labels only")
-    return ", ".join(genre_state.settag) or "none"
+def _log_task_inspection(
+    task: AnalysisTask,
+    *,
+    labels: Sequence[str],
+    evidence: Sequence[Prediction],
+    provenance: dict[str, object] | None,
+) -> None:
+    LOGGER.info("  %s: %d %s", task, len(labels), "label" if len(labels) == 1 else "labels")
+    for name, value in _task_provenance_fields(provenance):
+        LOGGER.info("    %s: %s", name, value)
+
+    if not evidence:
+        # Labels are written beside their scores, so labels without readable
+        # scores means the score field was edited or truncated by another tool.
+        LOGGER.warning("    scores are unreadable; showing labels only")
+        for rank, label in enumerate(labels, start=1):
+            LOGGER.info("    %2d. %s", rank, label)
+        return
+
+    width = max(len(prediction.label) for prediction in evidence)
+    for rank, prediction in enumerate(evidence, start=1):
+        LOGGER.info("    %2d. %-*s  %.3f", rank, width, prediction.label, prediction.score)
+
+
+def _task_provenance_fields(provenance: dict[str, object] | None) -> list[tuple[str, str]]:
+    if provenance is None:
+        return [("provenance", "none")]
+    model = provenance.get("model")
+    config = provenance.get("config")
+    return [
+        ("model", str(model.get("id", "unknown")) if isinstance(model, dict) else "unknown"),
+        ("analyzed", str(provenance.get("analyzed_at", "unknown"))),
+        ("config", str(config.get("sha256", "unknown")) if isinstance(config, dict) else "unknown"),
+    ]
 
 
 def _log_summary(

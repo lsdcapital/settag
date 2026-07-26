@@ -7,7 +7,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-from mutagen.id3 import ID3, TCON
+from mutagen.id3 import ID3, TCON, TXXX
 from mutagen.wave import WAVE
 
 from settag import __version__
@@ -84,6 +84,23 @@ class FakeInstrumentAnalyzer:
                 Prediction("synthesizer", 0.81),
                 Prediction("drummachine", 0.62),
             ]
+        }
+
+
+class FakeMultiTaskAnalyzer:
+    backend_version = "test"
+    model_manifests: dict[AnalysisTask, dict[str, object]] = {
+        "genre": {"schema": "settag.models/v1", "id": "fake/genre/v1", "files": {}},
+        "mood-theme": {"schema": "settag.models/v1", "id": "fake/moodtheme/v1", "files": {}},
+    }
+
+    def analyze_tasks(
+        self,
+        path: Path,
+    ) -> dict[AnalysisTask, list[Prediction]]:
+        return {
+            "genre": [Prediction("Electronic---Deep House", 0.72)],
+            "mood-theme": [Prediction("Deep", 0.53), Prediction("Corporate", 0.12)],
         }
 
 
@@ -267,7 +284,7 @@ def test_explicit_instrument_task_does_not_construct_genre_analyzer(
     monkeypatch.setattr("settag.cli.commands.EssentiaGenreAnalyzer", unexpected_genre)
     monkeypatch.setattr(
         "settag.cli.commands.EssentiaTaskAnalyzer",
-        lambda _model_dir, tasks: FakeInstrumentAnalyzer(),
+        lambda _model_dir, tasks, **_options: FakeInstrumentAnalyzer(),
     )
 
     result = main(
@@ -370,8 +387,70 @@ def test_inspect_reads_existing_tags_without_running_the_model(tmp_path: Path, c
 
     assert result == 0
     assert "file genre tag: Existing genre" in stderr
-    assert "Electronic---Deep House score 0.720" in stderr
-    assert "SetTag model: model/v1" in stderr
+    assert "genre: 2 labels" in stderr
+    assert "1. Electronic---Deep House  0.720" in stderr
+    assert "2. Electronic---House       0.050" in stderr
+    assert "model: model/v1" in stderr
+
+
+def test_inspect_reports_every_analyzed_task_with_its_own_model(
+    tmp_path: Path,
+    capsys,
+) -> None:
+    """Every task SetTag wrote is reported, not just genre.
+
+    ``inspect`` read ``SETTAG_GENRE*`` and the singular ``SETTAG_MODEL`` only,
+    so a multi-task file looked single-task and named one of its two models.
+    """
+    path = tmp_path / "track.wav"
+    _silent_wav(path)
+    _add_genre(path, "Afro House")
+    _write_analysis(path, FakeMultiTaskAnalyzer())
+
+    result = main(["inspect", str(path)])
+    stderr = capsys.readouterr().err
+
+    assert result == 0
+    assert "file genre tag: Afro House" in stderr
+    assert "genre: 1 label" in stderr
+    assert "mood-theme: 2 labels" in stderr
+    assert "1. Deep       0.530" in stderr
+    assert "2. Corporate  0.120" in stderr
+    assert "model: fake/genre/v1" in stderr
+    assert "model: fake/moodtheme/v1" in stderr
+
+
+def test_inspect_reports_a_file_without_settag_metadata(tmp_path: Path, capsys) -> None:
+    path = tmp_path / "track.wav"
+    _silent_wav(path)
+    _add_genre(path, "Afro House")
+
+    result = main(["inspect", str(path)])
+    stderr = capsys.readouterr().err
+
+    assert result == 0
+    assert "file genre tag: Afro House" in stderr
+    assert "SetTag metadata: none" in stderr
+
+
+def test_inspect_falls_back_to_labels_when_scores_are_unreadable(
+    tmp_path: Path,
+    capsys,
+) -> None:
+    path = tmp_path / "track.wav"
+    _silent_wav(path)
+    _write_analysis(path, FakeAnalyzer())
+    audio = WAVE(path)
+    assert isinstance(audio.tags, ID3)
+    audio.tags.add(TXXX(encoding=3, desc="SETTAG_GENRE_SCORES", text=["not json"]))
+    audio.save()
+
+    result = main(["inspect", str(path)])
+    stderr = capsys.readouterr().err
+
+    assert result == 0
+    assert "scores are unreadable; showing labels only" in stderr
+    assert "1. Electronic---Deep House" in stderr
 
 
 def test_path_shorthand_runs_a_noninteractive_dry_run_without_writing(
@@ -384,7 +463,7 @@ def test_path_shorthand_runs_a_noninteractive_dry_run_without_writing(
     monkeypatch.setattr(sys, "stdin", StringIO(""))
     monkeypatch.setattr(
         "settag.cli.commands.EssentiaGenreAnalyzer",
-        lambda _model_dir: FakeAnalyzer(),
+        lambda _model_dir, **_options: FakeAnalyzer(),
     )
 
     result = main([str(path), "--tasks", "genre"])
@@ -407,7 +486,7 @@ def test_no_tui_forces_the_plain_dry_run(
     _silent_wav(path)
     monkeypatch.setattr(
         "settag.cli.commands.EssentiaGenreAnalyzer",
-        lambda _model_dir: FakeAnalyzer(),
+        lambda _model_dir, **_options: FakeAnalyzer(),
     )
 
     result = main(["run", str(path), "--no-tui", "--tasks", "genre"])
@@ -428,7 +507,7 @@ def test_interactive_default_reads_metadata_without_constructing_analyzer(
     analyzer_constructed = False
     inspected_paths: list[Path] = []
 
-    def construct_analyzer(_model_dir):
+    def construct_analyzer(_model_dir, **_options):
         nonlocal analyzer_constructed
         analyzer_constructed = True
         raise AssertionError("the analyzer must stay unloaded in the library view")
@@ -480,13 +559,14 @@ def test_interactive_run_uses_configured_tasks_and_task_analyzer(
     loader_started = False
     loader_closed = False
 
-    def construct_analyzer(_model_dir, tasks):
+    def construct_analyzer(_model_dir, tasks, **_options):
         constructed_tasks.append(tasks)
         return FakeInstrumentAnalyzer()
 
     class FakeSubprocessAnalysisLoader:
-        def __init__(self, model_dir, tasks, *, top, threshold) -> None:
+        def __init__(self, model_dir, tasks, *, top, threshold, sample) -> None:
             self.analyzer = construct_analyzer(model_dir, tasks)
+            self.sample = sample
             self.top = top
             self.threshold = threshold
 
@@ -544,17 +624,22 @@ def test_interactive_run_uses_configured_tasks_and_task_analyzer(
     assert loader_closed is True
 
 
-def test_run_tasks_override_does_not_read_config(
+def test_run_reads_no_config_when_every_option_is_given(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
+    """The config file is consulted only for what the flags left unset.
+
+    Supplying every option it could answer means a config this build cannot
+    parse never has to be read, so it cannot block the run.
+    """
     path = tmp_path / "track.wav"
     config_path = tmp_path / "broken.toml"
     _silent_wav(path)
     config_path.write_text("[analysis\n", encoding="utf-8")
     monkeypatch.setattr(
         "settag.cli.commands.EssentiaGenreAnalyzer",
-        lambda _model_dir: FakeAnalyzer(),
+        lambda _model_dir, **_options: FakeAnalyzer(),
     )
 
     result = main(
@@ -564,12 +649,32 @@ def test_run_tasks_override_does_not_read_config(
             "--no-tui",
             "--tasks",
             "genre",
+            "--sample",
+            "full",
             "--config",
             str(config_path),
         ]
     )
 
     assert result == 0
+
+
+def test_run_still_reads_config_when_one_option_is_missing(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    path = tmp_path / "track.wav"
+    config_path = tmp_path / "broken.toml"
+    _silent_wav(path)
+    config_path.write_text("[analysis\n", encoding="utf-8")
+    monkeypatch.setattr(
+        "settag.cli.commands.EssentiaGenreAnalyzer",
+        lambda _model_dir, **_options: FakeAnalyzer(),
+    )
+
+    result = main(["run", str(path), "--no-tui", "--tasks", "genre", "--config", str(config_path)])
+
+    assert result == 2
 
 
 def test_interactive_default_restores_ready_workbench_plan(
@@ -591,7 +696,7 @@ def test_interactive_default_restores_ready_workbench_plan(
     WorkbenchStore(state_path).save(plan)
     analyzer_constructed = False
 
-    def construct_analyzer(_model_dir):
+    def construct_analyzer(_model_dir, **_options):
         nonlocal analyzer_constructed
         analyzer_constructed = True
         raise AssertionError("a cached review must not construct the analyzer")
@@ -625,6 +730,8 @@ def test_interactive_default_restores_ready_workbench_plan(
             "0.80",
             "--tasks",
             "genre",
+            "--sample",
+            "full",
         ]
     )
 
@@ -676,6 +783,8 @@ def test_current_embedded_metadata_supersedes_workbench_plan(
                 str(state_path),
                 "--tasks",
                 "genre",
+                "--sample",
+                "full",
             ]
         )
         == 0
@@ -704,7 +813,7 @@ def test_compact_plan_is_human_readable_and_applies_after_one_confirmation(
     _silent_wav(path)
     monkeypatch.setattr(
         "settag.cli.commands.EssentiaGenreAnalyzer",
-        lambda _model_dir: FakeAnalyzer(),
+        lambda _model_dir, **_options: FakeAnalyzer(),
     )
 
     analyzed = main(["analyze", str(path), "--plan", str(plan_path)])
@@ -772,7 +881,7 @@ def test_preview_renders_a_saved_plan_without_external_json_tools_or_writing(
     _silent_wav(path)
     monkeypatch.setattr(
         "settag.cli.commands.EssentiaGenreAnalyzer",
-        lambda _model_dir: FakeAnalyzer(),
+        lambda _model_dir, **_options: FakeAnalyzer(),
     )
 
     assert main(["analyze", str(path), "--plan", str(plan_path)]) == 0
@@ -894,7 +1003,7 @@ def test_batch_apply_aborts_all_writes_when_any_source_is_stale(
     _silent_wav(second)
     monkeypatch.setattr(
         "settag.cli.commands.EssentiaGenreAnalyzer",
-        lambda _model_dir: FakeAnalyzer(),
+        lambda _model_dir, **_options: FakeAnalyzer(),
     )
 
     assert main(["analyze", str(tmp_path), "--plan", str(plan_path)]) == 0
@@ -925,7 +1034,7 @@ def test_batch_apply_rejects_a_partial_plan_with_analysis_errors(
     _silent_wav(bad)
     monkeypatch.setattr(
         "settag.cli.commands.EssentiaGenreAnalyzer",
-        lambda _model_dir: PartiallyFailingAnalyzer(),
+        lambda _model_dir, **_options: PartiallyFailingAnalyzer(),
     )
 
     analyzed = main(["analyze", str(tmp_path), "--plan", str(plan_path)])
@@ -1063,3 +1172,89 @@ def test_a_cli_write_points_at_the_command_that_reverts_it(tmp_path: Path, capsy
     _apply_one_track(tmp_path)
 
     assert "Revert with: settag undo " in capsys.readouterr().err
+
+
+def test_run_sample_flag_overrides_the_configured_sample(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    path = tmp_path / "track.wav"
+    config_path = tmp_path / "config.toml"
+    _silent_wav(path)
+    config_path.write_text('[analysis]\nsample = "spaced"\n', encoding="utf-8")
+    constructed: list[str] = []
+
+    def construct_analyzer(_model_dir, *, sample):
+        constructed.append(sample)
+        return FakeAnalyzer()
+
+    monkeypatch.setattr("settag.cli.commands.EssentiaGenreAnalyzer", construct_analyzer)
+
+    assert (
+        main(
+            [
+                "run",
+                str(path),
+                "--no-tui",
+                "--tasks",
+                "genre",
+                "--config",
+                str(config_path),
+                "--sample",
+                "full",
+            ]
+        )
+        == 0
+    )
+
+    assert constructed == ["full"]
+
+
+def test_run_falls_back_to_the_configured_sample(tmp_path: Path, monkeypatch) -> None:
+    path = tmp_path / "track.wav"
+    config_path = tmp_path / "config.toml"
+    _silent_wav(path)
+    config_path.write_text('[analysis]\nsample = "spaced"\n', encoding="utf-8")
+    constructed: list[str] = []
+
+    def construct_analyzer(_model_dir, *, sample):
+        constructed.append(sample)
+        return FakeAnalyzer()
+
+    monkeypatch.setattr("settag.cli.commands.EssentiaGenreAnalyzer", construct_analyzer)
+
+    assert (
+        main(["run", str(path), "--no-tui", "--tasks", "genre", "--config", str(config_path)]) == 0
+    )
+
+    assert constructed == ["spaced"]
+
+
+def test_analyze_records_the_sample_it_ran_under(tmp_path: Path, monkeypatch) -> None:
+    """The recorded config must describe the analyzer that produced the evidence."""
+    path = tmp_path / "track.wav"
+    output_path = tmp_path / "record.jsonl"
+    _silent_wav(path)
+
+    class SampledFakeAnalyzer(FakeAnalyzer):
+        sample = "spaced"
+
+    monkeypatch.setattr(
+        "settag.cli.commands.EssentiaGenreAnalyzer",
+        lambda _model_dir, **_options: SampledFakeAnalyzer(),
+    )
+
+    assert main(["analyze", str(path), "--output", str(output_path)]) == 0
+
+    record = json.loads(output_path.read_text(encoding="utf-8").splitlines()[0])
+    assert record["config"]["evidence"]["sample"] == "spaced"
+
+
+def test_sample_flag_rejects_an_unknown_strategy(tmp_path: Path, capsys) -> None:
+    path = tmp_path / "track.wav"
+    _silent_wav(path)
+
+    with pytest.raises(SystemExit):
+        main(["analyze", str(path), "--sample", "half"])
+
+    assert "unknown audio sample 'half'" in capsys.readouterr().err

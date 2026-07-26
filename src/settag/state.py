@@ -110,12 +110,21 @@ class WorkbenchStore:
         expected_config: Mapping[str, object] | None = None,
         expected_model_ids: Mapping[AnalysisTask, str],
     ) -> dict[Path, WorkbenchEntry]:
+        """Return the cached entry for every path the workbench can still read.
+
+        A row this build cannot decode is dropped, not raised. The workbench is
+        private, restartable working state whose only irreplaceable content is
+        in the audio tags, so a superseded ``PLAN_SCHEMA`` or a corrupt row
+        costs one reanalysis. Failing the load instead refused to start the app
+        at all, and the only recovery was deleting the database by hand.
+        """
         resolved_paths = tuple(path.expanduser().resolve() for path in paths)
         if not resolved_paths:
             return {}
         expected_models = checked_expected_models(expected_model_ids)
 
         entries: dict[Path, WorkbenchEntry] = {}
+        unreadable: list[Path] = []
         with closing(self._connect()) as connection:
             for start in range(0, len(resolved_paths), 400):
                 chunk = resolved_paths[start : start + 400]
@@ -130,13 +139,18 @@ class WorkbenchStore:
                 )
                 for row in rows:
                     path = Path(str(row["path"]))
-                    plan = self._decode(str(row["plan_json"]), path)
+                    try:
+                        plan = self._decode(str(row["plan_json"]), path)
+                    except WorkbenchError:
+                        unreadable.append(path)
+                        continue
                     entries[path] = _classify(
                         plan,
                         expected_model_ids=expected_models,
                         expected_config_sha256=expected_config_sha256,
                         expected_config=expected_config,
                     )
+        self.delete(unreadable)
         return entries
 
     def _connect(self) -> sqlite3.Connection:

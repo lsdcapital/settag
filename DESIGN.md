@@ -190,9 +190,17 @@ audio write is reported without reclassifying the audio write as failed.
 On metadata load, cached plans are validated against source size and mtime,
 model identifier, evidence-configuration hash, and the currently observed
 standard genre. Review-only changes to the score cutoff or displayed-result
-limit reuse the existing evidence. A true evidence mismatch retains the old
-evidence for inspection but requires reanalysis. Current embedded SetTag
+limit reuse the existing evidence; changing how much audio the genre model
+reads does not, because that changes the evidence itself. A true evidence
+mismatch retains the old evidence for inspection but requires reanalysis. Current embedded SetTag
 metadata is authoritative and causes an obsolete local entry to be removed.
+
+A row the running build cannot decode at all — a superseded plan schema after
+an upgrade, or a corrupt record — is deleted and treated as a cache miss, so
+the track simply needs reanalysis. Only the audio tags are irreplaceable, and
+refusing to read the workbench instead refused to start the app, leaving no
+recovery but deleting the database by hand. Bumping the plan schema therefore
+needs no workbench migration.
 
 ## Write journal
 
@@ -266,6 +274,18 @@ When MAEST and EffNet tasks are selected together, one 16 kHz decode feeds both
 stacks; mood/theme and instrument share a single EffNet embedding pass. Every
 required model artifact is verified against its pinned SHA-256 before the
 analyzer is constructed.
+
+MAEST embeds one 30-second patch at a time and its graph is fixed at batch one,
+so its cost is strictly linear in patch count and it is the run: 15.5 s against
+EffNet's 1.2 s on a 482-second track. Nothing else moves that number — thread
+counts are already saturated and concurrent workers return under 1.2x — so the
+`sample` setting chooses how many patches MAEST reads: `full`, `middle` (4 from
+the centre, the default) or `spaced` (6 across the track). It narrows the audio
+handed to MAEST only. EffNet always reads the whole track, because it is cheap
+and its taxonomies want whole-track averaging for the same reason the evidence
+limit covers them completely. Because sampling changes which audio produced the
+evidence, it lives in the evidence configuration and its digest, not in the
+review policy beside the score cutoff.
 Interactive cancellation is cooperative between tracks: the in-flight native
 inference finishes, completed results remain reviewable, and unprocessed tracks
 remain selected. Failures are isolated during analysis. A run returns non-zero
@@ -415,7 +435,10 @@ serialized separately.
 
 `analyze --plan` writes v4 with a null target. The Textual app may save an
 explicit target. `settag.plan/v4` is the only accepted plan schema; earlier
-drafts were never released and are rejected with an explicit error.
+drafts were never released. A *plan file* on an earlier schema is rejected with
+an explicit error, because it is user-supplied input that must not be silently
+ignored; the same record in the *workbench* is discarded instead, because that
+is SetTag's own restartable cache.
 
 Failed tracks use `settag.plan-error/v1`. A file containing any error record
 cannot be applied.

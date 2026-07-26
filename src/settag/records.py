@@ -9,7 +9,7 @@ from typing import Any, TypedDict
 
 from settag import __version__
 from settag.hashing import sha256_file, sha256_json
-from settag.policy import EVIDENCE_LIMIT
+from settag.policy import EVIDENCE_LIMIT, AudioSample
 from settag.tags import TagPlan
 from settag.tasks import AnalysisTask, ordered_tasks
 
@@ -89,10 +89,19 @@ def config_record(
     top: int,
     threshold: float,
     tasks: tuple[AnalysisTask, ...] = ("genre",),
+    sample: AudioSample = "full",
 ) -> dict[str, object]:
+    """Describe the settings a stored analysis was produced under.
+
+    ``sample`` belongs in ``evidence`` rather than ``selection`` because it changes
+    which audio the model read, so a change to it must mark stored analyses stale.
+    ``top`` and ``threshold`` only change what a reviewer is shown, which is why
+    they sit outside the hashed part.
+    """
     evidence: dict[str, object] = {
-        "schema": "settag.evidence/v2",
+        "schema": "settag.evidence/v3",
         "limit": EVIDENCE_LIMIT,
+        "sample": sample,
         "tasks": list(ordered_tasks(tasks)),
     }
     return {

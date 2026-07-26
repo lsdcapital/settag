@@ -267,6 +267,10 @@ def prepare_track(
         top=top,
         threshold=threshold,
         tasks=ordered_tasks(task_predictions),
+        # Read from the analyzer that produced these predictions rather than passed in
+        # alongside it, so the recorded setting cannot disagree with the one actually
+        # used. Analyzers that ignore audio entirely, such as test doubles, read whole.
+        sample=getattr(analyzer, "sample", "full"),
     )
     task_evidence = {
         task: collect_evidence(predictions) for task, predictions in task_predictions.items()
