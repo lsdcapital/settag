@@ -9,6 +9,7 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
+from settag import __version__
 from settag.config import DEFAULT_CONFIG_PATH
 from settag.journal import DEFAULT_JOURNAL_DB
 from settag.model_store import DEFAULT_MODEL_DIR
@@ -23,6 +24,13 @@ def build_parser() -> argparse.ArgumentParser:
         prog="settag",
         description="Analyze audio genre metadata without changing files by default.",
         epilog='Most users can run: settag "/path/to/music"',
+    )
+    # The same string SetTag stamps into SETTAG_VERSION, so a tagged file can
+    # always be traced back to the build that wrote it.
+    parser.add_argument(
+        "--version",
+        action="version",
+        version=f"settag {__version__}",
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
 

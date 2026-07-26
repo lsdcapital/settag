@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "settag"
-version = "0.1.0"
+dynamic = ["version"]
 description = "A safe, analysis-first Essentia music tagger for DJ libraries"
 readme = "README.md"
 license = "AGPL-3.0-only"
@@ -31,6 +31,12 @@ dev = [
   "ruff>=0.16,<1",
   "ty>=0.0.18,<0.1",
 ]
+
+# Single-sourced from the package, because __version__ is written into the
+# files SetTag tags (SETTAG_VERSION) and into analysis records. A version that
+# drifted from the distribution would mislabel a user's library.
+[tool.hatch.version]
+path = "src/settag/__init__.py"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/settag"]

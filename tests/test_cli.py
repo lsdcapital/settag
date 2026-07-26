@@ -10,6 +10,7 @@ import pytest
 from mutagen.id3 import ID3, TCON
 from mutagen.wave import WAVE
 
+from settag import __version__
 from settag.catalog import DISCOGS519_MAEST
 from settag.cli import (
     _analyze_one,
@@ -336,6 +337,14 @@ def test_analyze_without_output_logs_summary_and_complete_debug_record(
     assert len(genre["predictions"]) == 2
     assert genre["evidence"] == genre["predictions"]
     assert genre["selected"] == [{"label": "Electronic---Deep House", "score": 0.72}]
+
+
+def test_version_flag_reports_the_version_stamped_into_tags(capsys) -> None:
+    with pytest.raises(SystemExit) as exit_info:
+        main(["--version"])
+
+    assert exit_info.value.code == 0
+    assert capsys.readouterr().out.strip() == f"settag {__version__}"
 
 
 def test_unhandled_ctrl_c_exits_without_a_traceback(monkeypatch, capsys) -> None:

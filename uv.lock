@@ -506,7 +506,6 @@ wheels = [
 
 [[package]]
 name = "settag"
-version = "0.1.0"
 source = { editable = "." }
 dependencies = [
     { name = "essentia-tensorflow", version = "2.1b6.dev1389", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.14'" },
