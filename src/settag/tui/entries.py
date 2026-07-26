@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Literal
 
 from settag.plans import PlannedWrite
-from settag.policy import Prediction
+from settag.policy import MIN_GENRE_SECONDS, Prediction
 from settag.tags import OwnedValues, read_task_provenance
 from settag.tasks import AnalysisTask
 from settag.workflow import (
@@ -43,6 +43,7 @@ STATUS_LABELS = {
     "current": "Up to date",
     "stale": "Reanalyze (model/config changed)",
     "invalid": "Incomplete metadata",
+    "sample": f"Sample (shorter than the {MIN_GENRE_SECONDS}s the genre model reads)",
 }
 
 TASK_LABELS: dict[AnalysisTask, str] = {
@@ -69,7 +70,12 @@ class TrackEntry:
 
     @property
     def can_analyze(self) -> bool:
-        return self.metadata is not None and self.metadata_error is None
+        if self.metadata is None or self.metadata_error is not None:
+            return False
+        # A sample is shorter than the genre model's window. Excluding it here
+        # rather than at analysis time means it can never be selected, so the
+        # analyzer is never handed a track it is guaranteed to reject.
+        return not self.metadata.is_sample
 
     @property
     def needs_analysis(self) -> bool:

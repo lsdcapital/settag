@@ -457,11 +457,21 @@ class SetTagApp(App[TuiOutcome]):
         preferred_index: int | None = None,
         *,
         refresh_surrounding: bool = True,
+        preserve_view: bool = False,
     ) -> None:
+        """Redraw every row.
+
+        ``preserve_view`` is for redraws the user did not ask for, such as a
+        background analysis finishing a track. ``clear`` resets the scroll
+        offset and ``move_cursor`` then scrolls the cursor back into view, so an
+        unrequested rebuild otherwise yanks a scrolled library back and steals
+        focus from wherever it was.
+        """
         if preferred_index is None:
             preferred_index = self._current_index()
         self.visible_indices = self._filtered_indices()
         table = self.query_one("#tracks", DataTable)
+        scroll_y = table.scroll_y
         table.clear()
         for index in self.visible_indices:
             table.add_row(*self._visible_cells(index), key=str(index))
@@ -481,8 +491,11 @@ class SetTagApp(App[TuiOutcome]):
                 cursor_row = self.visible_indices.index(preferred_index)
             except ValueError:
                 cursor_row = 0
-        table.focus()
-        table.move_cursor(row=cursor_row)
+        if not preserve_view:
+            table.focus()
+        table.move_cursor(row=cursor_row, scroll=not preserve_view)
+        if preserve_view:
+            table.scroll_to(y=scroll_y, animate=False)
         if refresh_surrounding:
             self._update_inspector(self.visible_indices[cursor_row])
 
@@ -758,7 +771,7 @@ class SetTagApp(App[TuiOutcome]):
             lines.append(f"  {hidden} additional ranked {noun} stored for importing apps.")
         return lines
 
-    def _refresh_row(self, index: int) -> None:
+    def _refresh_row(self, index: int, *, update_inspector: bool = True) -> None:
         if index not in self.visible_indices:
             return
         row = self.visible_indices.index(index)
@@ -768,7 +781,8 @@ class SetTagApp(App[TuiOutcome]):
                 Coordinate(row, column),
                 value,
             )
-        self._update_inspector(index)
+        if update_inspector:
+            self._update_inspector(index)
         self._update_status()
 
     def _update_status(self, message: str | None = None) -> None:
@@ -1134,9 +1148,23 @@ class SetTagApp(App[TuiOutcome]):
 
         self.analysis_selected.discard(index)
         self._advance_analysis_activity(completed, total, entry.path)
-        preferred_index = self._current_index()
-        self._rebuild_table(preferred_index=preferred_index)
+        self._refresh_after_analysis(index)
         self.refresh_bindings()
+
+    def _refresh_after_analysis(self, index: int) -> None:
+        """Show one finished track without moving the view under the user.
+
+        Tracks complete while the user is free to scroll, filter, and read. Only
+        the finished row's own cells change unless the current view admits or
+        drops a track, so redrawing the whole table is usually unnecessary — and
+        a redraw costs the scroll position. The inspector follows the cursor, not
+        the track that happened to finish.
+        """
+        if self._filtered_indices() == self.visible_indices:
+            self._refresh_row(index, update_inspector=index == self._current_index())
+            self._update_context()
+            return
+        self._rebuild_table(preferred_index=self._current_index(), preserve_view=True)
 
     def _analysis_finished(
         self,

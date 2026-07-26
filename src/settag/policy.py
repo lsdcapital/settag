@@ -86,6 +86,11 @@ PATCH_SECONDS = 30
 MIDDLE_PATCHES = 4
 SPACED_PATCHES = 6
 
+# A track shorter than a single patch produces no patches at all, and MAEST raises
+# rather than returning nothing. That is a hard floor on what the genre model can
+# read, so tracks below it are classified up front instead of failing mid-analysis.
+MIN_GENRE_SECONDS = PATCH_SECONDS
+
 
 def parse_audio_sample(value: str) -> AudioSample:
     requested = value.strip()

@@ -17,6 +17,7 @@ from settag.cli import (
     main,
 )
 from settag.plans import (
+    PLAN_SCHEMA,
     PlanError,
     planned_write_from_record,
     planned_write_record,
@@ -127,12 +128,18 @@ def test_standard_genre_rollup_does_not_guess_from_house_suffix() -> None:
     assert standard_genre_from_model_label("Electronic---Techno") == "Techno"
 
 
-def _silent_wav(path: Path) -> None:
+def _silent_wav(path: Path, *, seconds: float = 35.0) -> None:
+    """Write a silent WAV.
+
+    The default is long enough to clear the genre model's 30s window, so a
+    fixture is a track rather than a sample. Pass a shorter value to build one.
+    """
+    rate = 8_000
     with wave.open(str(path), "wb") as output:
         output.setnchannels(1)
         output.setsampwidth(2)
-        output.setframerate(8_000)
-        output.writeframes(b"\0\0" * 80)
+        output.setframerate(rate)
+        output.writeframes(b"\0\0" * int(rate * seconds))
 
 
 def _add_genre(path: Path, genre: str) -> None:
@@ -826,7 +833,7 @@ def test_compact_plan_is_human_readable_and_applies_after_one_confirmation(
     assert "Tracks analyzed:  1" in analyze_stderr
     assert f"Preview: uv run settag preview {plan_path}" in analyze_stderr
     assert f"Apply:   uv run settag apply {plan_path}" in analyze_stderr
-    assert plan_text.startswith('{"schema":"settag.plan/v4","path":')
+    assert plan_text.startswith(f'{{"schema":"{PLAN_SCHEMA}","path":')
     assert "predictions" not in plan
     assert plan["file_genre"] == []
     assert plan["target_file_genre"] is None
@@ -970,7 +977,7 @@ def test_superseded_plan_schemas_are_rejected(
     assert main(["preview", str(plan_path)]) == 2
     stderr = capsys.readouterr().err
     assert f"unsupported schema {schema!r}" in stderr
-    assert "expected 'settag.plan/v4'" in stderr
+    assert f"expected {PLAN_SCHEMA!r}" in stderr
 
 
 def test_plan_rejects_unranked_evidence(tmp_path: Path) -> None:
@@ -1014,7 +1021,9 @@ def test_batch_apply_aborts_all_writes_when_any_source_is_stale(
     stderr = capsys.readouterr().err
 
     assert result == 2
-    assert "source SHA-256 changed" in stderr
+    # An outside tag edit is caught by the genre comparison rather than by a
+    # digest, which is what lets the message name what actually drifted.
+    assert "file genre tag changed" in stderr
     assert "No files were written." in stderr
     assert WAVE(first).tags is None
     second_tags = WAVE(second).tags
@@ -1044,7 +1053,7 @@ def test_batch_apply_rejects_a_partial_plan_with_analysis_errors(
     ]
 
     assert analyzed == 1
-    assert schemas == ["settag.plan-error/v1", "settag.plan/v4"]
+    assert schemas == ["settag.plan-error/v1", PLAN_SCHEMA]
 
     applied = main(["apply", str(plan_path), "--yes"])
     stderr = capsys.readouterr().err

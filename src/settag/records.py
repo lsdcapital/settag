@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any, TypedDict
 
 from settag import __version__
-from settag.hashing import sha256_file, sha256_json
+from settag.hashing import sha256_audio, sha256_file, sha256_json
 from settag.policy import EVIDENCE_LIMIT, AudioSample
 from settag.tags import TagPlan
 from settag.tasks import AnalysisTask, ordered_tasks
@@ -19,6 +19,7 @@ class SourceRecord(TypedDict):
     size: int
     mtime_ns: int
     sha256: str
+    audio_sha256: str
 
 
 class ProvenanceStatus(Enum):
@@ -150,6 +151,11 @@ def source_record(path: Path) -> SourceRecord:
         "size": stat.st_size,
         "mtime_ns": stat.st_mtime_ns,
         "sha256": sha256_file(path),
+        # Both digests are kept because they answer different questions: the
+        # whole-file one pins the exact bytes that were read, while the audio
+        # one identifies the recording across the tag writes and renames that
+        # are this tool's normal output.
+        "audio_sha256": sha256_audio(path),
     }
 
 

@@ -537,6 +537,23 @@ def read_owned_values(path: Path) -> OwnedValues:
     return {description: store.read_value(description) for description in OWNED_DESCRIPTIONS}
 
 
+def read_duration_seconds(path: Path) -> float | None:
+    """Return the track length from its container, without decoding audio.
+
+    ``None`` when the container does not report one. Callers treat an unknown
+    length as analyzable rather than guessing, so a missing duration never
+    silently excludes a track.
+    """
+    try:
+        parsed = mutagen.File(path)
+    except Exception:
+        return None
+    length = getattr(getattr(parsed, "info", None), "length", None)
+    if not isinstance(length, (int, float)) or length <= 0:
+        return None
+    return float(length)
+
+
 def apply_metadata_tags(
     path: Path,
     desired: OwnedValues,

@@ -16,8 +16,14 @@ from settag.tags import (
 )
 from settag.tasks import TASK_ORDER
 
-PLAN_SCHEMA = "settag.plan/v4"
+PLAN_SCHEMA = "settag.plan/v5"
 PLAN_ERROR_SCHEMA = "settag.plan-error/v1"
+
+# v5 added ``source.audio_sha256``. A v4 record is still read, with that digest
+# left unknown, because the workbench cache is stored in this format and
+# rejecting it would throw away every analysis a user had already paid for.
+# Anything that needs the digest recomputes it from the file.
+READABLE_PLAN_SCHEMAS = frozenset({"settag.plan/v4", PLAN_SCHEMA})
 
 HOUSE_MODEL_LABELS = frozenset(
     {
@@ -56,6 +62,9 @@ class PlannedWrite:
     metadata_format: str
     owned_changes: tuple[str, ...]
     target_file_genre: tuple[str, ...] | None = None
+    # ``None`` only for a plan read back in the v4 format, which predates this
+    # digest. Callers recompute rather than treating unknown as mismatched.
+    source_audio_sha256: str | None = None
 
     @property
     def readable_changes(self) -> tuple[str, ...]:
@@ -140,6 +149,7 @@ def planned_write_record(item: PlannedWrite) -> dict[str, object]:
         "path": str(item.path),
         "source": {
             "sha256": item.source_sha256,
+            "audio_sha256": item.source_audio_sha256,
             "size": item.source_size,
             "mtime_ns": item.source_mtime_ns,
         },
@@ -207,7 +217,7 @@ def load_plan(path: Path) -> list[PlannedWrite]:
         if schema == PLAN_ERROR_SCHEMA:
             message = _string(record.get("error"), f"{resolved}:{line_number}.error")
             raise PlanError(f"{resolved}:{line_number}: plan contains an analysis error: {message}")
-        if schema != PLAN_SCHEMA:
+        if schema not in READABLE_PLAN_SCHEMAS:
             raise PlanError(
                 f"{resolved}:{line_number}: unsupported schema {schema!r}; expected {PLAN_SCHEMA!r}"
             )
@@ -235,7 +245,7 @@ def planned_write_from_record(
     if schema == PLAN_ERROR_SCHEMA:
         message = _string(record.get("error"), f"{location}.error")
         raise PlanError(f"{location}: plan contains an analysis error: {message}")
-    if schema != PLAN_SCHEMA:
+    if schema not in READABLE_PLAN_SCHEMAS:
         raise PlanError(f"{location}: unsupported schema {schema!r}; expected {PLAN_SCHEMA!r}")
     return _planned_write(record, location=location)
 
@@ -251,11 +261,15 @@ def _planned_write(
 
     source = _mapping(record.get("source"), f"{location}.source")
     source_sha256 = _string(source.get("sha256"), f"{location}.source.sha256")
-    invalid_sha256 = len(source_sha256) != 64 or any(
-        character not in "0123456789abcdef" for character in source_sha256
-    )
-    if invalid_sha256:
+    if not _is_sha256(source_sha256):
         raise PlanError(f"{location}.source.sha256: expected a lowercase SHA-256 digest")
+    audio_value = source.get("audio_sha256")
+    if audio_value is None:
+        source_audio_sha256 = None
+    else:
+        source_audio_sha256 = _string(audio_value, f"{location}.source.audio_sha256")
+        if not _is_sha256(source_audio_sha256):
+            raise PlanError(f"{location}.source.audio_sha256: expected a lowercase SHA-256 digest")
     source_size = _non_negative_int(source.get("size"), f"{location}.source.size")
     source_mtime_ns = _non_negative_int(source.get("mtime_ns"), f"{location}.source.mtime_ns")
 
@@ -318,6 +332,7 @@ def _planned_write(
         metadata_format=metadata_format,
         owned_changes=owned_changes,
         target_file_genre=target_file_genre,
+        source_audio_sha256=source_audio_sha256,
     )
     expected_standard_change = planned.standard_genre_change
     expected_description = (
@@ -478,6 +493,10 @@ def _list(value: object, location: str) -> list[Any]:
     if not isinstance(value, list):
         raise PlanError(f"{location}: expected an array")
     return value
+
+
+def _is_sha256(value: str) -> bool:
+    return len(value) == 64 and all(character in "0123456789abcdef" for character in value)
 
 
 def _string(value: object, location: str) -> str:

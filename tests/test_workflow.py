@@ -37,12 +37,18 @@ class FakeAnalyzer:
         return [Prediction("Electronic---House", 0.72)]
 
 
-def _silent_wav(path: Path) -> None:
+def _silent_wav(path: Path, *, seconds: float = 35.0) -> None:
+    """Write a silent WAV.
+
+    The default is long enough to clear the genre model's 30s window, so a
+    fixture is a track rather than a sample. Pass a shorter value to build one.
+    """
+    rate = 8_000
     with wave.open(str(path), "wb") as output:
         output.setnchannels(1)
         output.setsampwidth(2)
-        output.setframerate(8_000)
-        output.writeframes(b"\0\0" * 80)
+        output.setframerate(rate)
+        output.writeframes(b"\0\0" * int(rate * seconds))
 
 
 def _plan(path: Path) -> PlannedWrite:
@@ -461,3 +467,52 @@ def test_evidence_score_count_covers_every_task(tmp_path: Path) -> None:
 
     assert len(plan.evidence) == 1
     assert plan.evidence_score_count == 3
+
+
+def test_a_track_shorter_than_the_genre_window_is_classified_as_a_sample(
+    tmp_path: Path,
+) -> None:
+    """A clip below one MAEST patch is a sample, not a failure.
+
+    MAEST reads 30s patches and raises rather than returning nothing when the
+    audio is shorter, so this is decided during the metadata scan and the track
+    never reaches the analyzer.
+    """
+    sample = tmp_path / "sample.wav"
+    track = tmp_path / "track.wav"
+    _silent_wav(sample, seconds=25.5)
+    _silent_wav(track, seconds=35.0)
+
+    batch = inspect_paths(
+        (sample, track),
+        expected_model_ids={"genre": "model/v1"},
+        expected_config_sha256="config/current",
+    )
+    by_name = {item.path.name: item for item in batch.tracks}
+
+    assert batch.failures == ()
+    assert by_name["sample.wav"].status == "sample"
+    assert by_name["sample.wav"].is_sample is True
+    assert by_name["sample.wav"].needs_analysis is False
+    assert by_name["sample.wav"].duration_seconds == pytest.approx(25.5, abs=0.1)
+    assert by_name["track.wav"].status == "not_analyzed"
+    assert by_name["track.wav"].is_sample is False
+    assert by_name["track.wav"].needs_analysis is True
+
+
+def test_existing_tags_do_not_stop_a_short_track_reading_as_a_sample(
+    tmp_path: Path,
+) -> None:
+    """Duration decides. Tags from a build without this check must not override it."""
+    sample = tmp_path / "sample.wav"
+    _silent_wav(sample, seconds=10.0)
+    apply_metadata_tags(sample, _owned_values())
+
+    batch = inspect_paths(
+        (sample,),
+        expected_model_ids={"genre": "model/v1"},
+        expected_config_sha256="config/current",
+    )
+
+    assert batch.tracks[0].status == "sample"
+    assert batch.tracks[0].needs_analysis is False

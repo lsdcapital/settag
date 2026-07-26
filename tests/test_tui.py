@@ -76,12 +76,18 @@ class FakeTaskAnalyzer:
         }
 
 
-def _silent_wav(path: Path) -> None:
+def _silent_wav(path: Path, *, seconds: float = 35.0) -> None:
+    """Write a silent WAV.
+
+    The default is long enough to clear the genre model's 30s window, so a
+    fixture is a track rather than a sample. Pass a shorter value to build one.
+    """
+    rate = 8_000
     with wave.open(str(path), "wb") as output:
         output.setnchannels(1)
         output.setsampwidth(2)
-        output.setframerate(8_000)
-        output.writeframes(b"\0\0" * 80)
+        output.setframerate(rate)
+        output.writeframes(b"\0\0" * int(rate * seconds))
 
 
 def _analysis_batch(
@@ -121,6 +127,7 @@ def _metadata_track(
     *,
     status: MetadataStatus = "not_analyzed",
     standard_genre: tuple[str, ...] = (),
+    duration_seconds: float | None = None,
 ) -> MetadataTrack:
     predictions = (Prediction("Electronic---House", 0.72),) if status == "current" else ()
     return MetadataTrack(
@@ -133,6 +140,7 @@ def _metadata_track(
         stored_predictions=predictions,
         status=status,
         analyzed_at="2026-07-23T12:00:00Z" if status == "current" else None,
+        duration_seconds=duration_seconds,
     )
 
 
@@ -1178,5 +1186,146 @@ def test_tui_without_a_journal_declines_to_undo(tmp_path: Path) -> None:
 
             assert not isinstance(app.screen, UndoScreen)
             assert app.busy is False
+
+    asyncio.run(exercise())
+
+
+def test_completing_a_track_does_not_move_a_scrolled_library(tmp_path: Path) -> None:
+    """Analysis finishing a track must not yank a scrolled library back.
+
+    Tracks complete while the user is free to scroll, so rebuilding the whole
+    table on each one reset the scroll offset and then scrolled the cursor back
+    into view. Asserted mid-batch: finishing the batch enters review, which is a
+    deliberate view change.
+    """
+    paths = []
+    for number in range(40):
+        path = tmp_path / f"track-{number:02}.wav"
+        _silent_wav(path)
+        paths.append(path)
+
+    scrolled = Event()
+    one_done = Event()
+    hold = Event()
+    calls = 0
+
+    def load_analysis(analyzed, on_progress, _should_cancel) -> AnalysisBatch:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            # Hold the first track so the test can scroll before anything lands.
+            if not scrolled.wait(timeout=3):
+                raise RuntimeError("test did not scroll")
+        elif calls == 2:
+            # The first track has completed; pause the batch here to assert.
+            one_done.set()
+            if not hold.wait(timeout=3):
+                raise RuntimeError("test analysis was not released")
+        on_progress(1, 1, analyzed[0])
+        return _analysis_batch(analyzed)
+
+    app = SetTagApp(
+        source=tmp_path,
+        initial_metadata=MetadataBatch(
+            tracks=tuple(_metadata_track(path) for path in paths),
+            failures=(),
+        ),
+        analysis_loader=load_analysis,
+    )
+
+    async def exercise() -> None:
+        async with app.run_test(size=(120, 20)) as pilot:
+            await pilot.pause()
+            await pilot.press("r")
+            await pilot.pause()
+
+            table = app.query_one("#tracks", DataTable)
+            # Scroll away from the cursor, the way a wheel or scrollbar does.
+            table.scroll_to(y=18, animate=False)
+            await pilot.pause()
+            scrolled_to = table.scroll_y
+            focused_before = app.focused
+            assert scrolled_to > 0
+
+            scrolled.set()
+            try:
+                for _ in range(40):
+                    await pilot.pause(0.05)
+                    if one_done.is_set():
+                        break
+                await pilot.pause()
+
+                assert app.analysis_running
+                assert table.scroll_y == scrolled_to
+                assert app.focused is focused_before
+            finally:
+                hold.set()
+
+            for _ in range(60):
+                await pilot.pause(0.05)
+                if not app.analysis_running:
+                    break
+
+    asyncio.run(exercise())
+
+
+def test_a_sample_is_shown_as_such_and_never_selected_for_analysis(
+    tmp_path: Path,
+) -> None:
+    """A sample cannot be analyzed, so it must not be offered to the analyzer.
+
+    Excluding it from selection rather than letting it fail means a run never
+    reports an error the user has no way to act on.
+    """
+    track = tmp_path / "a-track.wav"
+    sample = tmp_path / "b-sample.wav"
+    for path in (track, sample):
+        _silent_wav(path)
+
+    analyzed: list[tuple[Path, ...]] = []
+
+    def load_analysis(paths, _on_progress, _should_cancel) -> AnalysisBatch:
+        analyzed.append(tuple(paths))
+        return _analysis_batch(paths)
+
+    app = SetTagApp(
+        source=tmp_path,
+        initial_metadata=MetadataBatch(
+            tracks=(
+                _metadata_track(track),
+                _metadata_track(sample, status="sample", duration_seconds=25.5),
+            ),
+            failures=(),
+        ),
+        analysis_loader=load_analysis,
+    )
+
+    async def exercise() -> None:
+        async with app.run_test(size=(140, 32)) as pilot:
+            await pilot.pause()
+
+            assert app.entries[1].can_analyze is False
+            assert app.entries[1].needs_analysis is False
+            assert 1 not in app.analysis_selected
+
+            table = app.query_one("#tracks", DataTable)
+            row = table.get_row_at(1)
+            assert any("Sample · 26s" in str(cell) for cell in row), row
+
+            # Select-all must not pick it up either. `a` toggles, so press it
+            # twice to land back on "everything eligible is selected".
+            await pilot.press("a")
+            await pilot.pause()
+            await pilot.press("a")
+            await pilot.pause()
+            assert app.analysis_selected == {0}
+
+            await pilot.press("r")
+            for _ in range(40):
+                await pilot.pause(0.05)
+                if not app.analysis_running:
+                    break
+
+            assert analyzed == [(track,)]
 
     asyncio.run(exercise())

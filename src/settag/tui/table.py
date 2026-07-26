@@ -173,6 +173,9 @@ def entry_analysis(entry: TrackEntry, context: RowContext) -> str:
         return "Metadata error"
     if entry.analysis_error is not None:
         return "Analysis error"
+    if entry.metadata is not None and entry.metadata.is_sample:
+        duration = entry.metadata.duration_seconds
+        return f"Sample · {round(duration)}s" if duration is not None else "Sample"
 
     analyzed_at = entry_analyzed_at(entry, context)
     if entry.plan is not None:

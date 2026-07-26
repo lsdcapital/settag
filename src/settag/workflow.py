@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal, Protocol, runtime_checkable
 
-from settag.hashing import sha256_file
+from settag.hashing import sha256_audio, sha256_file
 from settag.journal import WriteRecord
 from settag.plans import (
     PLAN_ERROR_SCHEMA,
@@ -15,7 +15,12 @@ from settag.plans import (
     friendly_change,
     planned_write_record,
 )
-from settag.policy import Prediction, collect_evidence, select_predictions
+from settag.policy import (
+    MIN_GENRE_SECONDS,
+    Prediction,
+    collect_evidence,
+    select_predictions,
+)
 from settag.records import (
     ProvenanceStatus,
     SourceRecord,
@@ -33,6 +38,7 @@ from settag.tags import (
     build_task_owned_values,
     plan_owned_tags,
     plan_standard_genres,
+    read_duration_seconds,
     read_genre_state,
     read_owned_values,
     read_task_provenance,
@@ -78,7 +84,7 @@ ProgressCallback = Callable[[int, int, Path], None]
 WriteProgressCallback = Callable[[int, int, Path], None]
 CancelCallback = Callable[[], bool]
 WriteCallback = Callable[[WriteRecord], None]
-MetadataStatus = Literal["not_analyzed", "current", "stale", "invalid"]
+MetadataStatus = Literal["not_analyzed", "current", "stale", "invalid", "sample"]
 CacheStatus = Literal["ready", "stale"]
 
 
@@ -139,9 +145,23 @@ class MetadataTrack:
     cached_plan: PlannedWrite | None = None
     cache_status: CacheStatus | None = None
     cache_reason: str | None = None
+    duration_seconds: float | None = None
+
+    @property
+    def is_sample(self) -> bool:
+        """Too short for the genre model to read at all.
+
+        Not a failure: a clip below one patch is a different kind of thing from
+        a track, and no setting makes it analyzable. Classifying it during the
+        metadata scan keeps it out of the analyzer entirely, so the run never
+        has to report an error it cannot act on.
+        """
+        return self.status == "sample"
 
     @property
     def needs_analysis(self) -> bool:
+        if self.is_sample:
+            return False
         return self.status != "current" and self.cache_status != "ready"
 
 
@@ -441,6 +461,20 @@ def inspect_track(
     expected_models = checked_expected_models(expected_model_ids)
     genre_state = read_genre_state(path)
     owned = read_owned_values(path)
+    duration = read_duration_seconds(path)
+    if duration is not None and duration < MIN_GENRE_SECONDS:
+        # Checked before anything else: what the tags say does not matter when the
+        # audio is too short for the model to read.
+        return MetadataTrack(
+            path=path,
+            genre_state=genre_state,
+            owned=owned,
+            stored_predictions=task_evidence_from_owned(owned).get("genre", ()),
+            status="sample",
+            analyzed_at=None,
+            duration_seconds=duration,
+        )
+
     has_settag_metadata = any(values is not None for values in owned.values())
     if not has_settag_metadata:
         return MetadataTrack(
@@ -450,6 +484,7 @@ def inspect_track(
             stored_predictions=(),
             status="not_analyzed",
             analyzed_at=None,
+            duration_seconds=duration,
         )
 
     stored_by_task = task_evidence_from_owned(owned)
@@ -495,6 +530,7 @@ def inspect_track(
         stored_predictions=stored_predictions,
         status=status,
         analyzed_at=analyzed_at,
+        duration_seconds=duration,
     )
 
 
@@ -529,6 +565,7 @@ def planned_write_for_track(track: PreparedTrack) -> PlannedWrite:
     return PlannedWrite(
         path=Path(str(track.source["path"])),
         source_sha256=str(track.source["sha256"]),
+        source_audio_sha256=str(track.source["audio_sha256"]),
         source_size=track.source["size"],
         source_mtime_ns=track.source["mtime_ns"],
         file_genre=track.genre_state.standard,
@@ -540,15 +577,31 @@ def planned_write_for_track(track: PreparedTrack) -> PlannedWrite:
     )
 
 
+def _source_audio_changed(item: PlannedWrite) -> bool:
+    """Report whether the audio has changed since this plan was made.
+
+    A plan carrying an audio digest is checked against that, so a tag write by
+    another tool between analysis and write no longer reads as a changed
+    source. A v4 plan predates the digest and falls back to the whole-file
+    comparison it was written with, which is stricter but never wrong.
+    """
+    if item.source_audio_sha256 is None:
+        return sha256_file(item.path) != item.source_sha256
+    return sha256_audio(item.path) != item.source_audio_sha256
+
+
 def preflight_plan(planned: Sequence[PlannedWrite]) -> list[PreparedWrite]:
     prepared: list[PreparedWrite] = []
     errors: list[str] = []
     for item in planned:
         try:
             if not item.path.is_file():
-                raise RuntimeError(f"file is missing: {item.path}")
-            if sha256_file(item.path) != item.source_sha256:
-                raise RuntimeError(f"source SHA-256 changed: {item.path}")
+                raise RuntimeError(
+                    f"file is missing: {item.path}"
+                    " (if it was renamed or moved, rescan the library to find it again)"
+                )
+            if _source_audio_changed(item):
+                raise RuntimeError(f"source audio changed: {item.path}")
             genre_state = read_genre_state(item.path)
             if genre_state.standard != item.file_genre:
                 raise RuntimeError(f"file genre tag changed: {item.path}")
@@ -601,7 +654,7 @@ def apply_prepared(
     try:
         for prepared_item in changed:
             item = prepared_item.item
-            if sha256_file(item.path) != item.source_sha256:
+            if _source_audio_changed(item):
                 raise RuntimeError(f"Source changed before its write: {item.path}")
             applied = apply_metadata_tags(
                 item.path,

@@ -59,12 +59,18 @@ def _busy_analyzer_factory(
     return _BusyAnalyzer(model_dir / "analysis-started")
 
 
-def _silent_wav(path: Path) -> None:
+def _silent_wav(path: Path, *, seconds: float = 35.0) -> None:
+    """Write a silent WAV.
+
+    The default is long enough to clear the genre model's 30s window, so a
+    fixture is a track rather than a sample. Pass a shorter value to build one.
+    """
+    rate = 8_000
     with wave.open(str(path), "wb") as output:
         output.setnchannels(1)
         output.setsampwidth(2)
-        output.setframerate(8_000)
-        output.writeframes(b"\0\0" * 80)
+        output.setframerate(rate)
+        output.writeframes(b"\0\0" * int(rate * seconds))
 
 
 def _metadata_track(path: Path) -> MetadataTrack:
