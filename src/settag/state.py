@@ -17,12 +17,21 @@ from settag.plans import (
     planned_write_from_record,
     planned_write_record,
 )
-from settag.records import configs_match_for_task
+from settag.records import ProvenanceStatus, read_task_provenance_status
 from settag.tags import read_task_provenance
 from settag.tasks import AnalysisTask, checked_expected_models
 
 STATE_SCHEMA_VERSION = 1
 CacheStatus = Literal["ready", "stale"]
+
+# How a cached plan describes provenance that no longer matches this build. The comparison
+# itself lives in `records`; only the wording is the workbench's own.
+STALE_REASONS = {
+    ProvenanceStatus.MISSING: "analysis tasks changed",
+    ProvenanceStatus.UNREADABLE: "analysis provenance is unreadable",
+    ProvenanceStatus.MODEL_CHANGED: "analysis model changed",
+    ProvenanceStatus.CONFIG_CHANGED: "evidence settings changed",
+}
 
 
 class WorkbenchError(RuntimeError):
@@ -190,19 +199,15 @@ def _classify(
 
     provenance = read_task_provenance(plan.desired)
     for task, expected_model_id in expected_model_ids.items():
-        task_provenance = provenance.get(task)
-        if task_provenance is None:
-            return WorkbenchEntry(plan, "stale", "analysis tasks changed")
-        model = task_provenance.get("model")
-        model_id = model.get("id") if isinstance(model, dict) else None
-        if model_id != expected_model_id:
-            return WorkbenchEntry(plan, "stale", "analysis model changed")
-        config = task_provenance.get("config")
-        config_sha256 = config.get("sha256") if isinstance(config, dict) else None
-        if config_sha256 != expected_config_sha256 and not configs_match_for_task(
-            config, expected_config, task
-        ):
-            return WorkbenchEntry(plan, "stale", "evidence settings changed")
+        reading = read_task_provenance_status(
+            provenance.get(task),
+            task=task,
+            expected_model_id=expected_model_id,
+            expected_config_sha256=expected_config_sha256,
+            expected_config=expected_config,
+        )
+        if reading.status is not ProvenanceStatus.CURRENT:
+            return WorkbenchEntry(plan, "stale", STALE_REASONS[reading.status])
 
     return WorkbenchEntry(plan, "ready")
 

@@ -3,13 +3,27 @@ from io import BytesIO
 from pathlib import Path
 from typing import cast
 
-from settag.catalog import ModelFile, ModelSpec
+from settag.catalog import MODEL_SPECS_BY_TASK, ModelFile, ModelSpec
 from settag.model_store import (
     default_model_dir,
     download_task_models,
     installed_manifest,
     missing_files,
 )
+
+
+def test_every_task_declares_its_label_taxonomy() -> None:
+    """Pin the exact taxonomy names SetTag publishes.
+
+    Consumers key semantic mapping on these strings, so changing one silently
+    remaps every label a downstream tool has already stored. A head swap should
+    change the value deliberately, and fail this test until it does.
+    """
+    assert {task: spec.vocabulary for task, spec in MODEL_SPECS_BY_TASK.items()} == {
+        "genre": "discogs519",
+        "mood-theme": "mtg-jamendo-moodtheme",
+        "instrument": "mtg-jamendo-instrument",
+    }
 
 
 def test_default_model_dir_respects_xdg_cache_home(
@@ -36,6 +50,7 @@ def test_download_validates_digest_and_records_pinned_manifest(
     spec = ModelSpec(
         id="example/model/v1",
         license="test license",
+        vocabulary="example-taxonomy",
         embedding_output="embedding",
         classifier_input="input",
         classifier_output="output",
@@ -62,6 +77,7 @@ def test_download_validates_digest_and_records_pinned_manifest(
     genre = cast(dict[str, object], raw_genre)
     assert genre["id"] == "example/model/v1"
     assert genre["license"] == "test license"
+    assert genre["vocabulary"] == "example-taxonomy"
     raw_files = genre["files"]
     assert isinstance(raw_files, dict)
     assert all(isinstance(key, str) for key in raw_files)
@@ -79,6 +95,7 @@ def test_wrong_digest_is_reported_as_missing(tmp_path: Path) -> None:
     spec = ModelSpec(
         id="example/model/v1",
         license="test license",
+        vocabulary="example-taxonomy",
         embedding_output="embedding",
         classifier_input="input",
         classifier_output="output",

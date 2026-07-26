@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from dataclasses import dataclass
 from datetime import datetime, timezone
+from enum import Enum
 from pathlib import Path
 from typing import Any, TypedDict
 
@@ -17,6 +19,65 @@ class SourceRecord(TypedDict):
     size: int
     mtime_ns: int
     sha256: str
+
+
+class ProvenanceStatus(Enum):
+    """How one task's recorded provenance compares to what this build would write."""
+
+    CURRENT = "current"
+    MISSING = "missing"
+    UNREADABLE = "unreadable"
+    MODEL_CHANGED = "model_changed"
+    CONFIG_CHANGED = "config_changed"
+
+
+@dataclass(frozen=True)
+class TaskProvenanceReading:
+    status: ProvenanceStatus
+    analyzed_at: str | None
+
+
+def _recorded_string(record: object, key: str) -> str | None:
+    if not isinstance(record, dict):
+        return None
+    value = record.get(key)
+    return value if isinstance(value, str) and value else None
+
+
+def read_task_provenance_status(
+    task_provenance: object,
+    *,
+    task: AnalysisTask,
+    expected_model_id: str,
+    expected_config_sha256: str,
+    expected_config: Mapping[str, object] | None = None,
+) -> TaskProvenanceReading:
+    """Compare one task's recorded provenance against what this build would write.
+
+    The metadata scan and the workbench cache both need this decision and once made
+    it separately, differing only in how they report the answer. The rule lives here
+    so a change to what counts as stale reaches both, and each caller maps the status
+    to its own presentation.
+    """
+    if task_provenance is None:
+        return TaskProvenanceReading(ProvenanceStatus.MISSING, None)
+    if not isinstance(task_provenance, dict):
+        return TaskProvenanceReading(ProvenanceStatus.UNREADABLE, None)
+
+    model_id = _recorded_string(task_provenance.get("model"), "id")
+    config = task_provenance.get("config")
+    config_sha256 = _recorded_string(config, "sha256")
+    analyzed_at = _recorded_string(task_provenance, "analyzed_at")
+    if model_id is None or config_sha256 is None or analyzed_at is None:
+        return TaskProvenanceReading(ProvenanceStatus.UNREADABLE, None)
+
+    if model_id != expected_model_id:
+        return TaskProvenanceReading(ProvenanceStatus.MODEL_CHANGED, analyzed_at)
+    if config_sha256 != expected_config_sha256 and not configs_match_for_task(
+        config, expected_config, task
+    ):
+        return TaskProvenanceReading(ProvenanceStatus.CONFIG_CHANGED, analyzed_at)
+    return TaskProvenanceReading(ProvenanceStatus.CURRENT, analyzed_at)
 
 
 def utc_now() -> str:

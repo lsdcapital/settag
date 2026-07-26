@@ -12,6 +12,10 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parent.parent
 UI_PACKAGES = ("src/settag/cli", "src/settag/tui")
 MARKER = "# ui-count:"
+STALENESS_OWNER = "src/settag/records.py"
+# The comparison the rule is built from. `sha256` is deliberately not listed: file digests
+# are used legitimately throughout, so matching on it would flag honest code.
+STALENESS_INTERNALS = ("configs_match_for_task",)
 
 
 def _ui_modules() -> list[Path]:
@@ -70,6 +74,34 @@ def test_every_ui_count_marker_gives_a_reason() -> None:
     assert not unexplained, (
         f"These '{MARKER}' markers need a reason explaining what UI state is counted:\n  "
         + "\n  ".join(unexplained)
+    )
+
+
+def test_the_staleness_rule_has_one_implementation() -> None:
+    """Only ``records`` may decide whether a task's provenance is out of date.
+
+    The metadata scan and the workbench cache each grew their own copy of this
+    comparison, reading the same fields and answering the same question in two
+    places. They can report the answer differently — one accumulates flags, the
+    other names a cause — but the rule itself has to be single, or a change to
+    what counts as stale reaches one caller and not the other.
+    """
+    offenders: list[str] = []
+    for path in sorted((REPO / "src" / "settag").rglob("*.py")):
+        relative = path.relative_to(REPO).as_posix()
+        if relative == STALENESS_OWNER:
+            continue
+        source = path.read_text(encoding="utf-8")
+        found = [name for name in STALENESS_INTERNALS if name in source]
+        if found:
+            offenders.append(f"{relative}: {', '.join(found)}")
+
+    assert not offenders, (
+        "These modules reach into provenance internals the staleness rule owns:\n  "
+        + "\n  ".join(offenders)
+        + f"\n\nCall records.read_task_provenance_status instead and map its "
+        f"ProvenanceStatus to your own presentation, so {STALENESS_OWNER} stays the "
+        "only place that decides what 'stale' means."
     )
 
 

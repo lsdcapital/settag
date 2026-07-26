@@ -17,9 +17,10 @@ from settag.plans import (
 )
 from settag.policy import Prediction, collect_evidence, select_predictions
 from settag.records import (
+    ProvenanceStatus,
     SourceRecord,
     config_record,
-    configs_match_for_task,
+    read_task_provenance_status,
     source_record,
     utc_now,
 )
@@ -459,30 +460,20 @@ def inspect_track(
     provenance_stale = False
     analyzed_at_values: list[str] = []
     for task, expected_model_id in expected_models.items():
-        task_provenance = provenance.get(task)
-        if task_provenance is None:
+        reading = read_task_provenance_status(
+            provenance.get(task),
+            task=task,
+            expected_model_id=expected_model_id,
+            expected_config_sha256=expected_config_sha256,
+            expected_config=expected_config,
+        )
+        if reading.analyzed_at is not None:
+            analyzed_at_values.append(reading.analyzed_at)
+        if reading.status is ProvenanceStatus.MISSING:
             provenance_missing = True
-            continue
-        model = task_provenance.get("model")
-        config = task_provenance.get("config")
-        model_id = model.get("id") if isinstance(model, dict) else None
-        config_sha256 = config.get("sha256") if isinstance(config, dict) else None
-        analyzed_at = task_provenance.get("analyzed_at")
-        if (
-            not isinstance(model_id, str)
-            or not model_id
-            or not isinstance(config_sha256, str)
-            or not config_sha256
-            or not isinstance(analyzed_at, str)
-            or not analyzed_at
-        ):
+        elif reading.status is ProvenanceStatus.UNREADABLE:
             provenance_invalid = True
-            continue
-        analyzed_at_values.append(analyzed_at)
-        if model_id != expected_model_id or (
-            config_sha256 != expected_config_sha256
-            and not configs_match_for_task(config, expected_config, task)
-        ):
+        elif reading.status is not ProvenanceStatus.CURRENT:
             provenance_stale = True
 
     if not evidence_valid or provenance_invalid or version is None:

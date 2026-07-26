@@ -25,7 +25,7 @@ from settag.plans import (
 )
 from settag.policy import Prediction
 from settag.state import WorkbenchStore
-from settag.tags import apply_metadata_tags, task_evidence_from_owned
+from settag.tags import PROVENANCE_SCHEMA, apply_metadata_tags, task_evidence_from_owned
 from settag.tasks import AnalysisTask
 from settag.workflow import (
     AnalysisBatch,
@@ -245,7 +245,7 @@ def test_instrument_only_run_preserves_genre_and_publishes_task_provenance(
         "drummachine",
     ]
     provenance = json.loads(tags["TXXX:SETTAG_PROVENANCE"].text[0])
-    assert provenance["schema"] == "settag.provenance/v2"
+    assert provenance["schema"] == PROVENANCE_SCHEMA
     assert set(provenance["tasks"]) == {"genre", "instrument"}
     assert provenance["tasks"]["instrument"]["model"]["files"]["embedding"]["sha256"] == ("a" * 64)
     assert set(record["tasks"]) == {"instrument"}

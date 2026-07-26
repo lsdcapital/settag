@@ -23,6 +23,15 @@ from settag.tasks import TASK_FIELDS, TASK_ORDER, AnalysisTask, task_name
 
 ENCODING_UTF8 = 3
 MP4_MEAN = "com.lsdcapital.settag"
+
+# The provenance record's shape. Written and required by `read_task_provenance`, so the
+# two cannot drift apart: bumping this makes every older record unreadable, which surfaces
+# those tracks as stale and offers them for re-analysis. Bump it when the record gains or
+# changes a field consumers depend on, not for a new model or a new evidence setting —
+# those are already compared field by field.
+#
+# v3 added `model.vocabulary`, the taxonomy a task's labels are drawn from.
+PROVENANCE_SCHEMA = "settag.provenance/v3"
 OWNED_DESCRIPTIONS = (
     "SETTAG_GENRE",
     "SETTAG_GENRE_SCORES",
@@ -134,7 +143,7 @@ def build_task_owned_values(
         [
             json.dumps(
                 {
-                    "schema": "settag.provenance/v2",
+                    "schema": PROVENANCE_SCHEMA,
                     "tasks": {task: provenance[task] for task in TASK_ORDER if task in provenance},
                 },
                 ensure_ascii=False,
@@ -158,7 +167,7 @@ def read_task_provenance(
             value = json.loads(serialized[0])
         except (TypeError, ValueError, json.JSONDecodeError):
             value = None
-        if isinstance(value, dict) and value.get("schema") == "settag.provenance/v2":
+        if isinstance(value, dict) and value.get("schema") == PROVENANCE_SCHEMA:
             tasks = value.get("tasks")
             if isinstance(tasks, dict):
                 for raw_task, entry in tasks.items():

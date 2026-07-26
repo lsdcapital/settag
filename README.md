@@ -319,16 +319,32 @@ SetTag owns these logical evidence fields:
 
 Each task's label field contains bounded ranked evidence. Its `_SCORES` field
 is one compact JSON value containing the same labels, order, and raw model
-scores. SetTag stores the top 20 results without a score cutoff so consumers
-such as SetPath can choose their own policy.
+scores. SetTag stores the top 60 results without a score cutoff so consumers
+such as SetPath can choose their own policy. That bound covers the mood (56)
+and instrument (40) taxonomies completely, so a consumer computing a composite
+across a whole taxonomy sees both ends of it rather than a truncated shortlist.
 
 Genre evidence is exclusively MAEST-derived. EffNet cannot populate
 `SETTAG_GENRE` or a conventional genre field. Task updates are independent:
 an instrument-only run replaces instrument evidence while preserving valid
 genre and mood/theme evidence. `SETTAG_PROVENANCE` is a versioned, task-keyed
-record of exact model identifiers, artifact digests, configuration, thresholds,
-and analysis timestamps. The conventional genre remains a separate staged
-layer.
+record of exact model identifiers, artifact digests, label taxonomy,
+configuration, thresholds, and analysis timestamps. The conventional genre
+remains a separate staged layer.
+
+Each task's `model.vocabulary` names the taxonomy its labels come from:
+
+| Task | Vocabulary |
+|---|---|
+| `genre` | `discogs519` |
+| `mood-theme` | `mtg-jamendo-moodtheme` |
+| `instrument` | `mtg-jamendo-instrument` |
+
+A field name does not identify a taxonomy — `SETTAG_MOOD_THEME` would keep its
+spelling if the head behind it were swapped for one with a different label set.
+Consumers should key semantic mapping on `(task, vocabulary, label)` and treat
+an undeclared or unrecognized vocabulary as uninterpretable rather than
+assuming labels spelled the same mean the same thing.
 
 The standard genre is not part of the SetTag namespace. For newly analyzed
 tracks where it is empty, the app stages the conservative standard-genre

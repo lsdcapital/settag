@@ -14,8 +14,20 @@ class ModelFile:
 
 @dataclass(frozen=True)
 class ModelSpec:
+    """One classifier head plus the embedding model it runs on.
+
+    ``vocabulary`` names the label taxonomy the head emits. A consumer reading
+    SetTag's tags sees labels but cannot tell which taxonomy produced them, and
+    the field names do not carry that information: ``SETTAG_MOOD_THEME`` stays
+    spelled the same if this head is ever swapped for one with a different
+    label set. Only the producer knows, so SetTag declares it rather than
+    leaving consumers to infer it from a field name and silently treat two
+    taxonomies as one.
+    """
+
     id: str
     license: str
+    vocabulary: str
     embedding_output: str
     classifier_input: str
     classifier_output: str
@@ -37,6 +49,7 @@ BASE_URL = "https://essentia.upf.edu/models"
 DISCOGS519_MAEST = ModelSpec(
     id="essentia/genre-discogs519-maest/v1",
     license="CC BY-NC-ND 4.0",
+    vocabulary="discogs519",
     embedding_output="PartitionedCall/Identity_12",
     classifier_input="embeddings",
     classifier_output="PartitionedCall/Identity_1",
@@ -74,6 +87,7 @@ DISCOGS519_MAEST = ModelSpec(
 DISCOGS_EFFNET_MOOD_THEME = ModelSpec(
     id="essentia/mtg-jamendo-moodtheme-discogs-effnet/v2",
     license="CC BY-NC-ND 4.0",
+    vocabulary="mtg-jamendo-moodtheme",
     embedding_output="PartitionedCall:1",
     classifier_input="model/Placeholder",
     classifier_output="model/Sigmoid",
@@ -111,6 +125,7 @@ DISCOGS_EFFNET_MOOD_THEME = ModelSpec(
 DISCOGS_EFFNET_INSTRUMENT = ModelSpec(
     id="essentia/mtg-jamendo-instrument-discogs-effnet/v2",
     license="CC BY-NC-ND 4.0",
+    vocabulary="mtg-jamendo-instrument",
     embedding_output="PartitionedCall:1",
     classifier_input="model/Placeholder",
     classifier_output="model/Sigmoid",

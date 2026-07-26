@@ -115,6 +115,7 @@ def installed_manifest(
         "schema": "settag.models/v1",
         "id": spec.id,
         "license": spec.license,
+        "vocabulary": spec.vocabulary,
         "files": {
             item.role: {
                 "name": item.filename,

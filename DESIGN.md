@@ -313,8 +313,28 @@ The owned logical fields are:
 - `SETTAG_MODEL`: model-pair identifier
 - `SETTAG_ANALYZED_AT`: UTC analysis time
 - `SETTAG_CONFIG_SHA256`: evidence-configuration fingerprint
-- `SETTAG_PROVENANCE`: `settag.provenance/v2`, keyed by task with full model
-  manifests, artifact digests, configuration, thresholds, and timestamps
+- `SETTAG_PROVENANCE`: `settag.provenance/v3`, keyed by task with full model
+  manifests, artifact digests, label taxonomy, configuration, thresholds, and
+  timestamps
+
+Each task's model manifest carries `vocabulary`, the name of the taxonomy its
+labels are drawn from (`discogs519`, `mtg-jamendo-moodtheme`,
+`mtg-jamendo-instrument`). It is declared rather than inferred: only the
+producer knows which taxonomy it ran, field names do not change when a head is
+swapped, and two taxonomies sharing a label spelling are not the same label.
+`ModelSpec` owns the value so it moves with the head it describes.
+
+`PROVENANCE_SCHEMA` in `tags.py` is both the value written and the value
+required when reading, so the pair cannot drift. Bumping it makes every earlier
+record unreadable, which is the mechanism by which a record-shape change reaches
+the user: those tracks report as stale and are offered for re-analysis. Bump it
+for a change to the record's shape, not for a new model or evidence setting —
+both of those are already compared field by field.
+
+Whether one task's provenance is out of date is decided in exactly one place,
+`records.read_task_provenance_status`. The metadata scan and the workbench cache
+both consume its `ProvenanceStatus` and phrase the result their own way; neither
+re-derives it. A structural test enforces that the comparison stays there.
 
 `genre` is the default task and loads only MAEST. Explicit `mood-theme` and
 `instrument` tasks share one Discogs-EffNet embedding pass and use their own
@@ -323,8 +343,9 @@ the SetTag or conventional genre fields.
 
 Task updates are independent. A partial run replaces only the requested task
 records and preserves valid evidence and provenance for other tasks. Audio
-metadata stores the top 20 ranked results for each task without applying the
-review cutoff.
+metadata stores the top 60 ranked results for each task without applying the
+review cutoff. `EVIDENCE_LIMIT` in `policy.py` is the single source of that
+bound and records why it is 60 rather than a shortlist.
 
 Scores are mean sigmoid activations across audio patches. They are suitable
 for ranking and applying a score cutoff but are not demonstrated calibrated

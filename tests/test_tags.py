@@ -15,6 +15,7 @@ from settag.policy import Prediction
 from settag.tags import (
     MP4_MEAN,
     OWNED_DESCRIPTIONS,
+    PROVENANCE_SCHEMA,
     GenreState,
     Mp4OwnedTagStore,
     OwnedTagStore,
@@ -90,6 +91,17 @@ def _copy_fixture(name: str, tmp_path: Path) -> Path:
     path = tmp_path / name
     shutil.copyfile(FIXTURES / name, path)
     return path
+
+
+def test_provenance_schema_is_pinned() -> None:
+    """Pin the schema so a bump is a deliberate act with a visible cost.
+
+    Bumping makes every previously written record unreadable, which is the point —
+    those tracks then read as stale and get offered for re-analysis. It also breaks
+    any consumer parsing the old value, so the change must be intended rather than
+    a side effect of editing the record's contents.
+    """
+    assert PROVENANCE_SCHEMA == "settag.provenance/v3"
 
 
 def test_owned_genres_and_scores_have_identical_membership_and_order() -> None:

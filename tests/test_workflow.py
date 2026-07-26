@@ -10,6 +10,7 @@ from settag.policy import Prediction
 from settag.records import config_record
 from settag.tags import (
     OWNED_DESCRIPTIONS,
+    PROVENANCE_SCHEMA,
     apply_metadata_tags,
     build_task_owned_values,
     read_genre_state,
@@ -109,6 +110,33 @@ def test_metadata_inspection_classifies_current_stale_missing_and_invalid(
         (3, 4, stale),
         (4, 4, invalid),
     ]
+
+
+def test_a_track_written_under_an_older_provenance_schema_reads_as_stale(
+    tmp_path: Path,
+) -> None:
+    """The schema bump has to reach the user, not just the parser.
+
+    A track tagged before the schema changed carries provenance this build can no
+    longer read. Its model id and evidence settings are unchanged, so neither
+    field-level comparison catches it; without the schema gate it would report as
+    up to date and stay unselected, and the stale tags would survive a full run.
+    """
+    path = tmp_path / "older-schema.wav"
+    _silent_wav(path)
+    owned = _owned_values()
+    serialized = owned["SETTAG_PROVENANCE"]
+    assert serialized is not None
+    owned["SETTAG_PROVENANCE"] = [serialized[0].replace(PROVENANCE_SCHEMA, "settag.provenance/v2")]
+    apply_metadata_tags(path, owned)
+
+    batch = inspect_paths(
+        (path,),
+        expected_model_ids={"genre": "model/v1"},
+        expected_config_sha256="config/current",
+    )
+
+    assert [track.status for track in batch.tracks] == ["stale"]
 
 
 def test_metadata_inspection_is_task_aware_for_effnet_only_metadata(
