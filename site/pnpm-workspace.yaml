@@ -1,0 +1,11 @@
+# pnpm 11 blocks dependency build scripts unless listed here, and strictDepBuilds
+# defaults to true, so a missing entry fails the install rather than warning it.
+# (v10's onlyBuiltDependencies was replaced by allowBuilds.)
+allowBuilds:
+  # Needed: vite's bundler binary.
+  esbuild: true
+
+  # Not needed here. workerd is wrangler's local runtime; this site's dev server
+  # is `vite dev`, and `wrangler deploy` never invokes it. Flip to true only if
+  # someone wants `wrangler dev`.
+  workerd: false

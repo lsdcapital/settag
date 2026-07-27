@@ -15,7 +15,13 @@ Supported files:
 
 ## Install
 
-SetTag needs Python 3.10–3.14 and [uv](https://docs.astral.sh/uv/).
+```sh
+uv tool install settag
+settag models download
+settag "/path/to/music"
+```
+
+Or with pipx: `pipx install settag`. SetTag needs Python 3.10–3.14.
 
 Platform support is inherited from `essentia-tensorflow`, which ships only
 prebuilt binary wheels. There is no pure-Python fallback and no source build
@@ -33,17 +39,12 @@ wheels for either, on any release.
 The analysis backend is a large download — roughly 100 MB on macOS and 290 MB
 on Linux — and the models are fetched separately on top of that.
 
-```sh
-uv sync
-uv run settag models download
-```
-
 Genre is the default and the only model loaded unless tasks are requested
 explicitly:
 
 ```sh
-uv run settag models download --tasks genre,mood-theme,instrument
-uv run settag analyze "/path/to/music" --tasks genre,mood-theme,instrument
+settag models download --tasks genre,mood-theme,instrument
+settag analyze "/path/to/music" --tasks genre,mood-theme,instrument
 ```
 
 The interactive app reads its default tasks from
@@ -57,9 +58,9 @@ tasks = ["genre", "mood-theme", "instrument"]
 The config file is optional. `--tasks` overrides it for one TUI run:
 
 ```sh
-uv run settag "/path/to/music" --tasks instrument
-uv run settag "/path/to/music" --tasks mood-theme,instrument
-uv run settag "/path/to/music" --tasks genre,mood-theme,instrument
+settag "/path/to/music" --tasks instrument
+settag "/path/to/music" --tasks mood-theme,instrument
+settag "/path/to/music" --tasks genre,mood-theme,instrument
 ```
 
 Set `SETTAG_CONFIG` or pass `--config /path/to/config.toml` to use another
@@ -105,8 +106,8 @@ models in a professional, business, or revenue-generating workflow.
 Give SetTag a track or a directory:
 
 ```sh
-uv run settag "/path/to/track.mp3"
-uv run settag "/path/to/music/library"
+settag "/path/to/track.mp3"
+settag "/path/to/music/library"
 ```
 
 In an interactive terminal this opens the Textual app as a full-width track
@@ -254,7 +255,7 @@ Override it for a run with `--state-db PATH`, or globally with
 `SETTAG_STATE_DB`. For example:
 
 ```sh
-uv run settag "/path/to/music" --state-db "/path/to/settag-state.sqlite3"
+settag "/path/to/music" --state-db "/path/to/settag-state.sqlite3"
 ```
 
 A cached result is ready only while the source size and modification time,
@@ -273,7 +274,7 @@ command or machine can preview and apply.
 Review defaults can be adjusted without changing the evidence written to files:
 
 ```sh
-uv run settag "/path/to/music" --top 5 --score-cutoff 0.10
+settag "/path/to/music" --top 5 --score-cutoff 0.10
 ```
 
 `--threshold` remains an alias for `--score-cutoff`.
@@ -284,35 +285,35 @@ When stdin or stdout is not a terminal, `settag PATH` automatically becomes a
 plain dry run. It never prompts or writes. Force that mode in a terminal with:
 
 ```sh
-uv run settag "/path/to/music" --no-tui
+settag "/path/to/music" --no-tui
 ```
 
 The named commands are also plain CLI commands:
 
 ```sh
 # Human-readable dry-run logs
-uv run settag analyze "/path/to/music"
+settag analyze "/path/to/music"
 
 # Complete machine-readable audit records
-uv run settag analyze "/path/to/music" --output analysis.jsonl
+settag analyze "/path/to/music" --output analysis.jsonl
 
 # Read current tags without loading the model
-uv run settag inspect "/path/to/track.mp3"
+settag inspect "/path/to/track.mp3"
 
 # Every field, but no ranked score lines: readable across a directory
-uv run settag inspect "/path/to/music" --no-scores
+settag inspect "/path/to/music" --no-scores
 
 # Create, preview, and apply a durable plan
-uv run settag analyze "/path/to/music" --plan settag-plan.jsonl
-uv run settag preview settag-plan.jsonl
-uv run settag apply settag-plan.jsonl
+settag analyze "/path/to/music" --plan settag-plan.jsonl
+settag preview settag-plan.jsonl
+settag apply settag-plan.jsonl
 ```
 
 For deliberate automation, `apply --yes` suppresses only the confirmation.
 It does not suppress source, metadata, or plan validation:
 
 ```sh
-uv run settag apply settag-plan.jsonl --yes
+settag apply settag-plan.jsonl --yes
 ```
 
 `analyze` never writes. A reviewed plan is the only route to disk, in the app
@@ -335,7 +336,7 @@ The complete 519-label record is written with `--output` or exposed through
 debug logging:
 
 ```sh
-LOG_LEVEL=DEBUG uv run settag analyze "/path/to/track.mp3"
+LOG_LEVEL=DEBUG settag analyze "/path/to/track.mp3"
 ```
 
 `LOG_LEVEL` accepts `DEBUG`, `INFO`, `WARNING`, `ERROR`, or `CRITICAL`.
@@ -538,7 +539,7 @@ The review cutoff controls review markings and suggestions only. It does not
 remove scores from the bounded evidence bundle:
 
 ```sh
-uv run settag analyze "/path/to/music" --top 5 --score-cutoff 0.10
+settag analyze "/path/to/music" --top 5 --score-cutoff 0.10
 ```
 
 ## Licensing

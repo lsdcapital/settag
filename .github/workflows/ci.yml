@@ -1,9 +1,13 @@
 name: CI
 
+# The site is built and deployed separately, so changes confined to it should
+# not spend five Python jobs.
 on:
   push:
     branches: [main]
+    paths-ignore: ["site/**"]
   pull_request:
+    paths-ignore: ["site/**"]
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}

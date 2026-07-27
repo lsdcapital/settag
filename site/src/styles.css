@@ -1,0 +1,485 @@
+/* SetTag — liner-notes palette.
+   Ochre and slate are not decoration: inside the staged-changes panel, ochre
+   always means "proposed, not yet written" and slate always means "current on
+   disk". Nothing else on the page uses them. */
+
+:root {
+  --stock: #dcd9d0;
+  --stock-sunk: #d2cec4;
+  --ink: #16130e;
+  --ink-soft: #3a342a;
+  --slate: #4a5560;
+  /* Clears 4.5:1 against both --stock (5.5:1) and --stock-sunk (4.9:1).
+     A lighter ochre passes on the base stock and fails on the sunk band. */
+  --ochre-deep: #7e4406;
+
+  --panel: #16130e;
+  --panel-text: #dcd9d0;
+  --panel-dim: #8a93a0;
+  --panel-proposed: #e0912e;
+
+  --rule: rgba(22, 19, 14, 0.18);
+  --rule-panel: rgba(220, 217, 208, 0.16);
+
+  --display: "Archivo", system-ui, sans-serif;
+  --body: "Archivo", system-ui, sans-serif;
+  --mono: "IBM Plex Mono", ui-monospace, "SF Mono", monospace;
+
+  --gutter: clamp(1.25rem, 5vw, 4.5rem);
+  --measure: 74rem;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html {
+  -webkit-text-size-adjust: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--stock);
+  color: var(--ink);
+  font-family: var(--body);
+  font-size: 1.0625rem;
+  line-height: 1.55;
+  font-synthesis: none;
+  -webkit-font-smoothing: antialiased;
+}
+
+a {
+  color: var(--ochre-deep);
+  text-underline-offset: 0.2em;
+  text-decoration-thickness: 1px;
+}
+
+a:hover {
+  text-decoration-thickness: 2px;
+}
+
+:focus-visible {
+  outline: 2px solid var(--ochre-deep);
+  outline-offset: 3px;
+}
+
+.shell {
+  width: min(var(--measure), 100%);
+  margin-inline: auto;
+  padding-inline: var(--gutter);
+}
+
+/* ── Utility bar ─────────────────────────────────────────────────── */
+
+.bar {
+  border-bottom: 1px solid var(--rule);
+}
+
+.bar__inner {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 1rem;
+  padding-block: 0.9rem;
+  font-family: var(--mono);
+  font-size: 0.75rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.bar__mark {
+  font-weight: 500;
+  font-variation-settings: "wdth" 118;
+  letter-spacing: 0.12em;
+  color: var(--ink);
+}
+
+.bar__meta {
+  color: var(--slate);
+}
+
+/* ── Hero ────────────────────────────────────────────────────────── */
+
+.hero {
+  padding-block: clamp(3rem, 8vw, 6rem) clamp(2.5rem, 6vw, 4.5rem);
+}
+
+.eyebrow {
+  margin: 0 0 clamp(1.25rem, 3vw, 2rem);
+  font-family: var(--mono);
+  font-size: 0.78rem;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--slate);
+}
+
+.hero__title {
+  margin: 0;
+  font-family: var(--display);
+  font-variation-settings: "wdth" 125;
+  font-weight: 700;
+  font-size: clamp(2.4rem, 6.1vw, 4.6rem);
+  line-height: 0.94;
+  letter-spacing: -0.025em;
+  max-width: 16ch;
+}
+
+.hero__lead {
+  margin: clamp(1.5rem, 4vw, 2.25rem) 0 0;
+  max-width: 54ch;
+  font-size: clamp(1.0625rem, 1.6vw, 1.25rem);
+  color: var(--ink-soft);
+}
+
+/* ── Staged-changes panel: the signature ─────────────────────────── */
+
+.ledger {
+  margin-top: clamp(2.5rem, 6vw, 4rem);
+  background: var(--panel);
+  color: var(--panel-text);
+  border-radius: 3px;
+  padding: clamp(1.1rem, 3vw, 1.9rem);
+  font-family: var(--mono);
+  font-size: clamp(0.72rem, 1.55vw, 0.875rem);
+  line-height: 1.5;
+  overflow-x: auto;
+}
+
+.ledger__head {
+  display: flex;
+  justify-content: space-between;
+  gap: 1.5rem;
+  padding-bottom: 0.85rem;
+  border-bottom: 1px solid var(--rule-panel);
+  font-size: 0.72em;
+  color: var(--panel-dim);
+  white-space: nowrap;
+}
+
+.ledger__label {
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+/* A path is a literal. Never case-transform it. */
+.ledger__path {
+  letter-spacing: 0.02em;
+}
+
+.ledger__rows {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  min-width: 33rem;
+}
+
+.row {
+  padding-block: 0.85rem;
+  border-bottom: 1px solid var(--rule-panel);
+  animation: settle 0.5s cubic-bezier(0.2, 0.7, 0.3, 1) backwards;
+}
+
+.row:nth-child(1) {
+  animation-delay: 0.15s;
+}
+.row:nth-child(2) {
+  animation-delay: 0.32s;
+}
+.row:nth-child(3) {
+  animation-delay: 0.49s;
+}
+.row:nth-child(4) {
+  animation-delay: 0.66s;
+}
+
+@keyframes settle {
+  from {
+    opacity: 0;
+    transform: translateY(0.4rem);
+  }
+}
+
+.row__file {
+  color: var(--panel-text);
+}
+
+.row__change {
+  display: flex;
+  align-items: baseline;
+  gap: 0.75rem;
+  margin-top: 0.3rem;
+  flex-wrap: wrap;
+}
+
+.row__field {
+  color: var(--panel-dim);
+  min-width: 5.5em;
+}
+
+/* Current value on disk. */
+.row__from {
+  color: var(--panel-dim);
+}
+
+.row__arrow {
+  color: var(--panel-dim);
+}
+
+/* Proposed value, not yet written. */
+.row__to {
+  color: var(--panel-proposed);
+}
+
+.row__hold {
+  color: var(--panel-dim);
+  font-style: italic;
+}
+
+.meter {
+  margin-left: auto;
+  white-space: nowrap;
+  letter-spacing: -0.05em;
+}
+
+.meter__fill {
+  color: var(--panel-proposed);
+}
+
+.meter__rest {
+  color: rgba(220, 217, 208, 0.28);
+}
+
+.meter__value {
+  color: var(--panel-dim);
+  letter-spacing: 0;
+  margin-left: 0.5em;
+}
+
+.ledger__foot {
+  padding-top: 0.9rem;
+  display: flex;
+  gap: 0.6rem;
+  flex-wrap: wrap;
+  color: var(--panel-dim);
+}
+
+.ledger__written {
+  color: var(--panel-text);
+}
+
+/* ── Install ─────────────────────────────────────────────────────── */
+
+.command {
+  margin-top: clamp(1.75rem, 4vw, 2.5rem);
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem 1.25rem;
+  align-items: baseline;
+}
+
+.command__line {
+  font-family: var(--mono);
+  font-size: clamp(0.9rem, 1.7vw, 1.05rem);
+  background: var(--ink);
+  color: var(--stock);
+  padding: 0.75rem 1.1rem;
+  border-radius: 3px;
+}
+
+.command__prompt {
+  color: var(--panel-dim);
+  user-select: none;
+}
+
+.command__note {
+  font-size: 0.9rem;
+  color: var(--slate);
+}
+
+.steps {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: grid;
+  gap: 0.6rem;
+}
+
+.steps__line {
+  font-family: var(--mono);
+  font-size: clamp(0.8rem, 1.6vw, 0.95rem);
+  background: var(--ink);
+  color: var(--stock);
+  padding: 0.65rem 1rem;
+  border-radius: 3px;
+  display: inline-block;
+  max-width: 100%;
+  overflow-x: auto;
+  white-space: nowrap;
+}
+
+.steps__gloss {
+  display: block;
+  margin-top: 0.35rem;
+  font-size: 0.9rem;
+  color: var(--slate);
+}
+
+/* ── Pipeline ────────────────────────────────────────────────────── */
+
+.band {
+  border-top: 1px solid var(--rule);
+  padding-block: clamp(2.5rem, 6vw, 4rem);
+}
+
+.band--sunk {
+  background: var(--stock-sunk);
+}
+
+.pipeline {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem 0.9rem;
+  font-family: var(--mono);
+  font-size: clamp(0.78rem, 1.5vw, 0.95rem);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.pipeline__step {
+  color: var(--ink);
+}
+
+.pipeline__step--gated {
+  color: var(--ochre-deep);
+}
+
+.pipeline__link {
+  color: var(--slate);
+  user-select: none;
+}
+
+.pipeline__note {
+  margin: 1.25rem 0 0;
+  max-width: 58ch;
+  color: var(--ink-soft);
+}
+
+/* ── Two-column prose ────────────────────────────────────────────── */
+
+.split {
+  display: grid;
+  gap: clamp(2rem, 5vw, 3.5rem);
+  grid-template-columns: repeat(auto-fit, minmax(19rem, 1fr));
+}
+
+.section-label {
+  margin: 0 0 1rem;
+  font-family: var(--mono);
+  font-size: 0.75rem;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--slate);
+}
+
+.block__title {
+  margin: 0 0 0.6rem;
+  font-family: var(--display);
+  font-variation-settings: "wdth" 112;
+  font-weight: 600;
+  font-size: 1.3rem;
+  line-height: 1.2;
+  letter-spacing: -0.01em;
+}
+
+.block__body {
+  margin: 0;
+  color: var(--ink-soft);
+  max-width: 46ch;
+}
+
+.block__body + .block__body {
+  margin-top: 0.8rem;
+}
+
+/* ── Table ───────────────────────────────────────────────────────── */
+
+.table-scroll {
+  overflow-x: auto;
+  margin-top: clamp(2rem, 4vw, 2.75rem);
+}
+
+.table caption {
+  text-align: left;
+}
+
+.table {
+  border-collapse: collapse;
+  width: 100%;
+  min-width: 30rem;
+  font-size: 0.95rem;
+  text-align: left;
+}
+
+.table th,
+.table td {
+  padding: 0.7rem 1rem 0.7rem 0;
+  border-bottom: 1px solid var(--rule);
+  vertical-align: top;
+}
+
+.table th {
+  font-family: var(--mono);
+  font-weight: 500;
+  font-size: 0.72rem;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--slate);
+}
+
+.table td {
+  color: var(--ink-soft);
+}
+
+.unsupported {
+  margin: 1.1rem 0 0;
+  font-size: 0.95rem;
+  color: var(--slate);
+}
+
+/* ── Licence notice ──────────────────────────────────────────────── */
+
+.notice {
+  border-left: 3px solid var(--ochre-deep);
+  padding-left: clamp(1rem, 2.5vw, 1.5rem);
+  max-width: 62ch;
+}
+
+.notice__body {
+  margin: 0 0 0.8rem;
+  color: var(--ink-soft);
+}
+
+.notice__body:last-child {
+  margin-bottom: 0;
+}
+
+/* ── Footer ──────────────────────────────────────────────────────── */
+
+.foot {
+  border-top: 1px solid var(--rule);
+  padding-block: 2rem 3rem;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem 2rem;
+  font-family: var(--mono);
+  font-size: 0.78rem;
+  letter-spacing: 0.06em;
+  color: var(--slate);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .row {
+    animation: none;
+  }
+}

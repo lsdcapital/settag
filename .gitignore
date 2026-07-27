@@ -9,3 +9,8 @@ __pycache__/
 analysis.jsonl
 models/
 .context/model-eval/
+
+# site/ carries its own ignore file for build output; these are belt-and-braces
+# so a stray node_modules can never reach the sdist.
+node_modules/
+site/dist/

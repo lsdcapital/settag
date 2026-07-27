@@ -1,0 +1,39 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+
+  // Must match TF_VAR_SETTAG_WORKER_NAME in Doppler (settag/prod). The
+  // settag/cloudflare stack routes settag.dev to whatever name is set there.
+  "name": "settag-web",
+  "compatibility_date": "2026-07-27",
+
+  // No "account_id" here on purpose: this repository is public, and the value
+  // is already in Doppler as CLOUDFLARE_ACCOUNT_ID. Export it before deploying.
+  //
+  // This is not optional. Wrangler otherwise deploys to whichever account the
+  // logged-in user defaults to. If that is not the account owning the
+  // settag.dev zone, the Worker lands somewhere Terraform cannot see it and
+  // `make apply STACK=settag/cloudflare` fails with 10007 "This Worker does not
+  // exist on your account".
+
+  // No "main": the site is prerendered, so this Worker is assets only and runs
+  // no code. Requests match an uploaded file and are served without invoking a
+  // script.
+  "assets": {
+    "directory": "./dist/client",
+
+    // Pages are prerendered as /path/index.html (autoSubfolderIndex), so
+    // requests need the matching trailing-slash treatment.
+    "html_handling": "auto-trailing-slash",
+
+    // "none" returns a plain 404 for unmatched paths. Switch to "404-page"
+    // once the site has a 404 route emitting dist/client/404.html. Never
+    // "single-page-application": it would serve index.html with a 200 for
+    // every unknown path, turning typos into soft 404s.
+    "not_found_handling": "none"
+  }
+
+  // Deliberately no "routes" or "custom_domain". The terraform repo's
+  // settag/cloudflare stack owns the settag.dev hostname via
+  // cloudflare_workers_custom_domain, and declaring it in both places would
+  // have two systems fighting over the same association.
+}

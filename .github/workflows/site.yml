@@ -1,0 +1,58 @@
+name: Site
+
+# Deployment is `pnpm run deploy` under `doppler run` (wrangler), plus the
+# settag/cloudflare stack in the terraform repo — not this workflow. This only
+# proves the build still succeeds, so a broken commit is caught in the PR rather
+# than at deploy time.
+on:
+  push:
+    branches: [main]
+    paths: ["site/**", ".github/workflows/site.yml"]
+  pull_request:
+    paths: ["site/**", ".github/workflows/site.yml"]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    working-directory: site
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # Must precede setup-node: the cache resolver needs pnpm on PATH to read
+      # the store path. package_json_file is required because `defaults.run`
+      # does not apply to action steps, so this would otherwise look for
+      # packageManager in the repo root rather than in site/.
+      - uses: pnpm/action-setup@v4
+        with:
+          package_json_file: site/package.json
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: pnpm
+          cache-dependency-path: site/pnpm-lock.yaml
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Type check
+        run: pnpm typecheck
+
+      - name: Build
+        run: pnpm build
+
+      # The site is served as static assets by a Worker that runs no code. If
+      # prerendering silently stops emitting markup, the build still "succeeds"
+      # but ships an empty shell.
+      - name: Verify the page was prerendered
+        run: |
+          test -f dist/client/index.html
+          grep -aq "Nothing gets written until you say so" dist/client/index.html
