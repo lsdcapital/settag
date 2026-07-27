@@ -124,6 +124,22 @@ def build_task_owned_values(
         )
         provenance[task] = task_provenance
 
+    # Labels and their provenance have to leave together. The seed above carries every
+    # owned value forward from `current` unconditionally, while provenance survives only
+    # if the whole record still parses at PROVENANCE_SCHEMA — so a schema bump strands the
+    # labels of every task this run does not regenerate. Stranded labels are worse than
+    # absent ones: they stay readable and filterable while nothing can say which model or
+    # taxonomy produced them, and neither scan goes looking, because both iterate the
+    # configured tasks rather than the file's. Drop them instead. The removal is a planned
+    # change like any other, so it is shown before it is written, and re-running the task
+    # restores the labels with provenance attached.
+    for task in TASK_ORDER:
+        if task in provenance:
+            continue
+        label_field, score_field = TASK_FIELDS[task]
+        desired[label_field] = None
+        desired[score_field] = None
+
     if evidence_by_task:
         desired["SETTAG_VERSION"] = [__version__]
     if "genre" in evidence_by_task:

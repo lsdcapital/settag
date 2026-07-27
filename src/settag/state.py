@@ -19,7 +19,7 @@ from settag.plans import (
     planned_write_from_record,
     planned_write_record,
 )
-from settag.records import ProvenanceStatus, read_task_provenance_status
+from settag.records import ProvenanceStatus, orphaned_tasks, read_task_provenance_status
 from settag.tags import read_task_provenance
 from settag.tasks import AnalysisTask, checked_expected_models
 
@@ -397,6 +397,11 @@ def _classify(
         stat.st_size != plan.source_size or stat.st_mtime_ns != plan.source_mtime_ns
     ) and _audio_differs(plan):
         return WorkbenchEntry(plan, "stale", "source file changed")
+
+    # Checked before the per-task comparison below, which only sees configured tasks and
+    # would pass a plan that still writes labels it cannot attribute.
+    if orphaned_tasks(plan.desired, checked=expected_model_ids):
+        return WorkbenchEntry(plan, "stale", "analysis labels have no provenance")
 
     provenance = read_task_provenance(plan.desired)
     for task, expected_model_id in expected_model_ids.items():

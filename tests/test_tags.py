@@ -110,6 +110,66 @@ def test_provenance_schema_is_pinned() -> None:
     assert PROVENANCE_SCHEMA == "settag.provenance/v3"
 
 
+def _task_record(task: str = "instrument") -> dict[str, object]:
+    return {
+        "model": {"schema": "settag.models/v1", "id": f"model/{task}/v1", "files": {}},
+        "analyzed_at": "2026-07-23T12:00:00Z",
+        "config": {"sha256": "abc123"},
+    }
+
+
+def _carrying_instrument(schema: str) -> dict[str, list[str] | None]:
+    """A file holding instrument evidence recorded under ``schema``."""
+    current: dict[str, list[str] | None] = dict.fromkeys(OWNED_DESCRIPTIONS)
+    current["SETTAG_INSTRUMENT"] = ["Bass", "Synthesizer"]
+    current["SETTAG_INSTRUMENT_SCORES"] = [
+        json.dumps([{"label": "Bass", "score": 0.7}, {"label": "Synthesizer", "score": 0.6}])
+    ]
+    current["SETTAG_PROVENANCE"] = [
+        json.dumps({"schema": schema, "tasks": {"instrument": _task_record()}})
+    ]
+    return current
+
+
+def _genre_run(current: dict[str, list[str] | None]) -> dict[str, list[str] | None]:
+    return build_task_owned_values(
+        current,
+        {"genre": [Prediction("Electronic---Deep House", 0.72)]},
+        {"genre": _task_record("genre")},
+    )
+
+
+def test_a_run_drops_labels_whose_provenance_a_schema_bump_discarded() -> None:
+    """Labels cannot outlive the record that explains them.
+
+    A bump makes the whole envelope unreadable, so provenance for a task this run
+    does not regenerate is dropped on read while its labels are carried forward from
+    the file. That leaves evidence nothing can attribute — still scoreable, still
+    filterable, and invisible to both scans because they iterate the configured tasks.
+    The labels go with the record instead.
+    """
+    desired = _genre_run(_carrying_instrument("settag.provenance/v2"))
+
+    assert desired["SETTAG_INSTRUMENT"] is None
+    assert desired["SETTAG_INSTRUMENT_SCORES"] is None
+
+
+def test_a_run_preserves_labels_of_a_readable_task_it_did_not_analyze() -> None:
+    """The rule above must not cost a task its evidence merely for sitting out a run.
+
+    Analyzing one task while another's record is intact is ordinary use — the whole
+    point of merging rather than replacing — so the drop has to key on provenance
+    being gone, not on the task being absent from this run.
+    """
+    desired = _genre_run(_carrying_instrument(PROVENANCE_SCHEMA))
+
+    assert desired["SETTAG_INSTRUMENT"] == ["Bass", "Synthesizer"]
+    assert desired["SETTAG_INSTRUMENT_SCORES"] is not None
+    serialized = desired["SETTAG_PROVENANCE"]
+    assert serialized is not None
+    assert set(json.loads(serialized[0])["tasks"]) == {"genre", "instrument"}
+
+
 def test_owned_genres_and_scores_have_identical_membership_and_order() -> None:
     selected = [
         Prediction("Electronic---Deep House", 0.72),

@@ -25,6 +25,7 @@ from settag.records import (
     ProvenanceStatus,
     SourceRecord,
     config_record,
+    orphaned_tasks,
     read_task_provenance_status,
     source_record,
     utc_now,
@@ -515,7 +516,13 @@ def inspect_track(
         elif reading.status is not ProvenanceStatus.CURRENT:
             provenance_stale = True
 
-    if not evidence_valid or provenance_invalid or version is None:
+    # Labels belonging to a task this scan does not otherwise look at, with no record to
+    # attribute them. Incomplete rather than stale: nothing here is out of date, the file
+    # simply carries evidence it cannot explain. Re-analysis clears it either way, since
+    # the write drops it.
+    orphaned = orphaned_tasks(owned, checked=expected_models)
+
+    if not evidence_valid or provenance_invalid or version is None or orphaned:
         status: MetadataStatus = "invalid"
     elif provenance_missing or provenance_stale:
         status = "stale"

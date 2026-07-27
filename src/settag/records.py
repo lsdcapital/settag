@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Container, Mapping
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from enum import Enum
@@ -10,8 +10,8 @@ from typing import Any, TypedDict
 from settag import __version__
 from settag.hashing import sha256_audio, sha256_file, sha256_json
 from settag.policy import EVIDENCE_LIMIT, AudioSample
-from settag.tags import TagPlan
-from settag.tasks import AnalysisTask, ordered_tasks
+from settag.tags import TagPlan, read_task_provenance
+from settag.tasks import TASK_FIELDS, TASK_ORDER, AnalysisTask, ordered_tasks
 
 
 class SourceRecord(TypedDict):
@@ -79,6 +79,35 @@ def read_task_provenance_status(
     ):
         return TaskProvenanceReading(ProvenanceStatus.CONFIG_CHANGED, analyzed_at)
     return TaskProvenanceReading(ProvenanceStatus.CURRENT, analyzed_at)
+
+
+def orphaned_tasks(
+    owned: Mapping[str, list[str] | None],
+    *,
+    checked: Container[AnalysisTask] = (),
+) -> tuple[AnalysisTask, ...]:
+    """Tasks whose labels sit on a file that can no longer say where they came from.
+
+    ``read_task_provenance_status`` answers this for one task the caller expects, and
+    answers it better: a configured task with no record reads as MISSING, which already
+    means stale and already gets it re-analyzed. What it cannot answer is the same
+    question about a task the caller has never heard of. Both scans iterate the
+    configured tasks, so labels belonging to an unconfigured one — the state a schema
+    bump leaves behind — are examined by neither and reported by nobody.
+
+    ``checked`` is therefore what the caller has already asked about, and is excluded:
+    this covers the blind spot rather than restating a verdict the field-level rule
+    above reaches on better evidence.
+
+    Resolving it needs no new machinery. Any write drops orphaned labels, so a track
+    reported this way comes back clean once it is analyzed again.
+    """
+    provenance = read_task_provenance(owned)
+    return tuple(
+        task
+        for task in TASK_ORDER
+        if task not in provenance and task not in checked and owned.get(TASK_FIELDS[task][0])
+    )
 
 
 def utc_now() -> str:
