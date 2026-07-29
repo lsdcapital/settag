@@ -139,9 +139,15 @@ for deliberate reanalysis.
 
 The app keeps the track table primary at full terminal width. The inspector is
 secondary, hidden by default, and toggled with `I` without changing the cursor
-or selection. It shows only candidates admitted by the current review policy,
-followed by a count of additional ranked scores retained for importers. The
-footer changes with the current phase:
+or selection. In review, the table's `Write plan` column names a user-level
+state such as `Refresh`, `Evidence`, or `Genre edit`, never a count of internal
+fields. Raw model scores are omitted from the primary table because they are
+ranking evidence, not calibrated confidence; the optional inspector retains
+them for users diagnosing candidate order or review cutoffs. The inspector
+leads with one compact write-plan block, then shows the candidates admitted by
+the current review policy on one line per task with the total stored score
+count. It does not expose internal field counts. The footer changes with the
+current phase:
 
 ```text
 Choose: Space toggle · I details · A all/none · F filter · V review (when ready) · Enter/R analyze · Q quit
@@ -157,12 +163,16 @@ track is always marked with `✓`; color is supporting information, never the
 only selection cue.
 
 `W` performs preflight and opens one confirmation screen with `Write` focused
-by default. `Enter` confirms and `Esc` returns to review. SetTag performs
-preflight again, then writes and verifies. Analysis errors disable batch
-writing. When analysis is still running, preflight snapshots only completed,
-checked plans; later results cannot enter an already-confirmed write. A
-successful write does not exit the app: written tracks become current library
-entries, while any unwritten tracks remain in review.
+by default. The screen previews up to three filenames and states, for each,
+whether SetTag evidence changes and whether the standard genre is unchanged or
+staged as `before → after`; larger batches show the remaining track count and
+one batch total. Narrow or short terminals preview one track so the reassurance
+and actions remain visible. `Enter` confirms and `Esc` returns to review.
+SetTag performs preflight again, then writes and verifies. Analysis errors
+disable batch writing. When analysis is still running, preflight snapshots only
+completed, checked plans; later results cannot enter an already-confirmed
+write. A successful write does not exit the app: written tracks become current
+library entries, while any unwritten tracks remain in review.
 
 ## Local workbench
 

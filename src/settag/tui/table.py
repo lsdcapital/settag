@@ -47,8 +47,7 @@ TRACK_TABLE_COLUMNS = (
     TrackTableColumn("file_genre", "File genre", 2, 10, 18),
     TrackTableColumn("analysis", "Analysis", 3, 12, 24),
     TrackTableColumn("suggested", "Suggested", 4, 10, 20),
-    TrackTableColumn("score", "Score", 5, 5, 5),
-    TrackTableColumn("changes", "Changes", 6, 7, 7),
+    TrackTableColumn("write_plan", "Write plan", 5, 16, 16),
 )
 
 TRACK_TABLE_COLUMN_BY_KEY = {column.key: column for column in TRACK_TABLE_COLUMNS}
@@ -56,9 +55,8 @@ TRACK_TABLE_COLUMN_BY_KEY = {column.key: column for column in TRACK_TABLE_COLUMN
 TRACK_TABLE_COLUMN_PRIORITY = (
     "analysis",
     "file_genre",
+    "write_plan",
     "suggested",
-    "changes",
-    "score",
 )
 
 
@@ -201,12 +199,11 @@ def row_cells(
     *,
     selected: bool,
     context: RowContext,
-) -> tuple[str, str, str, str, str, str, str]:
+) -> tuple[str, str, str, str, str, str]:
     """Every cell for one track, in fixed column order."""
     plan = entry.plan
     metadata = entry.metadata
     predictions = primary_review_predictions(entry, context)
-    primary = predictions[0] if predictions else None
 
     if plan is not None:
         before = ", ".join(plan.file_genre) or "None"
@@ -226,8 +223,7 @@ def row_cells(
         file_genre,
         entry_analysis(entry, context),
         suggested_label(predictions) or "—",
-        f"{primary.score:.3f}" if primary else "—",
-        str(len(plan.readable_changes)) if plan is not None else "—",
+        plan.write_plan_label if plan is not None else "—",
     )
 
 

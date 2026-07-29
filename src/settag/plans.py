@@ -4,7 +4,7 @@ import json
 import math
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, Literal, cast
 
 from settag.policy import EVIDENCE_LIMIT, Prediction
 from settag.tags import (
@@ -24,6 +24,7 @@ PLAN_ERROR_SCHEMA = "settag.plan-error/v1"
 # rejecting it would throw away every analysis a user had already paid for.
 # Anything that needs the digest recomputes it from the file.
 READABLE_PLAN_SCHEMAS = frozenset({"settag.plan/v4", PLAN_SCHEMA})
+REFRESH_ONLY_CHANGE_PREFIXES = ("Analysis time:", "Task provenance:")
 
 HOUSE_MODEL_LABELS = frozenset(
     {
@@ -82,6 +83,43 @@ class PlannedWrite:
         independently, which is why the count lives here.
         """
         return sum(len(values) for values in task_evidence_from_owned(self.desired).values())
+
+    @property
+    def evidence_write_kind(self) -> Literal["unchanged", "refreshed", "updated"]:
+        """Describe the SetTag-owned half of this write at user level.
+
+        A deliberate reanalysis always refreshes its timestamp and provenance,
+        even when the ranked evidence is identical. Those two implementation
+        fields are one user-facing refresh, not two meaningful edits.
+        """
+        if not self.owned_changes:
+            return "unchanged"
+        if all(change.startswith(REFRESH_ONLY_CHANGE_PREFIXES) for change in self.owned_changes):
+            return "refreshed"
+        return "updated"
+
+    @property
+    def evidence_write_label(self) -> str:
+        return {
+            "unchanged": "Evidence unchanged",
+            "refreshed": "Evidence refreshed",
+            "updated": "Evidence update",
+        }[self.evidence_write_kind]
+
+    @property
+    def write_plan_label(self) -> str:
+        """Compact table label for the metadata this plan would write."""
+        evidence = {
+            "unchanged": "",
+            "refreshed": "Refresh",
+            "updated": "Evidence",
+        }[self.evidence_write_kind]
+        genre = self.standard_genre_change is not None
+        if evidence and genre:
+            return f"{evidence} + genre"
+        if evidence:
+            return evidence
+        return "Genre edit" if genre else "None"
 
     @property
     def standard_genre_change(self) -> TagChange | None:

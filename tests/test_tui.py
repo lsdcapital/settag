@@ -27,6 +27,8 @@ from settag.workflow import (
     MetadataBatch,
     MetadataStatus,
     MetadataTrack,
+    WriteSummary,
+    WriteTrackSummary,
     analyze_paths,
     planned_write_for_track,
     prepare_track,
@@ -282,13 +284,15 @@ def test_tui_analyzes_and_reviews_all_configured_tasks(tmp_path: Path) -> None:
             assert set(evidence) == {"genre", "mood-theme", "instrument"}
 
             details = str(app.query_one("#inspector", Static).render())
-            assert "Review candidates by task" in details
-            assert "Electronic---Progressive House" in details
+            assert "Write plan · Included" in details
+            assert "Evidence update" in details
+            assert "Candidates · cutoff ≥ 0.10 · top 5" in details
+            assert "Genre · 2 scores" in details
+            assert "Progressive House 0.664 · Techno 0.269" in details
             assert "energetic" in details
             assert "synthesizer" in details
-            assert "6 ranked scores across 3 tasks with provenance" in details
-            assert "Analysis metadata: 11 internal field changes" in details
-            assert "• Genre labels:" not in details
+            assert "internal field changes" not in details
+            assert "SetTag analysis bundle" not in details
 
     asyncio.run(exercise())
 
@@ -309,7 +313,7 @@ def test_tui_details_scroll_and_return_focus_to_track_table(tmp_path: Path) -> N
     )
 
     async def exercise() -> None:
-        async with app.run_test(size=(100, 28)) as pilot:
+        async with app.run_test(size=(100, 20)) as pilot:
             await pilot.pause()
             await pilot.press("r")
             for _ in range(30):
@@ -670,9 +674,9 @@ def test_tui_score_cutoff_filters_suggestion_not_stored_evidence(
 
             assert table.get_row_at(0)[4] == "—"
             details = str(inspector.render())
-            assert "Score cutoff ≥ 0.80" in details
-            assert "No candidate met the review cutoff." in details
-            assert "1 additional ranked score stored for importing apps." in details
+            assert "Stored candidates · cutoff ≥ 0.80 · top 5" in details
+            assert "Genre · 1 score" in details
+            assert "No candidate met the cutoff" in details
             assert "Electronic---House" not in details
 
     asyncio.run(exercise())
@@ -713,8 +717,8 @@ def test_tui_leaves_empty_genre_unchanged_without_review_candidate(
             assert plan.standard_genre_change is None
             inspector = app.query_one("#inspector", Static)
             details = str(inspector.render())
-            assert "No candidate met the review cutoff." in details
-            assert "2 additional ranked scores stored for importing apps." in details
+            assert "Genre · 2 scores" in details
+            assert "No candidate met the cutoff" in details
 
     asyncio.run(exercise())
 
@@ -749,8 +753,8 @@ def test_tui_defaults_empty_genre_to_suggestion_and_allows_opt_out(
 
             inspector = app.query_one("#inspector", Static)
             details = str(inspector.render())
-            assert "Electronic---Progressive House" in details
-            assert "Suggested roll-up: Progressive House → House" in details
+            assert "Progressive House 0.664 · Techno 0.269" in details
+            assert "Suggestion: Progressive House → House" in details
 
             plan = app.entries[0].plan
             assert plan is not None
@@ -877,6 +881,128 @@ def test_tui_genre_screen_keeps_actions_visible_in_narrow_terminal(
     asyncio.run(exercise())
 
 
+def test_tui_write_confirmation_keeps_ledger_and_actions_visible_in_narrow_terminal(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "a-long-track-name-for-the-write-confirmation.wav"
+    _silent_wav(path)
+    app = SetTagApp(
+        source=path,
+        initial_metadata=MetadataBatch(
+            tracks=(_metadata_track(path),),
+            failures=(),
+        ),
+        analysis_loader=lambda paths, _progress, _cancel: _analysis_batch(paths),
+    )
+
+    async def exercise() -> None:
+        async with app.run_test(size=(50, 32)) as pilot:
+            await pilot.pause()
+            await pilot.press("r")
+            for _ in range(30):
+                await pilot.pause(0.05)
+                if app.phase == "review":
+                    break
+            await pilot.press("enter")
+            await pilot.pause(0.2)
+
+            assert isinstance(app.screen, ConfirmWriteScreen)
+            assert app.screen.has_class("narrow")
+            summary = app.screen.query_one("#confirm-summary", Static)
+            assert "a-long-track-name-for-the-write-confirmation.wav" in str(summary.render())
+            assert app.screen.query_one("#confirm", Button).has_focus
+            buttons = list(app.screen.query(Button))
+            assert len({button.region.y for button in buttons}) == 1
+            assert all(
+                button.region.x + button.region.width <= app.size.width for button in buttons
+            )
+            assert all(
+                button.region.y + button.region.height <= app.size.height for button in buttons
+            )
+
+    asyncio.run(exercise())
+
+
+def test_tui_write_confirmation_compacts_long_batch_in_narrow_terminal(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "track.wav"
+    _silent_wav(path)
+    tracks = tuple(
+        WriteTrackSummary(
+            filename=(
+                f"{index + 1:02d}-a-very-long-club-recording-name-with-mix-and-artist-details.wav"
+            ),
+            evidence="SetTag evidence: update · 12 ranked scores",
+            standard_genre=(
+                "Standard genre: Progressive House, Afro House → Melodic House & Techno"
+            ),
+        )
+        for index in range(5)
+    )
+    summary = WriteSummary(
+        track_count=5,
+        write_count=5,
+        bundle_changes=5,
+        field_changes=60,
+        standard_genre_edits=5,
+        evidence_scores=60,
+        empty_file_genres=0,
+        tracks=tracks,
+    )
+    app = SetTagApp(
+        source=path,
+        initial_metadata=MetadataBatch(
+            tracks=(_metadata_track(path),),
+            failures=(),
+        ),
+        analysis_loader=lambda paths, _progress, _cancel: _analysis_batch(paths),
+    )
+
+    async def exercise() -> None:
+        async with app.run_test(size=(50, 32)) as pilot:
+            await pilot.pause()
+            app.push_screen(ConfirmWriteScreen(summary))
+            await pilot.pause()
+
+            preview = app.screen.query_one("#confirm-summary", Static)
+            narrow_preview = str(preview.render())
+            assert tracks[0].filename in narrow_preview
+            assert tracks[1].filename not in narrow_preview
+            assert "+ 4 more tracks" in narrow_preview
+            assert "Batch total: 5 SetTag evidence writes" in narrow_preview
+            buttons = list(app.screen.query(Button))
+            dialog = app.screen.query_one("#confirm-dialog")
+            assert all(
+                button.region.y + button.region.height <= dialog.region.y + dialog.region.height
+                for button in buttons
+            )
+
+            await pilot.resize_terminal(90, 32)
+            await pilot.pause()
+
+            short_preview = str(preview.render())
+            assert tracks[0].filename in short_preview
+            assert tracks[1].filename not in short_preview
+            assert "+ 4 more tracks" in short_preview
+            short_dialog = app.screen.query_one("#confirm-dialog")
+            assert all(
+                button.region.y + button.region.height
+                <= short_dialog.region.y + short_dialog.region.height
+                for button in buttons
+            )
+
+            await pilot.resize_terminal(140, 42)
+            await pilot.pause()
+
+            wide_preview = str(preview.render())
+            assert tracks[2].filename in wide_preview
+            assert tracks[3].filename not in wide_preview
+            assert "+ 2 more tracks" in wide_preview
+
+    asyncio.run(exercise())
+
+
 def test_tui_track_columns_fit_terminal_and_expand_with_available_width(
     tmp_path: Path,
 ) -> None:
@@ -914,8 +1040,7 @@ def test_tui_track_columns_fit_terminal_and_expand_with_available_width(
                 "file_genre",
                 "analysis",
                 "suggested",
-                "score",
-                "changes",
+                "write_plan",
             ]
             assert table.max_scroll_x == 0
             track_column = next(
@@ -1036,9 +1161,14 @@ def test_tui_requires_confirmation_then_writes_and_verifies(tmp_path: Path) -> N
             assert confirm.styles.background.hex == "#D0794F"
             assert cancel.styles.background.hex == "#25302D"
             summary = app.screen.query_one("#confirm-summary", Static)
-            assert "SetTag analysis bundle" in str(summary.render())
-            assert "2 ranked scores" in str(summary.render())
-            assert "SetTag field changes" not in str(summary.render())
+            rendered_summary = str(summary.render())
+            assert "track.wav" in rendered_summary
+            assert "SetTag evidence: update · 2 ranked scores" in rendered_summary
+            assert "Standard genre: None → House" in rendered_summary
+            assert "Batch total: 1 SetTag evidence write · 1 standard genre edit" in (
+                rendered_summary
+            )
+            assert "SetTag analysis bundle" not in rendered_summary
             await pilot.press("enter")
             await pilot.pause(0.3)
             assert app.phase == "choose"

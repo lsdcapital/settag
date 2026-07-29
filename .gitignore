@@ -14,3 +14,4 @@ models/
 # so a stray node_modules can never reach the sdist.
 node_modules/
 site/dist/
+.impeccable

@@ -109,47 +109,44 @@ class ConfirmWriteScreen(ModalScreen[bool]):
         super().__init__()
         self.summary = summary
 
-    @property
-    def track_count(self) -> int:
-        return self.summary.track_count
-
-    @property
-    def standard_genre_count(self) -> int:
-        return self.summary.standard_genre_edits
-
-    @property
-    def evidence_count(self) -> int:
-        return self.summary.evidence_scores
-
     def compose(self) -> ComposeResult:
-        noun = "track" if self.track_count == 1 else "tracks"
-        bundle_noun = "bundle" if self.track_count == 1 else "bundles"
-        edit_noun = "edit" if self.standard_genre_count == 1 else "edits"
         with Vertical(id="confirm-dialog"):
-            yield Label("Write selected tracks?", id="dialog-title")
+            yield Label(self.summary.confirmation_title, id="dialog-title")
             yield Static(
-                f"{self.track_count} {noun}\n"
-                f"{self.track_count} SetTag analysis {bundle_noun}"
-                f" · {self.evidence_count} ranked scores\n"
-                f"{self.standard_genre_count} standard genre {edit_noun}",
+                self.summary.confirmation_preview(),
                 markup=False,
                 id="confirm-summary",
             )
             yield Static(
-                "The files passed preflight. SetTag will verify each file after writing.",
+                self.summary.confirmation_help,
                 markup=False,
                 id="dialog-help",
             )
             with Horizontal(classes="dialog-actions"):
                 yield Button("Back to review", id="cancel")
                 yield Button(
-                    f"Write {self.track_count} {noun}",
+                    self.summary.confirmation_action,
                     variant="primary",
                     id="confirm",
                 )
 
     def on_mount(self) -> None:
+        self._update_layout(self.size.width, self.size.height)
         self.query_one("#confirm", Button).focus()
+
+    def on_resize(self, event: events.Resize) -> None:
+        self._update_layout(event.size.width, event.size.height)
+
+    def _update_layout(self, width: int, height: int) -> None:
+        narrow = width < 64
+        compact = narrow or height < 36
+        self.set_class(narrow, "narrow")
+        preview = (
+            self.summary.confirmation_preview(limit=1)
+            if compact
+            else self.summary.confirmation_preview()
+        )
+        self.query_one("#confirm-summary", Static).update(preview)
 
     @on(Button.Pressed, "#confirm")
     def confirm_button(self) -> None:

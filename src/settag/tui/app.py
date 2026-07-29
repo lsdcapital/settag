@@ -97,6 +97,16 @@ FILTER_LABELS: dict[LibraryFilter, str] = {
     "current": "Up to date",
 }
 
+
+def _display_path(path: Path) -> str:
+    """Keep paths recognizable without repeating the full home directory."""
+    try:
+        relative = path.relative_to(Path.home())
+    except ValueError:
+        return str(path)
+    return "~" if relative == Path(".") else str(Path("~") / relative)
+
+
 CHOOSE_ACTIONS = frozenset(
     {
         "toggle_track",
@@ -246,7 +256,7 @@ class SetTagApp(App[TuiOutcome]):
                     )
                 with Vertical(id="inspector-pane"):
                     yield Static(
-                        "Track details · ↑↓ scroll · Tab library · I close",
+                        "Track details",
                         markup=False,
                         classes="section-title",
                     )
@@ -595,6 +605,11 @@ class SetTagApp(App[TuiOutcome]):
             if cached_plan is not None and metadata.cache_status == "stale"
             else metadata.owned
         )
+        candidate_title = (
+            "Local candidates (stale)"
+            if metadata.cache_status == "stale"
+            else ("Local candidates (ready)" if entry.plan is not None else "Stored candidates")
+        )
         lines.extend(
             [
                 "Current file metadata",
@@ -602,15 +617,7 @@ class SetTagApp(App[TuiOutcome]):
                 f"  SetTag status: {cache_status or STATUS_LABELS[metadata.status]}",
                 f"  Last analyzed: {self._full_analyzed_at(entry)}",
                 "",
-                (
-                    "Local review candidates (stale)"
-                    if metadata.cache_status == "stale"
-                    else (
-                        "Local review candidates (ready)"
-                        if entry.plan is not None
-                        else "Review candidates from stored evidence"
-                    )
-                ),
+                f"{candidate_title} · {self._candidate_policy()}",
             ]
         )
         lines.extend(
@@ -656,7 +663,7 @@ class SetTagApp(App[TuiOutcome]):
         return "Never"
 
     def _review_inspector(self, entry: TrackEntry, index: int) -> list[str]:
-        lines = [entry.path.name, str(entry.path.parent), ""]
+        lines = [entry.path.name, _display_path(entry.path.parent), ""]
         if entry.analysis_error is not None:
             return [
                 *lines,
@@ -679,42 +686,25 @@ class SetTagApp(App[TuiOutcome]):
         suggestion = suggested_file_genre(item)
         model_child = suggested_label(item.selected)
         rollup_line = (
-            f"  Suggested roll-up: {model_child} → {suggestion}"
+            f"  Suggestion: {model_child} → {suggestion}"
             if suggestion and model_child and suggestion != model_child
             else None
         )
         lines.extend(
             [
-                "Standard file genre",
-                genre_line,
+                (
+                    "Write plan · Included"
+                    if index in self.write_selected
+                    else "Write plan · Excluded"
+                ),
+                f"  {item.evidence_write_label}",
+                f"  Standard genre: {genre_line.strip()}",
                 *([rollup_line] if rollup_line else []),
                 "",
-                "Review candidates by task",
+                f"Candidates · {self._candidate_policy()}",
             ]
         )
         lines.extend(self._task_candidate_sections(item.desired))
-
-        evidence_count = item.evidence_score_count
-        task_count = len(read_task_provenance(item.desired))
-        lines.extend(
-            [
-                "",
-                "SetTag analysis bundle",
-                (
-                    f"  {evidence_count} ranked scores across {task_count} task"
-                    f"{'s' if task_count != 1 else ''} with provenance"
-                ),
-                f"  Analysis metadata: {len(item.owned_changes)} internal field changes",
-            ]
-        )
-        lines.extend(
-            [
-                "",
-                ("Will be written." if index in self.write_selected else "Will not be written."),
-                "The SetTag analysis bundle is always written together.",
-                "The standard genre is a separate, editable staged change.",
-            ]
-        )
         return lines
 
     def _task_candidate_sections(
@@ -726,50 +716,39 @@ class SetTagApp(App[TuiOutcome]):
         evidence_by_task = task_evidence_from_owned(owned)
         provenance = read_task_provenance(owned)
         lines: list[str] = []
-        for index, task in enumerate(self.analysis_tasks):
-            if index:
-                lines.append("")
-            lines.append(TASK_LABELS[task])
+        for task in self.analysis_tasks:
             evidence = evidence_by_task.get(task, ())
             if not evidence and task == "genre":
                 evidence = fallback_genre
             if evidence:
-                lines.extend(
-                    self._candidate_lines(
-                        evidence,
+                count = len(evidence)
+                noun = "score" if count == 1 else "scores"
+                lines.append(f"{TASK_LABELS[task]} · {count} {noun}")
+                lines.append(
+                    self._candidate_line(
                         self._row_context.select_for_review(evidence),
                     )
                 )
             elif task in provenance:
-                lines.append("  No ranked evidence was returned by the model.")
+                lines.append(f"{TASK_LABELS[task]} · No ranked evidence")
             else:
-                lines.append("  Not analyzed for this task.")
+                lines.append(f"{TASK_LABELS[task]} · Not analyzed")
         return lines
 
-    def _candidate_lines(
+    def _candidate_policy(self) -> str:
+        cutoff = f"{self.score_cutoff:.3f}".removesuffix("0")
+        return f"cutoff ≥ {cutoff} · top {self.review_top}"
+
+    def _candidate_line(
         self,
-        evidence: Sequence[Prediction],
         selected: Sequence[Prediction],
-    ) -> list[str]:
-        cutoff = f"{self.score_cutoff:.3f}"
-        cutoff = cutoff.removesuffix("0")
-        lines = [
-            f"  Score cutoff ≥ {cutoff} · maximum {self.review_top}",
-        ]
+    ) -> str:
         if selected:
-            width = max(len(prediction.label) for prediction in selected)
-            lines.extend(
-                f"  {rank:>2}. {prediction.label:<{width}}  {prediction.score:.3f}"
-                for rank, prediction in enumerate(selected, start=1)
+            return "  " + " · ".join(
+                f"{suggested_label((prediction,)) or prediction.label} {prediction.score:.3f}"
+                for prediction in selected
             )
-        else:
-            lines.append("  No candidate met the review cutoff.")
-
-        hidden = len(evidence) - len(selected)
-        if hidden:
-            noun = "score" if hidden == 1 else "scores"
-            lines.append(f"  {hidden} additional ranked {noun} stored for importing apps.")
-        return lines
+        return "  No candidate met the cutoff"
 
     def _refresh_row(self, index: int, *, update_inspector: bool = True) -> None:
         if index not in self.visible_indices:

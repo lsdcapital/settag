@@ -1,7 +1,6 @@
 /* SetTag — liner-notes palette.
-   Ochre and slate are not decoration: inside the staged-changes panel, ochre
-   always means "proposed, not yet written" and slate always means "current on
-   disk". Nothing else on the page uses them. */
+   Warm paper carries the site; the embedded app image keeps the product's
+   own Booth Compass terminal palette intact. */
 
 :root {
   --stock: #dcd9d0;
@@ -13,13 +12,9 @@
      A lighter ochre passes on the base stock and fails on the sunk band. */
   --ochre-deep: #7e4406;
 
-  --panel: #16130e;
-  --panel-text: #dcd9d0;
-  --panel-dim: #8a93a0;
-  --panel-proposed: #e0912e;
+  --terminal-dim: #8a93a0;
 
   --rule: rgba(22, 19, 14, 0.18);
-  --rule-panel: rgba(220, 217, 208, 0.16);
 
   --display: "Archivo", system-ui, sans-serif;
   --body: "Archivo", system-ui, sans-serif;
@@ -124,6 +119,26 @@ a:hover {
   max-width: 16ch;
 }
 
+.hero__title--sequence {
+  display: flex;
+  max-width: 19ch;
+  align-items: baseline;
+  flex-wrap: wrap;
+  column-gap: 0.22em;
+  row-gap: 0.02em;
+  text-wrap: balance;
+}
+
+.hero__title-step {
+  white-space: nowrap;
+}
+
+.hero__title-step--decision {
+  color: var(--ink-soft);
+  font-variation-settings: "wdth" 102;
+  font-weight: 500;
+}
+
 .hero__lead {
   margin: clamp(1.5rem, 4vw, 2.25rem) 0 0;
   max-width: 54ch;
@@ -131,140 +146,47 @@ a:hover {
   color: var(--ink-soft);
 }
 
-/* ── Staged-changes panel: the signature ─────────────────────────── */
+/* ── Product image ───────────────────────────────────────────────── */
 
-.ledger {
+.product-shot {
   margin-top: clamp(2.5rem, 6vw, 4rem);
-  background: var(--panel);
-  color: var(--panel-text);
-  border-radius: 3px;
-  padding: clamp(1.1rem, 3vw, 1.9rem);
+  margin-inline: 0;
+  animation: reveal-app 0.6s cubic-bezier(0.2, 0.7, 0.3, 1) both;
+}
+
+.product-shot img {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+
+.product-shot .product-shot__narrow {
+  display: none;
+}
+
+.product-shot figcaption {
+  margin-top: 0.65rem;
+  color: var(--slate);
   font-family: var(--mono);
-  font-size: clamp(0.72rem, 1.55vw, 0.875rem);
-  line-height: 1.5;
-  overflow-x: auto;
+  font-size: 0.72rem;
+  letter-spacing: 0.04em;
 }
 
-.ledger__head {
-  display: flex;
-  justify-content: space-between;
-  gap: 1.5rem;
-  padding-bottom: 0.85rem;
-  border-bottom: 1px solid var(--rule-panel);
-  font-size: 0.72em;
-  color: var(--panel-dim);
-  white-space: nowrap;
-}
-
-.ledger__label {
-  letter-spacing: 0.1em;
-  text-transform: uppercase;
-}
-
-/* A path is a literal. Never case-transform it. */
-.ledger__path {
-  letter-spacing: 0.02em;
-}
-
-.ledger__rows {
-  margin: 0;
-  padding: 0;
-  list-style: none;
-  min-width: 33rem;
-}
-
-.row {
-  padding-block: 0.85rem;
-  border-bottom: 1px solid var(--rule-panel);
-  animation: settle 0.5s cubic-bezier(0.2, 0.7, 0.3, 1) backwards;
-}
-
-.row:nth-child(1) {
-  animation-delay: 0.15s;
-}
-.row:nth-child(2) {
-  animation-delay: 0.32s;
-}
-.row:nth-child(3) {
-  animation-delay: 0.49s;
-}
-.row:nth-child(4) {
-  animation-delay: 0.66s;
-}
-
-@keyframes settle {
+@keyframes reveal-app {
   from {
-    opacity: 0;
-    transform: translateY(0.4rem);
+    opacity: 0.94;
+    transform: translateY(0.5rem);
   }
 }
 
-.row__file {
-  color: var(--panel-text);
-}
+@media (max-width: 38rem) {
+  .product-shot .product-shot__wide {
+    display: none;
+  }
 
-.row__change {
-  display: flex;
-  align-items: baseline;
-  gap: 0.75rem;
-  margin-top: 0.3rem;
-  flex-wrap: wrap;
-}
-
-.row__field {
-  color: var(--panel-dim);
-  min-width: 5.5em;
-}
-
-/* Current value on disk. */
-.row__from {
-  color: var(--panel-dim);
-}
-
-.row__arrow {
-  color: var(--panel-dim);
-}
-
-/* Proposed value, not yet written. */
-.row__to {
-  color: var(--panel-proposed);
-}
-
-.row__hold {
-  color: var(--panel-dim);
-  font-style: italic;
-}
-
-.meter {
-  margin-left: auto;
-  white-space: nowrap;
-  letter-spacing: -0.05em;
-}
-
-.meter__fill {
-  color: var(--panel-proposed);
-}
-
-.meter__rest {
-  color: rgba(220, 217, 208, 0.28);
-}
-
-.meter__value {
-  color: var(--panel-dim);
-  letter-spacing: 0;
-  margin-left: 0.5em;
-}
-
-.ledger__foot {
-  padding-top: 0.9rem;
-  display: flex;
-  gap: 0.6rem;
-  flex-wrap: wrap;
-  color: var(--panel-dim);
-}
-
-.ledger__written {
-  color: var(--panel-text);
+  .product-shot .product-shot__narrow {
+    display: block;
+  }
 }
 
 /* ── Install ─────────────────────────────────────────────────────── */
@@ -287,7 +209,7 @@ a:hover {
 }
 
 .command__prompt {
-  color: var(--panel-dim);
+  color: var(--terminal-dim);
   user-select: none;
 }
 
@@ -479,7 +401,7 @@ a:hover {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .row {
+  .product-shot {
     animation: none;
   }
 }

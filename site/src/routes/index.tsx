@@ -4,54 +4,6 @@ export const Route = createFileRoute('/')({ component: Home })
 
 const REPO = 'https://github.com/lsdcapital/settag'
 
-/** Illustrative staged changes. Track names are invented, not real releases. */
-type Staged = {
-  file: string
-  field: string
-  from: string
-  to: string
-  confidence: number
-}
-
-const STAGED: Staged[] = [
-  {
-    file: 'Sundial — Marine Layer.flac',
-    field: 'genre',
-    from: 'House',
-    to: 'Deep House',
-    confidence: 0.82,
-  },
-  {
-    file: 'Kestrel — Night Vent.aiff',
-    field: 'genre',
-    from: 'not set',
-    to: 'Techno',
-    confidence: 0.74,
-  },
-  {
-    file: 'Ferrous — Slow Tide.mp3',
-    field: 'mood',
-    from: 'not set',
-    to: 'dark, hypnotic',
-    confidence: 0.61,
-  },
-]
-
-function Meter({ value }: { value: number }) {
-  const filled = Math.round(value * 10)
-  return (
-    <span className="meter" aria-label={`confidence ${value.toFixed(2)}`}>
-      <span className="meter__fill" aria-hidden="true">
-        {'█'.repeat(filled)}
-      </span>
-      <span className="meter__rest" aria-hidden="true">
-        {'█'.repeat(10 - filled)}
-      </span>
-      <span className="meter__value">{value.toFixed(2)}</span>
-    </span>
-  )
-}
-
 function Home() {
   return (
     <>
@@ -65,50 +17,39 @@ function Home() {
       <main>
         <section className="shell hero">
           <p className="eyebrow">Local analysis for DJ libraries</p>
-          <h1 className="hero__title">Nothing gets written until you say so.</h1>
+          <h1 className="hero__title hero__title--sequence">
+            <span className="hero__title-step">Analyze.</span>
+            <span className="hero__title-step">Review.</span>
+            <span className="hero__title-step hero__title-step--decision">You decide.</span>
+          </h1>
           <p className="hero__lead">
             SetTag runs Essentia&rsquo;s MAEST model over your tracks on your own machine, proposes
             genre, mood, and instrument tags, and holds every change in a staging list. You read the
             diff. You decide what lands.
           </p>
 
-          <section className="ledger" aria-label="Example staged changes">
-            <div className="ledger__head">
-              <span className="ledger__label">Staged changes</span>
-              <span className="ledger__path">~/Music/crate</span>
-            </div>
-            <ul className="ledger__rows">
-              {STAGED.map((change) => (
-                <li className="row" key={change.file}>
-                  <span className="row__file">{change.file}</span>
-                  <div className="row__change">
-                    <span className="row__field">{change.field}</span>
-                    <span className="row__from">{change.from}</span>
-                    <span className="row__arrow" aria-hidden="true">
-                      →
-                    </span>
-                    <span className="row__to">{change.to}</span>
-                    <Meter value={change.confidence} />
-                  </div>
-                </li>
-              ))}
-              <li className="row">
-                <span className="row__file">Palm Reader — Cassia.m4a</span>
-                <div className="row__change">
-                  <span className="row__field">genre</span>
-                  <span className="row__from">Breakbeat</span>
-                  <span className="row__hold">already correct, left alone</span>
-                </div>
-              </li>
-            </ul>
-            <div className="ledger__foot">
-              <span className="ledger__written">0 files written</span>
-              <span aria-hidden="true">·</span>
-              <span>3 changes staged</span>
-              <span aria-hidden="true">·</span>
-              <span>1 unchanged</span>
-            </div>
-          </section>
+          <figure className="product-shot">
+            <img
+              className="product-shot__wide"
+              src="/settag-review-wide.svg"
+              width="1726"
+              height="587"
+              alt=""
+              fetchPriority="high"
+            />
+            <img
+              className="product-shot__narrow"
+              src="/settag-review-narrow.svg"
+              width="628"
+              height="587"
+              alt=""
+              fetchPriority="high"
+            />
+            <figcaption>
+              Actual SetTag review screen with synthetic demo filenames · existing genres,
+              suggestions, and write plans
+            </figcaption>
+          </figure>
 
           <div className="command">
             <code className="command__line">

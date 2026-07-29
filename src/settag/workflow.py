@@ -186,6 +186,18 @@ class PreparedWrite:
 
 
 @dataclass(frozen=True)
+class WriteTrackSummary:
+    """User-facing facts for one track in a pending write."""
+
+    filename: str
+    evidence: str
+    standard_genre: str
+
+    def render(self) -> str:
+        return f"{self.filename}\n  {self.evidence}\n  {self.standard_genre}"
+
+
+@dataclass(frozen=True)
 class WriteSummary:
     """What a batch of prepared writes would do, counted once.
 
@@ -202,10 +214,42 @@ class WriteSummary:
     standard_genre_edits: int
     evidence_scores: int
     empty_file_genres: int
+    tracks: tuple[WriteTrackSummary, ...]
 
     @property
     def unchanged_count(self) -> int:
         return self.track_count - self.write_count
+
+    @property
+    def confirmation_title(self) -> str:
+        return f"Ready to write {self.track_count} {_plural(self.track_count, 'track')}?"
+
+    @property
+    def confirmation_action(self) -> str:
+        return f"Write {self.track_count} {_plural(self.track_count, 'track')}"
+
+    @property
+    def confirmation_help(self) -> str:
+        return (
+            "Preflight passed. Only SetTag evidence and staged standard genre edits "
+            "will be written; unrelated metadata stays unchanged. SetTag will reopen "
+            "and verify every file."
+        )
+
+    def confirmation_preview(self, *, limit: int = 3) -> str:
+        visible = self.tracks[:limit]
+        sections = [track.render() for track in visible]
+        hidden = len(self.tracks) - len(visible)
+        if hidden:
+            sections.append(f"+ {hidden} more {_plural(hidden, 'track')}")
+
+        evidence_noun = _plural(self.bundle_changes, "SetTag evidence write")
+        genre_noun = _plural(self.standard_genre_edits, "standard genre edit")
+        sections.append(
+            f"Batch total: {self.bundle_changes} {evidence_noun}"
+            f" · {self.standard_genre_edits} {genre_noun}"
+        )
+        return "\n\n".join(sections)
 
 
 def summarize_writes(prepared: Sequence[PreparedWrite]) -> WriteSummary:
@@ -218,6 +262,7 @@ def summarize_writes(prepared: Sequence[PreparedWrite]) -> WriteSummary:
         standard_genre_edits=sum(item.standard_genre_change is not None for item in prepared),
         evidence_scores=sum(item.item.evidence_score_count for item in prepared),
         empty_file_genres=sum(not item.item.file_genre for item in prepared),
+        tracks=tuple(_summarize_track(item.item) for item in prepared),
     )
 
 
@@ -236,7 +281,43 @@ def summarize_planned(planned: Sequence[PlannedWrite]) -> WriteSummary:
         standard_genre_edits=sum(item.standard_genre_change is not None for item in planned),
         evidence_scores=sum(item.evidence_score_count for item in planned),
         empty_file_genres=sum(not item.file_genre for item in planned),
+        tracks=tuple(_summarize_track(item) for item in planned),
     )
+
+
+def _summarize_track(item: PlannedWrite) -> WriteTrackSummary:
+    score_count = item.evidence_score_count
+    if item.evidence_write_kind != "unchanged":
+        score_detail = (
+            f" · {score_count} ranked {_plural(score_count, 'score')}" if score_count else ""
+        )
+        action = "refresh" if item.evidence_write_kind == "refreshed" else "update"
+        evidence = f"SetTag evidence: {action}{score_detail}"
+    else:
+        evidence = "SetTag evidence: unchanged"
+
+    standard_change = item.standard_genre_change
+    if standard_change is None:
+        current = _genres(item.file_genre)
+        standard_genre = f"Standard genre: unchanged ({current})"
+    else:
+        standard_genre = (
+            f"Standard genre: {_genres(standard_change.before)} → {_genres(standard_change.after)}"
+        )
+
+    return WriteTrackSummary(
+        filename=item.path.name,
+        evidence=evidence,
+        standard_genre=standard_genre,
+    )
+
+
+def _genres(values: Sequence[str] | None) -> str:
+    return ", ".join(values) if values else "None"
+
+
+def _plural(count: int, singular: str) -> str:
+    return singular if count == 1 else f"{singular}s"
 
 
 @dataclass(frozen=True)

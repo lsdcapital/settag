@@ -1,4 +1,5 @@
 import wave
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -420,6 +421,54 @@ def test_summary_counts_writes_bundles_and_staged_genre_edits(tmp_path: Path) ->
     assert summary.bundle_changes == 2
     assert summary.standard_genre_edits == 1
     assert summary.empty_file_genres == 2
+    assert [track.filename for track in summary.tracks] == ["changed.wav", "staged.wav"]
+    assert summary.tracks[0].evidence == "SetTag evidence: update · 1 ranked score"
+    assert summary.tracks[0].standard_genre == "Standard genre: unchanged (None)"
+    assert summary.tracks[1].standard_genre == "Standard genre: None → House"
+    assert summary.confirmation_title == "Ready to write 2 tracks?"
+    assert summary.confirmation_action == "Write 2 tracks"
+    assert "Only SetTag evidence and staged standard genre edits" in (summary.confirmation_help)
+    assert "Batch total: 2 SetTag evidence writes · 1 standard genre edit" in (
+        summary.confirmation_preview()
+    )
+
+
+def test_write_plan_describes_a_timestamp_only_reanalysis_as_one_refresh(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "track.wav"
+    _silent_wav(path)
+    plan = replace(
+        _plan(path),
+        owned_changes=(
+            "Analysis time: 2026-07-28 → 2026-07-29",
+            "Task provenance: previous → current",
+        ),
+    )
+
+    assert plan.evidence_write_kind == "refreshed"
+    assert plan.evidence_write_label == "Evidence refreshed"
+    assert plan.write_plan_label == "Refresh"
+    assert summarize_planned([plan]).tracks[0].evidence == (
+        "SetTag evidence: refresh · 1 ranked score"
+    )
+
+
+def test_write_summary_limits_confirmation_preview_without_hiding_batch_total(
+    tmp_path: Path,
+) -> None:
+    paths = [tmp_path / f"track-{index}.wav" for index in range(5)]
+    for path in paths:
+        _silent_wav(path)
+    summary = summarize_planned([_plan(path) for path in paths])
+
+    preview = summary.confirmation_preview(limit=3)
+
+    assert "track-0.wav" in preview
+    assert "track-2.wav" in preview
+    assert "track-3.wav" not in preview
+    assert "+ 2 more tracks" in preview
+    assert "Batch total: 5 SetTag evidence writes · 0 standard genre edits" in preview
 
 
 def test_undo_preflight_counts_match_its_contents(tmp_path: Path) -> None:

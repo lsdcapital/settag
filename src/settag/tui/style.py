@@ -180,6 +180,10 @@ ModalScreen {
     border: solid #3a4744;
 }
 
+#confirm-dialog {
+    width: 76;
+}
+
 #undo-dialog {
     width: 88;
     max-width: 92%;
@@ -224,6 +228,10 @@ ModalScreen {
     color: #eef2f1;
     max-height: 16;
     overflow-y: auto;
+}
+
+#confirm-summary {
+    max-height: 20;
 }
 
 .dialog-actions {

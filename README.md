@@ -170,8 +170,8 @@ Press `V` as soon as the first track completes to open review. If you stay in
 the library, the app switches to review when the full batch finishes:
 
 ```text
-  ✓  Track                       File genre    Analysis          Suggested          Score  Changes
-  ✓  Eli & Dani - What Do...     None → House  New · 2026-07-23  Progressive House  0.664        7
+  ✓  Track                       File genre    Analysis          Suggested          Write plan
+  ✓  Eli & Dani - What Do...     None → House  New · 2026-07-23  Progressive House  Evidence + Genre
 
  Standard file genre
    None → House (staged)
