@@ -11,24 +11,25 @@
     "build": "vite build",
     "preview": "vite preview",
     "typecheck": "tsc --noEmit",
+    "update": "pnpm up -i -L",
     "whoami": "doppler run --project settag --config prod -- wrangler whoami",
     "deploy": "pnpm run build && doppler run --project settag --config prod -- wrangler deploy"
   },
   "dependencies": {
     "@tanstack/react-router": "^1.170.18",
-    "@tanstack/react-start": "^1.168.32",
+    "@tanstack/react-start": "^1.168.34",
     "react": "^19.2.0",
     "react-dom": "^19.2.0"
   },
   "devDependencies": {
     "@tanstack/router-cli": "^1.132.0",
-    "@types/node": "^22.10.2",
-    "@types/react": "^19.2.0",
-    "@types/react-dom": "^19.2.0",
-    "@vitejs/plugin-react": "^6.0.1",
-    "typescript": "^6.0.2",
-    "vite": "^8.0.0",
-    "wrangler": "^4.114.0"
+    "@types/node": "^26.1.2",
+    "@types/react": "^19.2.18",
+    "@types/react-dom": "^19.2.4",
+    "@vitejs/plugin-react": "^6.0.5",
+    "typescript": "^7.0.2",
+    "vite": "^8.2.0",
+    "wrangler": "^4.116.0"
   },
   "packageManager": "pnpm@11.17.0"
 }
