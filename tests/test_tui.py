@@ -1193,7 +1193,8 @@ def test_tui_requires_confirmation_then_writes_and_verifies(tmp_path: Path) -> N
             )
             assert "SetTag analysis bundle" not in rendered_summary
             await pilot.press("enter")
-            await pilot.pause(0.3)
+            await app.workers.wait_for_complete()
+            await pilot.pause()
             assert app.phase == "choose"
             assert app.busy is False
             assert app.review_indices == set()
@@ -1243,7 +1244,8 @@ def test_tui_write_is_journaled_and_can_be_undone_in_app(tmp_path: Path) -> None
             await pilot.pause(0.2)
             assert isinstance(app.screen, ConfirmWriteScreen)
             await pilot.press("enter")
-            await pilot.pause(0.3)
+            await app.workers.wait_for_complete()
+            await pilot.pause()
             assert app.entries[0].metadata is not None
             assert app.entries[0].metadata.status == "current"
 

@@ -60,6 +60,7 @@ settag = "settag.cli:main"
 dev = [
   "pytest>=8,<10",
   "ruff>=0.16,<1",
+  "tomli>=2",
   "ty>=0.0.18,<0.1",
 ]
 

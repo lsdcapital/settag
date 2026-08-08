@@ -522,6 +522,7 @@ dependencies = [
 dev = [
     { name = "pytest" },
     { name = "ruff" },
+    { name = "tomli" },
     { name = "ty" },
 ]
 
@@ -539,6 +540,7 @@ requires-dist = [
 dev = [
     { name = "pytest", specifier = ">=8,<10" },
     { name = "ruff", specifier = ">=0.16,<1" },
+    { name = "tomli", specifier = ">=2" },
     { name = "ty", specifier = ">=0.0.18,<0.1" },
 ]
 
