@@ -56,6 +56,10 @@ Footer > .footer--key {
     height: 1fr;
 }
 
+#hygiene-main {
+    height: 1fr;
+}
+
 #context {
     height: 3;
     padding: 1 2 0 2;
@@ -106,6 +110,10 @@ Footer > .footer--key {
 }
 
 SetTagApp.details-open #inspector-pane {
+    display: block;
+}
+
+HygieneApp.details-open #inspector-pane {
     display: block;
 }
 
@@ -279,8 +287,18 @@ SetTagApp.narrow #workspace {
     layout: vertical;
 }
 
+HygieneApp.narrow #workspace {
+    layout: vertical;
+}
+
 SetTagApp.narrow #tracks-pane,
 SetTagApp.narrow #inspector-pane {
+    width: 1fr;
+    min-width: 0;
+}
+
+HygieneApp.narrow #tracks-pane,
+HygieneApp.narrow #inspector-pane {
     width: 1fr;
     min-width: 0;
 }
@@ -289,7 +307,16 @@ SetTagApp.narrow #tracks-pane {
     height: 3fr;
 }
 
+HygieneApp.narrow #tracks-pane {
+    height: 3fr;
+}
+
 SetTagApp.narrow #inspector-pane {
+    height: 2fr;
+    padding: 0 1 1 1;
+}
+
+HygieneApp.narrow #inspector-pane {
     height: 2fr;
     padding: 0 1 1 1;
 }

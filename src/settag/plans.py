@@ -11,6 +11,7 @@ from settag.tags import (
     OWNED_DESCRIPTIONS,
     OwnedValues,
     TagChange,
+    hygiene_field_label,
     read_task_provenance,
     task_evidence_from_owned,
 )
@@ -488,6 +489,12 @@ def friendly_change(change: TagChange) -> str:
 
 def friendly_standard_genre_change(change: TagChange) -> str:
     return f"File genre: {_friendly_genres(change.before)} → {_friendly_genres(change.after)}"
+
+
+def friendly_hygiene_change(change: TagChange) -> str:
+    before = _friendly_values(change.before)
+    after = _friendly_values(change.after)
+    return f"Tag hygiene {hygiene_field_label(change.field)}: {before} → {after}"
 
 
 def _friendly_genres(values: list[str] | None) -> str:

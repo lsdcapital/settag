@@ -115,6 +115,7 @@ CHOOSE_ACTIONS = frozenset(
         "cycle_filter",
         "review",
         "analyze",
+        "hygiene",
         "undo",
         "quit",
     }
@@ -129,6 +130,7 @@ REVIEW_ACTIONS = frozenset(
         "edit_genre",
         "save",
         "write",
+        "hygiene",
         "undo",
         "quit",
     }
@@ -164,6 +166,7 @@ class SetTagApp(App[TuiOutcome]):
         Binding("e", "edit_genre", "Genre"),
         Binding("s", "save", "Save plan"),
         Binding("w", "write", "Write"),
+        Binding("h", "hygiene", "Hygiene"),
         Binding("u", "undo", "Undo"),
         Binding("q", "quit", "Quit"),
     ]
@@ -809,7 +812,7 @@ class SetTagApp(App[TuiOutcome]):
                 f"{selected} selected in this view"
                 f"  ·  Filter: {FILTER_LABELS[self.library_filter]}"
                 f"{review_hint}"
-                "  ·  Space toggle  ·  Enter/R analyze selected"
+                "  ·  Space toggle  ·  Enter/R analyze selected  ·  H hygiene"
             )
         else:
             selected = len(self.write_selected)
@@ -820,7 +823,7 @@ class SetTagApp(App[TuiOutcome]):
             base = (
                 f"{selected} will be written"
                 f"  ·  {genre_edits} standard genre edits"
-                "  ·  Space toggle  ·  Enter/W review write"
+                "  ·  Space toggle  ·  Enter/W review write  ·  H hygiene"
             )
         self.query_one("#status", Static).update(f"{message}  ·  {base}" if message else base)
 
@@ -1692,6 +1695,17 @@ class SetTagApp(App[TuiOutcome]):
                 severity="warning",
                 timeout=8,
             )
+
+    def action_hygiene(self) -> None:
+        if self.busy:
+            return
+        if self.analysis_running:
+            self.notify(
+                "Stop analysis before switching to metadata hygiene.",
+                severity="warning",
+            )
+            return
+        self.exit(TuiOutcome(0, "Opening metadata hygiene.", next_action="hygiene"))
 
     async def action_quit(self) -> None:
         if self.busy:

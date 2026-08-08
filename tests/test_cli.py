@@ -7,7 +7,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-from mutagen.id3 import ID3, TCON, TXXX
+from mutagen.id3 import COMM, ID3, TCON, TXXX
 from mutagen.wave import WAVE
 
 from settag import __version__
@@ -458,6 +458,60 @@ def test_inspect_falls_back_to_labels_when_scores_are_unreadable(
     assert result == 0
     assert "scores are unreadable; showing labels only" in stderr
     assert "1. Electronic---Deep House" in stderr
+
+
+def test_hygiene_plain_mode_reports_suggestions_without_writing(
+    tmp_path: Path,
+    capsys,
+) -> None:
+    path = tmp_path / "track.wav"
+    _silent_wav(path)
+    audio = WAVE(path)
+    audio.add_tags()
+    assert isinstance(audio.tags, ID3)
+    audio.tags.add(COMM(encoding=3, lang="eng", desc="", text=["electronicfresh.com"]))
+    audio.save()
+
+    result = main(["hygiene", str(path), "--no-tui"])
+    stderr = capsys.readouterr().err
+
+    assert result == 0
+    assert "SetTag hygiene scan" in stderr
+    assert "Tracks with findings: 1" in stderr
+    assert "Cleanup suggestions:  1" in stderr
+    assert "Comment: electronicfresh.com" in stderr
+    assert "Reason: contains a web address" in stderr
+    tags = WAVE(path).tags
+    assert tags is not None
+    assert tags.get("COMM::eng") is not None
+
+
+def test_hygiene_tty_opens_its_own_model_free_review_app(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    path = tmp_path / "track.wav"
+    _silent_wav(path)
+    audio = WAVE(path)
+    audio.add_tags()
+    assert isinstance(audio.tags, ID3)
+    audio.tags.add(COMM(encoding=3, lang="eng", desc="", text=["electronicfresh.com"]))
+    audio.save()
+
+    class FakeHygieneApp:
+        def __init__(self, **kwargs) -> None:
+            assert kwargs["source"] == path
+            assert kwargs["paths"] == [path.resolve()]
+            assert kwargs["batch"] is None
+
+        def run(self):
+            return SimpleNamespace(status=0, message="Hygiene review closed.")
+
+    monkeypatch.setattr(sys, "stdin", TtyStringIO())
+    monkeypatch.setattr(sys, "stdout", TtyStringIO())
+    monkeypatch.setattr("settag.cli.commands.HygieneApp", FakeHygieneApp)
+
+    assert main(["hygiene", str(path)]) == 0
 
 
 def test_path_shorthand_runs_a_noninteractive_dry_run_without_writing(

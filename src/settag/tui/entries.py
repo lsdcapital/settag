@@ -57,6 +57,7 @@ TASK_LABELS: dict[AnalysisTask, str] = {
 class TuiOutcome:
     status: int
     message: str
+    next_action: Literal["hygiene"] | None = None
 
 
 @dataclass

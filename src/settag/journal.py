@@ -4,9 +4,9 @@ SetTag changes files in a music library. The workbench database is a disposable
 cache, so the journal deliberately lives in its own database: clearing the
 workbench to recover from a problem must never destroy undo history.
 
-A journal entry stores the complete SetTag-owned bundle and the conventional
-genre tag exactly as they were immediately before the write, which is what
-``settag undo`` restores.
+A journal entry stores the complete SetTag-owned bundle, the conventional
+genre tag, and any explicitly cleaned hygiene fields exactly as they were
+immediately before the write, which is what ``settag undo`` restores.
 """
 
 from __future__ import annotations
@@ -17,13 +17,14 @@ import sqlite3
 import sys
 from collections.abc import Sequence
 from contextlib import closing, suppress
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from uuid import uuid4
 
 from settag.plans import (
     friendly_change,
+    friendly_hygiene_change,
     friendly_standard_genre_change,
     standard_genre_field,
 )
@@ -31,7 +32,8 @@ from settag.records import utc_now
 from settag.tags import OWNED_DESCRIPTIONS, OwnedValues, TagChange
 
 JOURNAL_SCHEMA_VERSION = 1
-WRITE_RECORD_SCHEMA = "settag.write/v1"
+WRITE_RECORD_SCHEMA = "settag.write/v2"
+READABLE_WRITE_RECORD_SCHEMAS = frozenset({"settag.write/v1", WRITE_RECORD_SCHEMA})
 DEFAULT_RETENTION_DAYS = 90
 
 
@@ -84,6 +86,8 @@ class WriteRecord:
     size_after: int
     mtime_ns_after: int
     written_at: str
+    hygiene_before: dict[str, list[str] | None] = field(default_factory=dict)
+    hygiene_after: dict[str, list[str] | None] = field(default_factory=dict)
 
     @property
     def owned_changes(self) -> tuple[TagChange, ...]:
@@ -108,12 +112,25 @@ class WriteRecord:
         )
 
     @property
+    def hygiene_changes(self) -> tuple[TagChange, ...]:
+        return tuple(
+            TagChange(
+                field=name,
+                before=self.hygiene_before.get(name),
+                after=self.hygiene_after.get(name),
+            )
+            for name in sorted(self.hygiene_before.keys() | self.hygiene_after.keys())
+            if self.hygiene_before.get(name) != self.hygiene_after.get(name)
+        )
+
+    @property
     def readable_changes(self) -> tuple[str, ...]:
         """Describe what the write did, in the same words the review screen used."""
         lines = [friendly_change(change) for change in self.owned_changes]
         standard_change = self.standard_genre_change
         if standard_change is not None:
             lines.append(friendly_standard_genre_change(standard_change))
+        lines.extend(friendly_hygiene_change(change) for change in self.hygiene_changes)
         return tuple(lines)
 
     def to_record(self) -> dict[str, object]:
@@ -125,6 +142,8 @@ class WriteRecord:
             "owned_after": self.owned_after,
             "standard_before": list(self.standard_before),
             "standard_after": None if self.standard_after is None else list(self.standard_after),
+            "hygiene_before": self.hygiene_before,
+            "hygiene_after": self.hygiene_after,
             "sha256_before": self.sha256_before,
             "size_after": self.size_after,
             "mtime_ns_after": self.mtime_ns_after,
@@ -150,10 +169,21 @@ class JournalBatch:
         return sum(entry.standard_genre_change is not None for entry in self.entries)
 
     @property
+    def hygiene_count(self) -> int:
+        return sum(len(entry.hygiene_changes) for entry in self.entries)
+
+    @property
     def summary(self) -> str:
         tracks = f"{self.track_count} track{'s' if self.track_count != 1 else ''}"
         genres = self.standard_genre_count
-        detail = f", {genres} file genre edit{'s' if genres != 1 else ''}" if genres else ""
+        details: list[str] = []
+        if genres:
+            details.append(f"{genres} file genre edit{'s' if genres != 1 else ''}")
+        if self.hygiene_count:
+            details.append(
+                f"{self.hygiene_count} tag cleanup{'s' if self.hygiene_count != 1 else ''}"
+            )
+        detail = f", {', '.join(details)}" if details else ""
         reverted = " (already reverted)" if self.reverted_at is not None else ""
         return f"{tracks}{detail}{reverted}"
 
@@ -391,7 +421,7 @@ class BatchRecorder:
 def write_record_from_record(value: object, *, location: str) -> WriteRecord:
     record = _mapping(value, location)
     schema = record.get("schema")
-    if schema != WRITE_RECORD_SCHEMA:
+    if schema not in READABLE_WRITE_RECORD_SCHEMAS:
         raise JournalError(f"{location}: unsupported schema {schema!r}")
     standard_after = record.get("standard_after")
     return WriteRecord(
@@ -404,6 +434,14 @@ def write_record_from_record(value: object, *, location: str) -> WriteRecord:
             None
             if standard_after is None
             else _genres(standard_after, f"{location}.standard_after")
+        ),
+        hygiene_before=_hygiene_values(
+            record.get("hygiene_before"),
+            f"{location}.hygiene_before",
+        ),
+        hygiene_after=_hygiene_values(
+            record.get("hygiene_after"),
+            f"{location}.hygiene_after",
         ),
         sha256_before=_string(record.get("sha256_before"), f"{location}.sha256_before"),
         size_after=_int(record.get("size_after"), f"{location}.size_after"),
@@ -446,6 +484,16 @@ def _owned(value: object, location: str) -> OwnedValues:
             continue
         owned[description] = list(_genres(item, f"{location}.{description}"))
     return owned
+
+
+def _hygiene_values(value: object, location: str) -> dict[str, list[str] | None]:
+    if value is None:
+        return {}
+    record = _mapping(value, location)
+    result: dict[str, list[str] | None] = {}
+    for name, item in record.items():
+        result[name] = None if item is None else list(_genres(item, f"{location}.{name}"))
+    return result
 
 
 def _days_ago(days: int) -> str:

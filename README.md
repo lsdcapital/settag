@@ -7,6 +7,10 @@ evidence, then lets you stage and verify metadata changes before writing.
 The default experience is a Textual app. The same executable also provides a
 plain, non-TUI CLI for scripts, redirected output, saved plans, and CI.
 
+Metadata hygiene is a separate, model-free workflow. It finds suspicious
+comments, web addresses, duplicate or empty text values, and generated encoder
+markers, then lets you review individual field-level removals before writing.
+
 Supported files:
 
 - MP3, AIFF, and WAV with ID3 metadata
@@ -110,6 +114,16 @@ settag "/path/to/track.mp3"
 settag "/path/to/music/library"
 ```
 
+For metadata cleanup without analysis, open the independent hygiene review:
+
+```sh
+settag hygiene "/path/to/music/library"
+```
+
+No model files are loaded. In the main app, `H` switches to the same hygiene
+step after any running analysis has stopped. Use `--no-tui` to print findings
+without changing files.
+
 In an interactive terminal this opens the Textual app as a full-width track
 list. Press `I` whenever you want to toggle the details panel. With details
 open, the library looks like this:
@@ -154,6 +168,7 @@ The library keys are:
 | `Enter` / `R` | Analyze the selected tracks |
 | `Esc` | Stop after the track currently being analyzed |
 | `U` | Undo a previous write |
+| `H` | Switch to the separate metadata-hygiene review |
 | `Q` | Quit |
 
 Cancellation is cooperative because Essentia/TensorFlow inference cannot be
@@ -196,6 +211,7 @@ The review keys are:
 | `Enter` / `W` | Preflight, confirm once, write, and verify completed tracks |
 | `B` | Return to the metadata library to choose another analysis batch |
 | `U` | Undo a previous write |
+| `H` | Switch to the separate metadata-hygiene review |
 | `Q` | Quit |
 
 Newly analyzed tracks with SetTag changes are checked for writing by default.
@@ -278,6 +294,37 @@ settag "/path/to/music" --top 5 --score-cutoff 0.10
 ```
 
 `--threshold` remains an alias for `--score-cutoff`.
+
+## Metadata hygiene
+
+Hygiene is intentionally separate from genre analysis:
+
+```text
+scan tags → flag suspicious values → choose fields → confirm → clean and verify
+```
+
+The first release recognizes comment-like and generated metadata in each
+supported container:
+
+| Container | Reviewed fields |
+|---|---|
+| ID3 | `COMM`, user URL frames, comment/source/url `TXXX` fields, `TSSE` |
+| FLAC | comment, description, source, URL, download, and encoder comments |
+| M4A/MP4 | `©cmt`, `©too`, and matching text freeform atoms |
+
+A comment such as `electronicfresh.com` is suggested for removal because it
+contains a web address. An ordinary DJ note remains untouched. Encoder markers
+such as `Lavf62.12.102`, empty values, and exact duplicate values are also
+suggested. These rules create review suggestions, never automatic writes.
+
+Every finding is checked independently. `Space` includes or excludes one
+field-level suggestion, `A` toggles all findings, `I` shows the exact before and
+after values, and `W` runs preflight and opens one confirmation. Only checked
+suggestions are written. Titles, artists, albums, artwork, genres, SetTag
+evidence, and unselected comments remain unchanged.
+
+Hygiene writes use the same temporary-copy, reopen-and-verify, and journal path
+as analysis writes. `settag undo` therefore restores cleaned values too.
 
 ## Plain CLI mode
 
@@ -398,8 +445,9 @@ assuming labels spelled the same mean the same thing.
 The standard genre is not part of the SetTag namespace. For newly analyzed
 tracks where it is empty, the app stages the conservative standard-genre
 suggestion by default; the user can edit or opt out before confirming the
-write. Title, artist, album, comments, artwork, duplicate fields, and metadata
-owned by other software are preserved.
+write. Title, artist, album, artwork, duplicate fields, and metadata owned by
+other software are preserved. Comments and other hygiene fields are preserved
+unless the user explicitly checks their removal in the separate hygiene review.
 
 Before any batch write, SetTag verifies:
 
@@ -438,7 +486,8 @@ clearing the cache never destroys undo history:
 | Workbench cache (disposable) | `state.sqlite3`, overridable with `SETTAG_STATE_DB` |
 
 Undo restores exactly what a write changed: the SetTag-owned fields listed
-above, and the conventional genre tag when that write explicitly staged an edit.
+above, the conventional genre tag when that write explicitly staged an edit,
+and any fields explicitly removed by a hygiene write.
 A track that had no SetTag metadata beforehand is returned to having none rather
 than being left with debris.
 
@@ -589,8 +638,9 @@ uv run ty check
 uv build
 ```
 
-GitHub Actions runs the same lint, format, type, and test checks on Python
-3.10, 3.12, and 3.13 for every push to `main` and every pull request.
+GitHub Actions runs the same lint, format, type, and test checks on every
+supported Python version (3.10 through 3.14) for each push to `main`, pull
+request, and release tag.
 
 The tests use Textual's headless app runner and synthetic audio; they do not
 run model inference. A real-audio smoke test requires downloaded models:

@@ -16,6 +16,7 @@ from collections.abc import Sequence
 from pathlib import Path
 from typing import TextIO
 
+from settag.hygiene import HygieneBatch
 from settag.journal import BatchRecorder, JournalBatch, WriteJournal
 from settag.plans import PlannedWrite
 from settag.policy import Prediction
@@ -79,6 +80,39 @@ def _print_plain_batch(source: Path, batch: AnalysisBatch) -> None:
     print(file=sys.stderr)
     print(
         "Dry run only; nothing was written. Run in a terminal for the interactive app.",
+        file=sys.stderr,
+    )
+
+
+def _print_hygiene_batch(source: Path, batch: HygieneBatch) -> None:
+    print(file=sys.stderr)
+    print("SetTag hygiene scan", file=sys.stderr)
+    print(source.expanduser().resolve(), file=sys.stderr)
+    print(file=sys.stderr)
+    print(f"  Tracks scanned:       {len(batch.tracks)}", file=sys.stderr)
+    print(f"  Tracks with findings: {batch.affected_track_count}", file=sys.stderr)
+    print(f"  Cleanup suggestions:  {batch.finding_count}", file=sys.stderr)
+    print(f"  Tracks already clean: {batch.clean_track_count}", file=sys.stderr)
+    print(f"  Errors:               {len(batch.failures)}", file=sys.stderr)
+
+    for track in batch.tracks:
+        if not track.findings:
+            continue
+        print(file=sys.stderr)
+        print(track.path, file=sys.stderr)
+        for finding in track.findings:
+            print(f"  {finding.label}: {finding.current_text}", file=sys.stderr)
+            print(f"    Suggestion: {finding.result_text}", file=sys.stderr)
+            print(f"    Reason: {finding.reason_text}", file=sys.stderr)
+
+    for failure in batch.failures:
+        print(file=sys.stderr)
+        print(f"Error: {failure.path}: {failure.description}", file=sys.stderr)
+
+    print(file=sys.stderr)
+    print(
+        "Review only; nothing was changed. Run in a terminal without --no-tui "
+        "to choose and clean suggestions.",
         file=sys.stderr,
     )
 
@@ -226,7 +260,7 @@ def _print_undo_summary(batch: JournalBatch, preflight: UndoPreflight) -> None:
         print(f"  Files skipped:    {preflight.blocked_count}", file=sys.stderr)
     print(file=sys.stderr)
     print(
-        "Only the SetTag metadata and staged genre edits above are rewritten.",
+        "Only the SetTag metadata, staged genre edits, and hygiene fields above are rewritten.",
         file=sys.stderr,
     )
     print(

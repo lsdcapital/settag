@@ -7,6 +7,7 @@ application state and compute no counts: what they show is handed to them.
 from __future__ import annotations
 
 from collections.abc import Sequence
+from typing import Protocol
 
 from textual import events, on
 from textual.app import ComposeResult
@@ -18,7 +19,20 @@ from textual.widgets import Button, DataTable, Input, Label, Static
 from settag.journal import JournalBatch
 from settag.plans import PlannedWrite, suggested_file_genre
 from settag.tui.entries import suggested_label
-from settag.workflow import UndoPreflight, WriteSummary
+from settag.workflow import UndoPreflight
+
+
+class ConfirmationSummary(Protocol):
+    @property
+    def confirmation_title(self) -> str: ...
+
+    @property
+    def confirmation_action(self) -> str: ...
+
+    @property
+    def confirmation_help(self) -> str: ...
+
+    def confirmation_preview(self, *, limit: int = 3) -> str: ...
 
 
 class GenreEditScreen(ModalScreen[str | None]):
@@ -105,7 +119,7 @@ class ConfirmWriteScreen(ModalScreen[bool]):
         Binding("n,escape", "cancel", "Cancel"),
     ]
 
-    def __init__(self, summary: WriteSummary) -> None:
+    def __init__(self, summary: ConfirmationSummary) -> None:
         super().__init__()
         self.summary = summary
 
@@ -267,8 +281,8 @@ class ConfirmUndoScreen(ModalScreen[bool]):
                 id="confirm-summary",
             )
             yield Static(
-                "Only the SetTag metadata and staged genre edits are rewritten. "
-                "SetTag will verify each file afterwards.",
+                "Only the SetTag metadata, staged genre edits, and hygiene fields "
+                "shown in the write are restored. SetTag will verify each file afterwards.",
                 markup=False,
                 id="dialog-help",
             )

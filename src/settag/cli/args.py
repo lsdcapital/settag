@@ -17,13 +17,13 @@ from settag.policy import MIDDLE_PATCHES, SPACED_PATCHES, AudioSample, parse_aud
 from settag.state import DEFAULT_STATE_DB
 from settag.tasks import AnalysisTask, parse_tasks
 
-COMMANDS = frozenset({"run", "models", "analyze", "inspect", "preview", "apply", "undo"})
+COMMANDS = frozenset({"run", "models", "analyze", "inspect", "hygiene", "preview", "apply", "undo"})
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="settag",
-        description="Analyze audio genre metadata without changing files by default.",
+        description="Analyze, review, and safely maintain audio metadata.",
         epilog='Most users can run: settag "/path/to/music"',
     )
     # The same string SetTag stamps into SETTAG_VERSION, so a tagged file can
@@ -117,6 +117,18 @@ def build_parser() -> argparse.ArgumentParser:
             "taxonomy per task per track is unreadable across a directory."
         ),
     )
+
+    hygiene = subparsers.add_parser(
+        "hygiene",
+        help="Review suspicious comments, URLs, duplicates, and encoder markers.",
+    )
+    hygiene.add_argument("path", type=Path)
+    hygiene.add_argument(
+        "--no-tui",
+        action="store_true",
+        help="Print hygiene suggestions without opening the review app.",
+    )
+    _add_journal_db(hygiene)
 
     preview = subparsers.add_parser(
         "preview",

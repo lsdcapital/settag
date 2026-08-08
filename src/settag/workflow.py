@@ -37,6 +37,7 @@ from settag.tags import (
     TagPlan,
     apply_metadata_tags,
     build_task_owned_values,
+    plan_hygiene_tags,
     plan_owned_tags,
     plan_standard_genres,
     read_duration_seconds,
@@ -827,9 +828,10 @@ def apply_undo(
 ) -> int:
     """Restore the tag values each write replaced, newest write first.
 
-    Only the SetTag-owned bundle and an explicitly staged conventional genre
-    edit are rewritten. This is not a byte-level restore: mutagen rewrites the
-    tag block on save, so the file will not regain its pre-write SHA-256.
+    Only the SetTag-owned bundle, an explicitly staged conventional genre edit,
+    and explicitly cleaned hygiene fields are rewritten. This is not a
+    byte-level restore: mutagen rewrites the tag block on save, so the file will
+    not regain its pre-write SHA-256.
     """
     total = len(entries)
     completed = 0
@@ -839,11 +841,17 @@ def apply_undo(
             expected_standard_change = (
                 plan_standard_genres(entry.path, standard) if standard is not None else None
             )
+            hygiene = dict(entry.hygiene_before) if entry.hygiene_changes else None
+            expected_hygiene_plan = (
+                plan_hygiene_tags(entry.path, hygiene) if hygiene is not None else None
+            )
             apply_metadata_tags(
                 entry.path,
                 dict(entry.owned_before),
                 standard_genres=standard,
                 expected_standard_change=expected_standard_change,
+                hygiene_values=hygiene,
+                expected_hygiene_plan=expected_hygiene_plan,
             )
             completed += 1
             if on_progress is not None:

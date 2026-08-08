@@ -4,11 +4,12 @@
 
 ```text
 audio files → metadata scan → choose → analysis → staged plan → verified write
-                         │          │       │     │
-                         └──────── Textual UI ────┤
-                                    │      ↕
-                                    │ local SQLite workbench
-                                    plain CLI / JSONL ────────┘
+             │           │                                      ↑
+             │           └→ hygiene review → cleanup plan ──────┘
+             └────────────── Textual UI ─────────────────────────┤
+                                  │      ↕
+                                  │ local SQLite workbench
+                                  plain CLI / JSONL ─────────────┘
 ```
 
 SetTag is independent from SetPath. SetPath may consume the resulting metadata
@@ -26,6 +27,13 @@ but should not install, invoke, bundle, or write through SetTag.
 - apply and verify prepared writes, journaling each completed one
 - preflight and apply an undo of a previous write
 - persist compact plans
+
+`src/settag/hygiene.py` owns the independent, model-free cleanup operations:
+
+- inspect supported comment-like and generated text fields
+- turn deterministic rules into individually reviewable findings
+- preflight selected field-level cleanup plans
+- apply, verify, and journal cleanup writes
 
 The Textual app and plain CLI are presentation and input adapters over those
 operations. Metadata policy does not live in either UI.
@@ -45,6 +53,7 @@ settag/cli/     args      the accepted command grammar
                 render    everything printed, prompted, or logged
 
 settag/tui/     app       phases, selection, background work
+                hygiene   independent metadata-hygiene review
                 screens   modal dialogs
                 table     column layout and row rendering
                 entries   the per-track state a row displays
@@ -81,9 +90,33 @@ When the first argument is a file or directory, it is normalized to
 - If either is not a TTY, `run` is a plain dry run.
 - `run --no-tui` explicitly selects the plain dry run.
 - Named `analyze`, `inspect`, `preview`, and `apply` commands are always plain.
+- `hygiene PATH` opens its independent Textual review in a TTY; `--no-tui`
+  prints the same findings without writing.
 
 There is no second interactive menu or per-track prompt workflow. Textual is
 the single interactive product.
+
+## Metadata hygiene workflow
+
+Hygiene is a sibling workflow, not an analysis phase. It never constructs or
+loads a model:
+
+```text
+scan tags → detect → select field-level findings → preflight → confirm → clean
+```
+
+Findings are deterministic suggestions: a web address in a comment-like field,
+a generated encoder marker, an empty text value, or an exact duplicate. The
+review table shows the native field's user-facing label, current value, and the
+reason it was flagged. Every finding is independently checked. A normal comment
+with no matching rule is absent from review and cannot be changed by the plan.
+
+`H` switches from the analysis app into hygiene after background analysis has
+stopped. `settag hygiene PATH` opens hygiene directly without starting the
+analyzer. Hygiene preflights the file size, mtime, native adapter, and exact
+current values, then repeats preflight after confirmation. Its changes join the
+same temporary-copy transaction, candidate verification, atomic replacement,
+and write journal used by other metadata writes.
 
 ## Interactive state model
 
@@ -220,8 +253,9 @@ workbench. Clearing the workbench to recover from a problem must not destroy
 the ability to undo a write.
 
 One apply operation is one batch. Each entry stores the complete SetTag-owned
-bundle and conventional genre exactly as they were before that file was
-written, plus the size and mtime immediately after. The before-state is
+bundle, conventional genre, and any explicitly cleaned hygiene fields exactly
+as they were before that file was written, plus the size and mtime immediately
+after. The before-state is
 captured during preflight and is trustworthy at write time because
 `apply_prepared` rechecks the source SHA-256 and `apply_metadata_tags` rechecks
 the plan before saving.
@@ -257,10 +291,11 @@ a reverted file does not regain its pre-write SHA-256.
     writing.
 11. Predictions below the review cutoff are never suggested merely to force a
     result, but may remain in the bounded evidence bundle for consumers.
-12. Artwork, titles, artists, comments, and metadata owned by other tools are
-    preserved.
-13. Every completed write is reopened and verified against all SetTag values
-    and the expected conventional genre.
+12. Artwork, titles, artists, and metadata owned by other tools are preserved.
+    Comments and other hygiene fields change only when their individual cleanup
+    suggestions are checked and confirmed in the separate hygiene workflow.
+13. Every completed write is reopened and verified against all planned SetTag,
+    conventional genre, and hygiene values.
 14. Every completed interactive analysis is persisted for restart recovery.
 15. Every input produces an analysis or error record when an output stream is
     requested.
@@ -315,15 +350,15 @@ number already completed.
 
 ## Metadata adapters
 
-| Adapter | Files | SetTag evidence | Standard genre |
-|---|---|---|---|
-| `id3` | MP3, AIFF, WAV | `TXXX:SETTAG_*` | `TCON` |
-| `vorbis-comments` | FLAC | `SETTAG_*` comments | `GENRE` |
-| `mp4-freeform` | M4A, M4B, MP4 | `----:com.lsdcapital.settag:*` | `©gen` |
+| Adapter | Files | SetTag evidence | Standard genre | Hygiene fields |
+|---|---|---|---|---|
+| `id3` | MP3, AIFF, WAV | `TXXX:SETTAG_*` | `TCON` | `COMM`, `WXXX`, selected `TXXX`, `TSSE` |
+| `vorbis-comments` | FLAC | `SETTAG_*` comments | `GENRE` | named comment/source/URL/encoder fields |
+| `mp4-freeform` | M4A, M4B, MP4 | `----:com.lsdcapital.settag:*` | `©gen` | `©cmt`, `©too`, matching freeform atoms |
 
-A combined write loads one native container, validates both planned layers,
-updates SetTag fields plus the optional conventional genre, saves once, and
-reopens the file for verification.
+A combined write loads one native container, validates every planned layer,
+updates SetTag fields plus the optional conventional genre and hygiene edits,
+saves once, and reopens the file for verification.
 
 The scanner accepts `.mp3`, `.flac`, `.m4a`, `.m4b`, `.mp4`, `.aif`, `.aiff`,
 `.wav`, and `.wave`. A recognized extension whose parsed metadata container is

@@ -8,6 +8,7 @@ existing imports of ``settag.tui`` continue to resolve.
 
 from settag.tui.app import SetTagApp
 from settag.tui.entries import TrackEntry, TuiOutcome
+from settag.tui.hygiene import HygieneApp
 from settag.tui.screens import (
     ConfirmUndoScreen,
     ConfirmWriteScreen,
@@ -21,6 +22,7 @@ __all__ = [
     "ConfirmWriteScreen",
     "ErrorScreen",
     "GenreEditScreen",
+    "HygieneApp",
     "SetTagApp",
     "TrackEntry",
     "TuiOutcome",

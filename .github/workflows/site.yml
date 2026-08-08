@@ -24,21 +24,17 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      # Must precede setup-node: the cache resolver needs pnpm on PATH to read
-      # the store path. package_json_file is required because `defaults.run`
-      # does not apply to action steps, so this would otherwise look for
-      # packageManager in the repo root rather than in site/.
-      - uses: pnpm/action-setup@v4
+      # `defaults.run` does not apply to action steps, so the package and lock
+      # paths are explicit. Dependency installation remains a named step below.
+      - uses: pnpm/setup@v2
         with:
-          package_json_file: site/package.json
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: "24"
-          cache: pnpm
+          package-json-file: site/package.json
+          runtime: node@24
+          cache: true
           cache-dependency-path: site/pnpm-lock.yaml
+          install: false
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
@@ -55,4 +51,4 @@ jobs:
       - name: Verify the page was prerendered
         run: |
           test -f dist/client/index.html
-          grep -aq "Nothing gets written until you say so" dist/client/index.html
+          grep -aq "Nothing about your library leaves the machine." dist/client/index.html

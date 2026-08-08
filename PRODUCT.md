@@ -20,6 +20,8 @@ platform, workflow, and licensing context before they install it.
 
 SetTag analyzes audio for ranked genre evidence, compares that evidence with
 existing file metadata, and helps the user stage safe, explicit tag changes.
+Its separate metadata-hygiene workflow reviews suspicious comments and
+generated text debris without loading an analysis model.
 Success means a DJ can scan a library, spot missing or implausible genres,
 accept or edit individual suggestions, include or exclude tracks in bulk, and
 write only the reviewed changes without losing unrelated metadata.
@@ -55,6 +57,9 @@ prerendered, static companion to the open-source repository and package.
   comments; and M4A, M4B, and MP4 through MP4 atoms.
 - SetTag preserves unrelated metadata, stages conventional genre changes
   separately from SetTag-owned evidence, and verifies completed writes.
+- Metadata hygiene is a separate model-free review that flags web addresses in
+  comment-like fields, duplicates, empty values, and encoder markers. Only
+  individually checked suggestions are removed, verified, and journaled.
 - SetTag requires Python 3.10–3.14 and currently supports recent macOS releases
   and Linux on x86_64. Windows and Linux on ARM are unsupported because
   `essentia-tensorflow` does not publish compatible wheels.

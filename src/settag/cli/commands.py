@@ -23,6 +23,7 @@ from settag.cli.render import (
     _log_inspection,
     _log_summary,
     _print_batch_plan_summary,
+    _print_hygiene_batch,
     _print_plain_batch,
     _print_plan_preview,
     _print_recent_batches,
@@ -33,6 +34,7 @@ from settag.cli.render import (
     _prompt_for_undo,
 )
 from settag.config import SetTagConfig, load_config
+from settag.hygiene import inspect_hygiene_paths
 from settag.journal import BatchRecorder, JournalError, WriteJournal, default_journal_db
 from settag.model_store import (
     download_task_models,
@@ -45,7 +47,7 @@ from settag.records import analysis_record, config_record, error_record
 from settag.scanner import scan_audio
 from settag.state import WorkbenchStore
 from settag.tags import read_genre_state, read_owned_values
-from settag.tui import SetTagApp
+from settag.tui import HygieneApp, SetTagApp
 from settag.workflow import (
     AnalysisBatch,
     CancelCallback,
@@ -81,6 +83,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             return _run_analyze(args)
         if args.command == "inspect":
             return _run_inspect(args)
+        if args.command == "hygiene":
+            return _run_hygiene(args)
         if args.command == "preview":
             return _run_preview(args)
         if args.command == "apply":
@@ -237,6 +241,17 @@ def _run_default(args: argparse.Namespace) -> int:
             analysis_loader.close()
         if outcome is None:
             return 0
+        if getattr(outcome, "next_action", None) == "hygiene":
+            hygiene_outcome = HygieneApp(
+                source=args.path,
+                paths=paths,
+                batch=None,
+                journal=_journal_db(args),
+            ).run()
+            if hygiene_outcome is None:
+                return 0
+            print(hygiene_outcome.message, file=sys.stderr)
+            return hygiene_outcome.status
         print(outcome.message, file=sys.stderr)
         return outcome.status
 
@@ -391,6 +406,35 @@ def _run_inspect(args: argparse.Namespace) -> int:
             failures += 1
             LOGGER.error("%s: %s", path, error)
     return 1 if failures else 0
+
+
+def _run_hygiene(args: argparse.Namespace) -> int:
+    try:
+        paths = scan_audio(args.path)
+    except Exception as error:
+        print(str(error), file=sys.stderr)
+        return 2
+
+    if not paths:
+        print("No supported audio files found.", file=sys.stderr)
+        return 0
+
+    interactive = sys.stdin.isatty() and sys.stdout.isatty()
+    if interactive and not args.no_tui:
+        outcome = HygieneApp(
+            source=args.path,
+            paths=paths,
+            batch=None,
+            journal=_journal_db(args),
+        ).run()
+        if outcome is None:
+            return 0
+        print(outcome.message, file=sys.stderr)
+        return outcome.status
+
+    batch = inspect_hygiene_paths(paths)
+    _print_hygiene_batch(args.path, batch)
+    return 1 if batch.failures else 0
 
 
 def _run_apply(args: argparse.Namespace) -> int:

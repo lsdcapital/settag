@@ -252,6 +252,29 @@ def test_tui_reads_metadata_before_loading_model_and_analyzes_only_selection(
     assert WAVE(current).tags is None
 
 
+def test_tui_hands_off_to_the_separate_hygiene_step(tmp_path: Path) -> None:
+    path = tmp_path / "track.wav"
+    _silent_wav(path)
+    app = SetTagApp(
+        source=path,
+        initial_metadata=MetadataBatch(tracks=(_metadata_track(path),), failures=()),
+        analysis_loader=lambda _paths, _progress, _cancel: (_ for _ in ()).throw(
+            AssertionError("hygiene must not start analysis")
+        ),
+    )
+
+    async def exercise() -> None:
+        async with app.run_test(size=(120, 36)) as pilot:
+            await pilot.pause()
+            await pilot.press("h")
+            await pilot.pause()
+
+    asyncio.run(exercise())
+
+    assert app.return_value is not None
+    assert app.return_value.next_action == "hygiene"
+
+
 def test_tui_analyzes_and_reviews_all_configured_tasks(tmp_path: Path) -> None:
     path = tmp_path / "track.wav"
     _silent_wav(path)
