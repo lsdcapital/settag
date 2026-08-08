@@ -48,7 +48,7 @@ dependencies = [
 ]
 
 [project.urls]
-Homepage = "https://settag.dev"
+Homepage = "https://github.com/lsdcapital/settag"
 Repository = "https://github.com/lsdcapital/settag"
 Issues = "https://github.com/lsdcapital/settag/issues"
 Changelog = "https://github.com/lsdcapital/settag/releases"
