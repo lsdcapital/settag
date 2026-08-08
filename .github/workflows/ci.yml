@@ -31,6 +31,7 @@ jobs:
         with:
           enable-cache: true
           prune-cache: true
+          cache-suffix: py${{ matrix.python-version }}
 
       - name: Install dependencies
         run: uv sync --group dev --python ${{ matrix.python-version }}
