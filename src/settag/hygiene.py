@@ -23,10 +23,14 @@ from settag.tags import (
     read_owned_values,
 )
 
+# A bare domain is only flagged on a top-level domain that rarely ends an
+# ordinary English phrase. Short ones such as .to, .me, .co and .cc are left out:
+# "cue to.me" or "fade to.co" is a DJ note, not a promo link, and every one of
+# those addresses is still caught when it carries a scheme or www. prefix.
 _WEB_ADDRESS = re.compile(
     r"(?ix)(?:\bhttps?://|\bwww\.)\S+|"
     r"(?<!@)\b(?:[a-z0-9](?:[a-z0-9-]{0,62})\.)+"
-    r"(?:com|net|org|io|co|ru|to|cc|me|info|biz|xyz|site|club|music|download)\b"
+    r"(?:com|net|org|io|ru|info|biz|xyz|site|club|music|download)\b"
 )
 _PROMOTIONAL_COMMENT = re.compile(
     r"(?ix)\b(?:downloaded\s+from|visit\s+(?:our\s+)?website|free\s+mp3|"

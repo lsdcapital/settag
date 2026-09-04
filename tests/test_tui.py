@@ -1484,3 +1484,77 @@ def test_a_sample_is_shown_as_such_and_never_selected_for_analysis(
             assert analyzed == [(track,)]
 
     asyncio.run(exercise())
+
+
+def test_tui_partial_undo_leaves_the_batch_open(tmp_path: Path) -> None:
+    """A file changed elsewhere is skipped, and the batch must not then read as reverted."""
+    first = tmp_path / "first.wav"
+    second = tmp_path / "second.wav"
+    _silent_wav(first)
+    _silent_wav(second)
+    journal = WriteJournal(tmp_path / "journal.sqlite3")
+    app = SetTagApp(
+        source=tmp_path,
+        initial_metadata=MetadataBatch(
+            tracks=(_metadata_track(first), _metadata_track(second)),
+            failures=(),
+        ),
+        analysis_loader=lambda paths, _progress, _cancel: _analysis_batch(paths),
+        journal=journal,
+    )
+
+    async def exercise() -> None:
+        async with app.run_test(size=(140, 42)) as pilot:
+            await pilot.pause()
+            status = app.query_one("#status", Static)
+            await pilot.press("r")
+            for _ in range(30):
+                await pilot.pause(0.05)
+                if app.phase == "review":
+                    break
+            await pilot.press("enter")
+            await pilot.pause(0.2)
+            assert isinstance(app.screen, ConfirmWriteScreen)
+            await pilot.press("enter")
+            await app.workers.wait_for_complete()
+            await pilot.pause()
+
+            # Another tool retags the second file after SetTag wrote it.
+            changed = WAVE(second)
+            assert changed.tags is not None
+            changed.tags["TCON"] = TCON(encoding=3, text=["Techno"])
+            changed.save()
+
+            await pilot.press("u")
+            for _ in range(30):
+                await pilot.pause(0.05)
+                if isinstance(app.screen, UndoScreen):
+                    break
+            assert isinstance(app.screen, UndoScreen)
+            await pilot.press("enter")
+            for _ in range(30):
+                await pilot.pause(0.05)
+                if isinstance(app.screen, ConfirmUndoScreen):
+                    break
+            assert isinstance(app.screen, ConfirmUndoScreen)
+            await pilot.press("enter")
+            for _ in range(40):
+                await pilot.pause(0.05)
+                if not app.busy and app.phase == "choose":
+                    break
+
+            assert app.busy is False
+            rendered = str(status.render())
+            assert "Restored 1 file" in rendered
+            assert "1 skipped file still carries the write" in rendered
+
+    asyncio.run(exercise())
+    restored = WAVE(first).tags
+    assert restored is None or "TCON" not in restored
+    kept = WAVE(second).tags
+    assert kept is not None
+    assert kept["TCON"].text == ["Techno"]
+
+    batch = journal.latest()
+    assert batch is not None
+    assert batch.reverted_at is None

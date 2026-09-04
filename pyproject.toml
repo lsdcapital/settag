@@ -40,7 +40,7 @@ classifiers = [
 ]
 dependencies = [
   "essentia-tensorflow==2.1b6.dev1389; python_version < '3.14'",
-  "essentia-tensorflow>=2.1b6.dev1438; python_version >= '3.14'",
+  "essentia-tensorflow==2.1b6.dev1438; python_version >= '3.14'",
   "mutagen>=1.47,<2",
   "numpy>=1.26,<3",
   "textual>=8,<9",
@@ -81,6 +81,9 @@ exclude = [
   "site/",
   ".github/",
   ".conductor/",
+  "scripts/",
+  "PRODUCT.md",
+  "TODO.md",
 ]
 
 [tool.pytest.ini_options]

@@ -526,7 +526,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "essentia-tensorflow", marker = "python_full_version < '3.14'", specifier = "==2.1b6.dev1389" },
-    { name = "essentia-tensorflow", marker = "python_full_version >= '3.14'", specifier = ">=2.1b6.dev1438" },
+    { name = "essentia-tensorflow", marker = "python_full_version >= '3.14'", specifier = "==2.1b6.dev1438" },
     { name = "mutagen", specifier = ">=1.47,<2" },
     { name = "numpy", specifier = ">=1.26,<3" },
     { name = "textual", specifier = ">=8,<9" },

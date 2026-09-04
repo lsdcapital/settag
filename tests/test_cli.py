@@ -1374,3 +1374,39 @@ def test_run_reads_the_config_named_by_settag_config(tmp_path: Path, capsys) -> 
     args = build_parser().parse_args(["run", str(tmp_path)])
 
     assert args.config == Path(os.environ["SETTAG_CONFIG"])
+
+
+def test_partial_undo_leaves_the_batch_open_for_a_forced_retry(tmp_path: Path, capsys) -> None:
+    """Marking a half-restored batch reverted would hide the files that still carry the write."""
+    first = tmp_path / "first.wav"
+    second = tmp_path / "second.wav"
+    plan_path = tmp_path / "plan.jsonl"
+    lines = []
+    for path in (first, second):
+        _silent_wav(path)
+        planned = stage_file_genre(
+            planned_write_for_track(
+                prepare_track(path, analyzer=FakeAnalyzer(), top=5, threshold=0.10)
+            ),
+            ("Deep House",),
+        )
+        lines.append(json.dumps(planned_write_record(planned)))
+    plan_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    assert main(["apply", str(plan_path), "--yes"]) == 0
+    capsys.readouterr()
+    _retag_outside_settag(second, "Techno")
+
+    assert main(["undo", "--yes"]) == 0
+    output = capsys.readouterr().err
+
+    assert "Done. 1 file restored and verified." in output
+    assert "1 file was skipped, so this write stays listed" in output
+    assert "--force" in output
+    batch = WriteJournal(Path(os.environ["SETTAG_JOURNAL_DB"])).latest()
+    assert batch is not None
+    assert batch.reverted_at is None
+    first_tags = WAVE(first).tags
+    assert first_tags is None or "TCON" not in first_tags
+    second_tags = WAVE(second).tags
+    assert second_tags is not None
+    assert second_tags["TCON"].text == ["Techno"]

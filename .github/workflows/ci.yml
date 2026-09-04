@@ -27,10 +27,10 @@ jobs:
         python-version: ["3.10", "3.11", "3.12", "3.13", "3.14"]
 
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v9.0.0
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
         with:
           enable-cache: true
           prune-cache: true
@@ -38,6 +38,11 @@ jobs:
 
       - name: Install dependencies
         run: uv sync --group dev --python ${{ matrix.python-version }}
+
+      # A pyproject change that leaves uv.lock stale would otherwise pass every
+      # job here and only surface as a different resolution on someone's machine.
+      - name: Check the lockfile is current
+        run: uv lock --check
 
       - name: Lint
         run: uv run ruff check .
@@ -50,3 +55,39 @@ jobs:
 
       - name: Test
         run: uv run pytest
+
+  # `uv sync` installs the project editable from src/, so every check above
+  # passes even if the wheel itself is broken. Build and install the real
+  # artifact here so a packaging break fails the PR instead of the release.
+  package:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          enable-cache: true
+          prune-cache: true
+          cache-suffix: package
+
+      - name: Build
+        run: uv build --python 3.12
+
+      - name: Smoke-test the built wheel
+        run: |
+          package_version="$(uv run --python 3.12 python -c 'import settag; print(settag.__version__)')"
+          test -f "dist/settag-${package_version}.tar.gz"
+          test -f "dist/settag-${package_version}-py3-none-any.whl"
+          uv venv /tmp/smoke --python 3.12
+          uv pip install \
+            --python /tmp/smoke/bin/python \
+            "dist/settag-${package_version}-py3-none-any.whl"
+          cd /tmp
+          reported="$(/tmp/smoke/bin/settag --version)"
+          echo "installed wheel reports: ${reported}"
+          case "${reported}" in
+            *"${package_version}"*) ;;
+            *) echo "settag --version did not report ${package_version}" >&2; exit 1 ;;
+          esac

@@ -220,6 +220,7 @@ class SetTagApp(App[TuiOutcome]):
         self._pending_write: tuple[PlannedWrite, ...] = ()
         self._pending_undo: tuple[WriteRecord, ...] = ()
         self._pending_undo_batch: str | None = None
+        self._pending_undo_skipped = 0
         self._written_count = 0
         self._table_layout: tuple[tuple[TrackTableColumn, int], ...] = ()
         self.sub_title = "Reading existing metadata"
@@ -1469,7 +1470,9 @@ class SetTagApp(App[TuiOutcome]):
     def _confirm_undo(self, batch: JournalBatch, preflight: UndoPreflight) -> None:
         self.busy = False
         self._pending_undo = preflight.restorable
-        self._pending_undo_batch = batch.batch_id
+        # A batch is marked reverted only when nothing in it is left for a forced retry.
+        self._pending_undo_batch = batch.batch_id if preflight.restores_everything else None
+        self._pending_undo_skipped = preflight.blocked_count
         if not preflight.restorable:
             blockers = "\n".join(
                 f"{blocked.entry.path.name}: {blocked.reason}" for blocked in preflight.blocked
@@ -1541,6 +1544,13 @@ class SetTagApp(App[TuiOutcome]):
         self._pending_undo_batch = None
         self._show_library()
         message = f"Restored {restored} file{'s' if restored != 1 else ''} to their previous tags."
+        skipped = self._pending_undo_skipped
+        self._pending_undo_skipped = 0
+        if skipped:
+            message += (
+                f" {skipped} skipped file{'s' if skipped != 1 else ''} still carr"
+                f"{'y' if skipped != 1 else 'ies'} the write; it stays in the undo list."
+            )
         self._update_status(message)
         self.notify(message, title="Undo complete", timeout=6)
 

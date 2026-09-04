@@ -9,6 +9,7 @@ from mutagen.mp4 import MP4
 from mutagen.wave import WAVE
 
 from settag.hygiene import (
+    _WEB_ADDRESS,
     apply_hygiene,
     hygiene_finding,
     inspect_hygiene_path,
@@ -205,3 +206,20 @@ def test_hygiene_preflight_rejects_a_changed_comment(tmp_path: Path) -> None:
 
     with pytest.raises(RuntimeError, match="file changed since hygiene review"):
         preflight_hygiene((plan,))
+
+
+@pytest.mark.parametrize(
+    "value",
+    ["cue to.me at 2:30", "fade to.co", "send it cc.me", "drop at 1.to"],
+)
+def test_short_top_level_domains_are_not_flagged_without_a_scheme(value: str) -> None:
+    """A DJ note that happens to contain word.short-tld is not a web address."""
+    assert _WEB_ADDRESS.search(value) is None
+
+
+@pytest.mark.parametrize(
+    "value",
+    ["https://promo.to/x", "www.label.me", "electronicfresh.com", "ripped-by.download"],
+)
+def test_web_addresses_are_still_flagged(value: str) -> None:
+    assert _WEB_ADDRESS.search(value) is not None

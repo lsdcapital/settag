@@ -8,6 +8,8 @@ __pycache__/
 *.py[cod]
 analysis.jsonl
 models/
+dist/
+.conductor/
 .context/model-eval/
 
 # site/ carries its own ignore file for build output; these are belt-and-braces

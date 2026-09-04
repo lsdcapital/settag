@@ -109,7 +109,15 @@ separately and retain the licence files shipped in their own distributions.
 | Mutagen | direct | `GPL-2.0-or-later` | <https://github.com/quodlibet/mutagen> |
 | NumPy | direct | `BSD-3-Clause` and licences for bundled components | <https://numpy.org/> |
 | Textual | direct | MIT | <https://github.com/Textualize/textual> |
+| tomli | direct on Python 3.10 only | MIT | <https://github.com/hukkin/tomli> |
 | Rich | transitive through Textual | MIT | <https://github.com/Textualize/rich> |
+| markdown-it-py | transitive through Textual and Rich | MIT | <https://github.com/executablebooks/markdown-it-py> |
+| mdit-py-plugins | transitive through Textual | MIT | <https://github.com/executablebooks/mdit-py-plugins> |
+| mdurl | transitive through markdown-it-py | MIT | <https://github.com/executablebooks/mdurl> |
+| linkify-it-py | transitive through markdown-it-py | MIT | <https://github.com/tsutsu3/linkify-it-py> |
+| platformdirs | transitive through Textual | MIT | <https://github.com/tox-dev/platformdirs> |
+| Pygments | transitive through Textual and Rich | `BSD-2-Clause` | <https://pygments.org/> |
+| typing-extensions | transitive through Textual | `PSF-2.0` | <https://github.com/python/typing_extensions> |
 
 This list does not replace the notices included with those packages or with
 their transitive and native dependencies.

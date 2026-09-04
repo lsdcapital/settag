@@ -20,7 +20,13 @@ from settag.model_store import (
     require_models,
     require_task_models,
 )
-from settag.policy import AudioSample, Prediction, rank_predictions, sample_audio
+from settag.policy import (
+    MIN_GENRE_SECONDS,
+    AudioSample,
+    Prediction,
+    rank_predictions,
+    sample_audio,
+)
 from settag.tasks import AnalysisTask, ordered_tasks
 from settag.taxonomy import readable_label
 
@@ -51,6 +57,10 @@ _TENSORFLOW_STARTUP_NOISE = (
 
 
 class EssentiaGenreAnalyzer:
+    # MAEST refuses input shorter than one patch; `prepare_track` reads this to
+    # turn that refusal into a named error before the model is ever called.
+    min_seconds: float | None = MIN_GENRE_SECONDS
+
     def __init__(
         self,
         model_dir: Path,
@@ -262,6 +272,8 @@ class EssentiaTaskAnalyzer:
         self._genre = (
             EssentiaGenreAnalyzer(model_dir, sample=sample) if "genre" in self.tasks else None
         )
+        # EffNet reads clips MAEST cannot, so the minimum applies only with genre.
+        self.min_seconds: float | None = MIN_GENRE_SECONDS if self._genre is not None else None
         effnet_tasks = tuple(task for task in self.tasks if task != "genre")
         self._effnet = EssentiaEffnetAnalyzer(model_dir, effnet_tasks) if effnet_tasks else None
         manifests: dict[AnalysisTask, dict[str, object]] = {}

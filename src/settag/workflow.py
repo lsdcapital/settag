@@ -346,6 +346,25 @@ class UndoPreflight:
     def standard_genre_edits(self) -> int:
         return sum(entry.standard_genre_change is not None for entry in self.restorable)
 
+    @property
+    def restores_everything(self) -> bool:
+        """Whether a successful undo leaves nothing in the batch for a later, forced retry.
+
+        Only then may the batch be marked reverted. Marking it after a partial restore
+        would tell the user the write was undone while skipped files still carry it.
+        """
+        return not self.blocked
+
+
+class TrackTooShortError(ValueError):
+    """The audio is shorter than the model's one-patch minimum.
+
+    The interactive scan classifies such clips as samples and never sends them to
+    the analyzer. The plain `analyze` command and the worker have no scan step,
+    so without this they reach Essentia and fail with its native message, which
+    names neither the length nor the limit.
+    """
+
 
 class PartialWriteError(RuntimeError):
     def __init__(self, completed: int, total: int, cause: BaseException) -> None:
@@ -363,6 +382,16 @@ def prepare_track(
     threshold: float,
 ) -> PreparedTrack:
     source = source_record(path)
+    # Declared by the analyzer rather than assumed, so a test double that ignores
+    # audio, or a task set without the genre model, imposes no minimum.
+    minimum = getattr(analyzer, "min_seconds", None)
+    if minimum is not None:
+        duration = read_duration_seconds(path)
+        if duration is not None and duration < minimum:
+            raise TrackTooShortError(
+                f"{duration:.1f}s of audio is shorter than the {minimum:g}s the genre model "
+                "reads; this is a sample rather than a track and no setting makes it analyzable"
+            )
     analyzed_at = utc_now()
     current_owned = read_owned_values(path)
     task_predictions, manifests = _analyze_tasks(analyzer, path)

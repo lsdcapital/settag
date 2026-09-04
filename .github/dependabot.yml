@@ -1,0 +1,29 @@
+# Keeps the commit-pinned actions in .github/workflows current. Every `uses:`
+# there names a SHA with the tag in a trailing comment; Dependabot bumps both
+# together, so the pins stay meaningful instead of quietly aging.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        patterns: ["*"]
+
+  - package-ecosystem: uv
+    directory: /
+    schedule:
+      interval: weekly
+    # essentia-tensorflow is pinned exactly on purpose: a new build changes the
+    # native backend that produced every stored analysis. Bump it by hand.
+    ignore:
+      - dependency-name: essentia-tensorflow
+
+  - package-ecosystem: npm
+    directory: /site
+    schedule:
+      interval: weekly
+    groups:
+      site:
+        patterns: ["*"]

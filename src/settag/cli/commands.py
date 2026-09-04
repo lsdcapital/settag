@@ -564,6 +564,14 @@ def _run_undo(args: argparse.Namespace) -> int:
         f"Done. {restored} file{'s' if restored != 1 else ''} restored and verified.",
         file=sys.stderr,
     )
+    if not preflight.restores_everything:
+        skipped = preflight.blocked_count
+        print(
+            f"{skipped} file{'s were' if skipped != 1 else ' was'} skipped, so this write "
+            f"stays listed; restore the rest with: settag undo {batch.batch_id} --force",
+            file=sys.stderr,
+        )
+        return 0
     try:
         journal.mark_reverted(batch.batch_id)
     except JournalError as error:

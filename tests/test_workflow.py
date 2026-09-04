@@ -19,6 +19,7 @@ from settag.tags import (
 )
 from settag.tasks import AnalysisTask
 from settag.workflow import (
+    analyze_paths,
     apply_prepared,
     apply_undo,
     inspect_paths,
@@ -565,3 +566,32 @@ def test_existing_tags_do_not_stop_a_short_track_reading_as_a_sample(
 
     assert batch.tracks[0].status == "sample"
     assert batch.tracks[0].needs_analysis is False
+
+
+class FakeMinimumLengthAnalyzer(FakeAnalyzer):
+    """A double that, like the real genre analyzer, declares a one-patch minimum."""
+
+    min_seconds = 30.0
+
+
+def test_a_clip_shorter_than_the_model_reads_fails_with_a_named_error(tmp_path: Path) -> None:
+    """The plain analyze path has no scan step, so the refusal must happen here."""
+    clip = tmp_path / "sting.wav"
+    _silent_wav(clip, seconds=6.0)
+
+    batch = analyze_paths((clip,), analyzer=FakeMinimumLengthAnalyzer(), top=5, threshold=0.1)
+
+    assert batch.planned == ()
+    assert [failure.error_type for failure in batch.failures] == ["TrackTooShortError"]
+    assert "6.0s of audio is shorter than the 30s" in batch.failures[0].message
+    assert "sample" in batch.failures[0].message
+
+
+def test_an_analyzer_without_a_minimum_reads_short_clips(tmp_path: Path) -> None:
+    clip = tmp_path / "sting.wav"
+    _silent_wav(clip, seconds=6.0)
+
+    batch = analyze_paths((clip,), analyzer=FakeAnalyzer(), top=5, threshold=0.1)
+
+    assert batch.failures == ()
+    assert len(batch.planned) == 1
