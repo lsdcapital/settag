@@ -6,12 +6,14 @@ from pathlib import Path
 from threading import Event
 from types import SimpleNamespace
 
+import pytest
 from mutagen.id3 import ID3, TCON
 from mutagen.wave import WAVE
 from textual.containers import VerticalScroll
 from textual.widgets import Button, DataTable, ProgressBar, Static
 
 from settag.journal import WriteJournal
+from settag.plans import PlannedWrite
 from settag.policy import Prediction
 from settag.tags import OWNED_DESCRIPTIONS, GenreState, task_evidence_from_owned
 from settag.tasks import AnalysisTask
@@ -1558,3 +1560,76 @@ def test_tui_partial_undo_leaves_the_batch_open(tmp_path: Path) -> None:
     batch = journal.latest()
     assert batch is not None
     assert batch.reverted_at is None
+
+
+def test_a_workbench_failure_keeps_the_result_and_warns(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Persistence runs on the analysis worker; its failure must reach the user, not the loop."""
+    path = tmp_path / "track.wav"
+    _silent_wav(path)
+
+    def refuse(plan: PlannedWrite) -> None:
+        raise RuntimeError("workbench is locked")
+
+    app = SetTagApp(
+        source=path,
+        initial_metadata=MetadataBatch(tracks=(_metadata_track(path),), failures=()),
+        analysis_loader=lambda paths, _progress, _cancel: _analysis_batch(paths),
+        persist_plan=refuse,
+    )
+    warnings: list[str] = []
+    monkeypatch.setattr(app, "notify", lambda message, **kwargs: warnings.append(message))
+
+    async def exercise() -> None:
+        async with app.run_test(size=(140, 42)) as pilot:
+            await pilot.pause()
+            await pilot.press("r")
+            for _ in range(30):
+                await pilot.pause(0.05)
+                if app.phase == "review":
+                    break
+            assert app.phase == "review"
+            assert app.entries[0].plan is not None
+
+    asyncio.run(exercise())
+    assert any(
+        "could not be saved to the local workbench: RuntimeError: workbench is locked" in w
+        for w in warnings
+    )
+
+
+def test_s_saves_the_included_plan_off_the_event_loop(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "track.wav"
+    _silent_wav(path)
+    monkeypatch.chdir(tmp_path)
+    app = SetTagApp(
+        source=path,
+        initial_metadata=MetadataBatch(tracks=(_metadata_track(path),), failures=()),
+        analysis_loader=lambda paths, _progress, _cancel: _analysis_batch(paths),
+    )
+
+    async def exercise() -> None:
+        async with app.run_test(size=(140, 42)) as pilot:
+            await pilot.pause()
+            status = app.query_one("#status", Static)
+            await pilot.press("r")
+            for _ in range(30):
+                await pilot.pause(0.05)
+                if app.phase == "review":
+                    break
+            assert app.phase == "review"
+
+            await pilot.press("s")
+            await app.workers.wait_for_complete()
+            await pilot.pause()
+            rendered.append(str(status.render()))
+
+    rendered: list[str] = []
+    asyncio.run(exercise())
+    saved = sorted(tmp_path.glob("settag-plan-*.jsonl"))
+    assert len(saved) == 1
+    assert f"Saved {saved[0].name}" in rendered[0]
+    assert saved[0].read_text(encoding="utf-8").count("\n") == 1

@@ -589,11 +589,13 @@ GitHub Actions runs the same lint, format, type, and test checks on every
 supported Python version (3.10 through 3.14) for each push to `main`, pull
 request, and release tag.
 
-The tests use Textual's headless app runner and synthetic audio; they do not
-run model inference. A real-audio smoke test requires downloaded models:
+The default test run uses Textual's headless app runner and synthetic audio;
+it does not run model inference. A small set of smoke tests against the real
+genre model is opted into separately and skips itself when the models are not
+downloaded:
 
 ```sh
-uv run settag models status
+uv run pytest -m models
 uv run settag models status --tasks genre,mood-theme,instrument
 uv run settag analyze "/path/to/track.flac" --tasks genre,mood-theme,instrument
 ```

@@ -54,7 +54,7 @@ def _print_plain_batch(source: Path, batch: AnalysisBatch) -> None:
     print(f"  Would write:         {summary.write_count}", file=sys.stderr)
     print(f"  Already current:     {summary.unchanged_count}", file=sys.stderr)
     print(f"  Without file genre:  {summary.empty_file_genres}", file=sys.stderr)
-    print(f"  Errors:              {len(batch.failures)}", file=sys.stderr)
+    print(f"  Errors:              {batch.failure_count}", file=sys.stderr)
 
     for item in planned:
         primary = item.selected[0] if item.selected else None
@@ -69,7 +69,7 @@ def _print_plain_batch(source: Path, batch: AnalysisBatch) -> None:
         print(f"  File genre:  {standard} (unchanged)", file=sys.stderr)
         print(f"  Suggested:   {suggestion}", file=sys.stderr)
         print(
-            f"  Changes:     SetTag analysis bundle ({len(item.owned_changes)} internal fields)",
+            f"  Changes:     SetTag analysis bundle ({item.owned_change_count} internal fields)",
             file=sys.stderr,
         )
 
@@ -89,11 +89,11 @@ def _print_hygiene_batch(source: Path, batch: HygieneBatch) -> None:
     print("SetTag hygiene scan", file=sys.stderr)
     print(source.expanduser().resolve(), file=sys.stderr)
     print(file=sys.stderr)
-    print(f"  Tracks scanned:       {len(batch.tracks)}", file=sys.stderr)
+    print(f"  Tracks scanned:       {batch.track_count}", file=sys.stderr)
     print(f"  Tracks with findings: {batch.affected_track_count}", file=sys.stderr)
     print(f"  Cleanup suggestions:  {batch.finding_count}", file=sys.stderr)
     print(f"  Tracks already clean: {batch.clean_track_count}", file=sys.stderr)
-    print(f"  Errors:               {len(batch.failures)}", file=sys.stderr)
+    print(f"  Errors:               {batch.failure_count}", file=sys.stderr)
 
     for track in batch.tracks:
         if not track.findings:
@@ -146,14 +146,16 @@ def _print_saved_plan_summary(
 
 
 def _print_plan_preview(plan_path: Path, planned: Sequence[PlannedWrite]) -> None:
+    summary = summarize_planned(planned)
+
     print("SetTag batch plan")
     print(plan_path)
     print()
-    print(f"{len(planned)} track{'s' if len(planned) != 1 else ''}")
+    print(f"{summary.track_count} track{'s' if summary.track_count != 1 else ''}")
 
     for index, item in enumerate(planned, start=1):
         print()
-        print(f"Track {index} of {len(planned)}")
+        print(f"Track {index} of {summary.track_count}")
         print(item.path.name)
         print(item.path.parent)
         print()
@@ -173,6 +175,7 @@ def _print_plan_preview(plan_path: Path, planned: Sequence[PlannedWrite]) -> Non
 
         print("SetTag model evidence")
         if item.evidence:
+            # ui-count: column width to align evidence labels in this listing
             width = max(len(prediction.label) for prediction in item.evidence)
             selected = set(item.selected)
             for rank, prediction in enumerate(item.evidence, start=1):
@@ -185,7 +188,7 @@ def _print_plan_preview(plan_path: Path, planned: Sequence[PlannedWrite]) -> Non
             print("  No ranked evidence was returned by the model.")
         print()
 
-        print(f"SetTag analysis bundle ({len(item.owned_changes)} internal field changes)")
+        print(f"SetTag analysis bundle ({item.owned_change_count} internal field changes)")
         if item.readable_changes:
             for change in item.readable_changes:
                 print(f"  {change}")
@@ -200,7 +203,6 @@ def _print_plan_preview(plan_path: Path, planned: Sequence[PlannedWrite]) -> Non
         print(f"  Model: {model[0] if model else 'not set'}")
         print(f"  Analyzed: {analyzed_at[0] if analyzed_at else 'not set'}")
 
-    summary = summarize_planned(planned)
     print()
     print("Summary")
     print(f"  Tracks reviewed:        {summary.track_count}")
@@ -389,6 +391,7 @@ def _log_task_inspection(
     provenance: dict[str, object] | None,
     scores: bool,
 ) -> None:
+    # ui-count: labels already listed for this task in the inspect output below
     LOGGER.info("  %s: %d %s", task, len(labels), "label" if len(labels) == 1 else "labels")
     for name, value in _task_provenance_fields(provenance):
         LOGGER.info("    %s: %s", name, value)
@@ -403,6 +406,7 @@ def _log_task_inspection(
             LOGGER.info("    %2d. %s", rank, label)
         return
 
+    # ui-count: column width to align evidence labels in this listing
     width = max(len(prediction.label) for prediction in evidence)
     for rank, prediction in enumerate(evidence, start=1):
         LOGGER.info("    %2d. %-*s  %.3f", rank, width, prediction.label, prediction.score)

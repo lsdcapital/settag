@@ -106,6 +106,10 @@ class PreparedTrack:
     task_selected: dict[AnalysisTask, list[Prediction]]
     task_provenance: dict[AnalysisTask, dict[str, object]]
 
+    @property
+    def owned_change_count(self) -> int:
+        return len(self.tag_plan.changes)
+
 
 @dataclass(frozen=True)
 class AnalysisFailure:
@@ -134,6 +138,10 @@ class AnalysisBatch:
     @property
     def write_count(self) -> int:
         return sum(bool(item.readable_changes) for item in self.planned)
+
+    @property
+    def failure_count(self) -> int:
+        return len(self.failures)
 
 
 @dataclass(frozen=True)

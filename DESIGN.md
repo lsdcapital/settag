@@ -52,7 +52,12 @@ settag/cli/     args      the accepted command grammar
                 commands  dispatch and the work each command performs
                 render    everything printed, prompted, or logged
 
-settag/tui/     app       phases, selection, background work
+settag/tui/     app       the concrete App: bindings and stylesheet, composed
+                          from the core and the three flows below
+                core      state, phases, selection, table and inspector rendering
+                analysis_flow   R/Esc: the analysis worker, progress, persistence
+                write_flow      S/W: preflight, confirm, apply, verify, complete
+                undo_flow       U: journal list, preflight, restore, complete
                 hygiene   independent metadata-hygiene review
                 screens   modal dialogs
                 table     column layout and row rendering
@@ -63,6 +68,16 @@ settag/tui/     app       phases, selection, background work
 Both are packages named for the modules they replaced, so `settag.cli:main`
 and existing imports resolve unchanged.
 
+Each flow is a subclass of `SetTagAppCore`, and `SetTagApp` inherits all
+three. That is deliberate over mixins or controller objects: the flows read
+and write the core's state as `self`, Textual's `@work` and `call_from_thread`
+need `self` to be the app, and the type checker sees every attribute through
+the subclass relationship. Where the core calls into a flow, it declares the
+method under `TYPE_CHECKING` only, so the dependency direction is visible
+without the core importing a flow. Persistence of a completed analysis runs on
+the analysis worker thread; the main thread only receives the staged plan and
+any storage error, so a slow or locked workbench cannot hold the event loop.
+
 The rule that keeps the two honest: **no count or human-readable phrase
 derived from `PlannedWrite`, `PreparedWrite`, `WriteRecord`, or
 `MetadataTrack` belongs in `cli/` or `tui/`.** UI modules choose layout; the
@@ -71,12 +86,12 @@ because that rule was broken twice — the CLI counted genre evidence while the
 app counted every task, so one batch reported two different totals in the
 confirm dialog, `settag apply`, and `settag preview`.
 
-`tests/test_architecture.py` enforces the count half of the rule: a `sum()` in
-`cli/` or `tui/` fails the suite unless it carries a `# ui-count: <reason>`
-marker declaring that it aggregates the UI's own state (rows in the current
-view, the current selection, terminal widths) rather than domain objects.
-Aggregates over a batch or a track belong in `summarize_writes`,
-`summarize_planned`, or a property on the domain object —
+`tests/test_architecture.py` enforces the count half of the rule: a `sum()`,
+`len()`, or `Counter()` in `cli/` or `tui/` fails the suite unless it carries a
+`# ui-count: <reason>` marker declaring that it aggregates the UI's own state
+(rows in the current view, the current selection, terminal widths) rather than
+domain objects. Aggregates over a batch or a track belong in
+`summarize_writes`, `summarize_planned`, or a property on the domain object —
 `PlannedWrite.evidence_score_count` is there for exactly that reason.
 
 The phrasing half stays a convention: `plans.friendly_change` and

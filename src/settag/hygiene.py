@@ -103,6 +103,14 @@ class HygieneBatch:
     failures: tuple[HygieneFailure, ...]
 
     @property
+    def track_count(self) -> int:
+        return len(self.tracks)
+
+    @property
+    def failure_count(self) -> int:
+        return len(self.failures)
+
+    @property
     def finding_count(self) -> int:
         return sum(len(track.findings) for track in self.tracks)
 
@@ -112,7 +120,7 @@ class HygieneBatch:
 
     @property
     def clean_track_count(self) -> int:
-        return len(self.tracks) - self.affected_track_count
+        return self.track_count - self.affected_track_count
 
 
 @dataclass(frozen=True)

@@ -118,4 +118,5 @@ def latest_analyzed_at(owned: OwnedValues, tasks: Sequence[AnalysisTask]) -> str
     if values:
         return max(values)
     legacy = owned.get("SETTAG_ANALYZED_AT")
+    # ui-count: shape check for the single-value legacy field this view falls back to
     return legacy[0] if legacy and len(legacy) == 1 else None

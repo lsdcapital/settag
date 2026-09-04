@@ -76,6 +76,10 @@ class PlannedWrite:
         return (*self.owned_changes, friendly_standard_genre_change(standard_change))
 
     @property
+    def owned_change_count(self) -> int:
+        return len(self.owned_changes)
+
+    @property
     def evidence_score_count(self) -> int:
         """Ranked scores stored for this track across every task.
 

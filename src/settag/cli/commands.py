@@ -344,6 +344,7 @@ def _run_analyze(args: argparse.Namespace) -> int:
             return 2
 
         for index, path in enumerate(paths, start=1):
+            # ui-count: files this command's own directory scan discovered
             LOGGER.info("[%d/%d] %s", index, len(paths), path)
             try:
                 _analyze_one(
@@ -397,6 +398,7 @@ def _run_inspect(args: argparse.Namespace) -> int:
 
     failures = 0
     for index, path in enumerate(paths, start=1):
+        # ui-count: files this command's own directory scan discovered
         LOGGER.info("[%d/%d] %s", index, len(paths), path)
         try:
             genre_state = read_genre_state(path)
@@ -622,7 +624,7 @@ def _analyze_one(
     _log_summary(
         genre_state=genre_state,
         evidence=evidence,
-        change_count=len(tag_plan.changes),
+        change_count=track.owned_change_count,
     )
     _emit(output, record)
     if plan_output is not None:

@@ -24,19 +24,24 @@ def _ui_modules() -> list[Path]:
     return modules
 
 
-def _sum_calls(tree: ast.AST) -> list[ast.Call]:
+AGGREGATE_FUNCS = ("sum", "len", "Counter")
+
+
+def _aggregate_calls(tree: ast.AST) -> list[ast.Call]:
     return [
         node
         for node in ast.walk(tree)
-        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "sum"
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id in AGGREGATE_FUNCS
     ]
 
 
-def _unmarked_sums(source: str) -> list[tuple[int, str]]:
-    """Return (line, text) for every sum() call that carries no ui-count marker."""
+def _unmarked_aggregates(source: str) -> list[tuple[int, str]]:
+    """Return (line, text) for every sum()/len()/Counter() call with no ui-count marker."""
     lines = source.splitlines()
     found: list[tuple[int, str]] = []
-    for call in _sum_calls(ast.parse(source)):
+    for call in _aggregate_calls(ast.parse(source)):
         # The marker may sit on the line above the call or anywhere inside it.
         start = max(call.lineno - 2, 0)
         if any(MARKER in line for line in lines[start : call.end_lineno]):
@@ -55,11 +60,11 @@ def test_derived_counts_live_in_the_domain_layer() -> None:
     offenders: list[str] = []
     for module in _ui_modules():
         relative = module.relative_to(REPO)
-        for line, text in _unmarked_sums(module.read_text(encoding="utf-8")):
+        for line, text in _unmarked_aggregates(module.read_text(encoding="utf-8")):
             offenders.append(f"{relative}:{line}: {text}")
 
     assert not offenders, (
-        "These sum() calls are in a UI module:\n  "
+        "These sum()/len()/Counter() calls are in a UI module:\n  "
         + "\n  ".join(offenders)
         + "\n\nIf the count describes a batch of writes or a track's metadata, move it "
         "to workflow.WriteSummary or a property on the domain object, so the CLI and "
@@ -113,10 +118,18 @@ def test_the_staleness_rule_has_one_implementation() -> None:
 
 
 def test_the_guard_would_catch_an_unmarked_aggregate() -> None:
-    """Guard the guard: the same detection the suite runs must flag an unmarked sum()."""
-    unmarked = "total = sum(item.score for item in planned)\n"
+    """Guard the guard: the suite's detection must flag an unmarked sum()/len()/Counter()."""
+    unmarked_sum = "total = sum(item.score for item in planned)\n"
+    unmarked_len = "total = len(planned)\n"
+    unmarked_counter = "tally = Counter(item.kind for item in planned)\n"
 
-    assert _unmarked_sums(unmarked) == [(1, "total = sum(item.score for item in planned)")]
+    assert _unmarked_aggregates(unmarked_sum) == [
+        (1, "total = sum(item.score for item in planned)")
+    ]
+    assert _unmarked_aggregates(unmarked_len) == [(1, "total = len(planned)")]
+    assert _unmarked_aggregates(unmarked_counter) == [
+        (1, "tally = Counter(item.kind for item in planned)")
+    ]
 
 
 def test_the_guard_accepts_a_marked_aggregate() -> None:
@@ -125,6 +138,10 @@ def test_the_guard_accepts_a_marked_aggregate() -> None:
     inline = (
         "total = sum(  # ui-count: rows in the current view\n    row.visible for row in rows\n)\n"
     )
+    above_len = "# ui-count: rows in the current view\ntotal = len(rows)\n"
+    above_counter = "# ui-count: kinds selected in the current view\ntally = Counter(rows)\n"
 
-    assert _unmarked_sums(above) == []
-    assert _unmarked_sums(inline) == []
+    assert _unmarked_aggregates(above) == []
+    assert _unmarked_aggregates(inline) == []
+    assert _unmarked_aggregates(above_len) == []
+    assert _unmarked_aggregates(above_counter) == []

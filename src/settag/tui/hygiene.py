@@ -192,9 +192,9 @@ class HygieneApp(App[TuiOutcome]):
             return
         self.query_one("#context", Static).update(
             f"{self.source}\n"
-            f"{self.batch.affected_track_count} affected of {len(self.batch.tracks)} scanned"
+            f"{self.batch.affected_track_count} affected of {self.batch.track_count} scanned"
             f"  ·  {self.batch.finding_count} suggestions"
-            f"  ·  {len(self.batch.failures)} errors"
+            f"  ·  {self.batch.failure_count} errors"
         )
 
     def _update_status(self, message: str | None = None) -> None:
@@ -203,6 +203,7 @@ class HygieneApp(App[TuiOutcome]):
                 self.query_one("#status", Static).update(message)
             return
         base = (
+            # ui-count: rows checked in this session's cleanup table
             f"{len(self.selected)} checked"
             "  ·  Space toggle  ·  A all/none  ·  I details  ·  W review cleanup"
         )
@@ -210,6 +211,7 @@ class HygieneApp(App[TuiOutcome]):
 
     def _current_row(self) -> int | None:
         table = self.query_one("#hygiene-table", DataTable)
+        # ui-count: rows currently rendered in this table
         if not self.rows or table.cursor_row < 0 or table.cursor_row >= len(self.rows):
             return None
         return table.cursor_row

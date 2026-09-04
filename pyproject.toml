@@ -83,12 +83,16 @@ exclude = [
   ".conductor/",
   "scripts/",
   "PRODUCT.md",
-  "TODO.md",
 ]
 
 [tool.pytest.ini_options]
-addopts = "-q"
+# `models` tests load the real Essentia models and are opted into with
+# `pytest -m models`; they skip on their own when the cache is empty.
+addopts = "-q -m 'not models'"
 testpaths = ["tests"]
+markers = [
+  "models: needs the downloaded Essentia models; run with `pytest -m models`",
+]
 
 [tool.ty.environment]
 python-version = "3.10"
