@@ -99,7 +99,9 @@ genre_sample = "full"
 Changing this changes the evidence configuration digest, so tracks analyzed
 under a different setting are correctly reported as stale and reanalyzed.
 
-Models are downloaded once into `~/.cache/settag/models`. They are not bundled
+Models are downloaded once into `~/.cache/settag/models`; `--model-dir` on
+`models`, `analyze`, and the app points at another directory, and
+`models download --force` replaces files that are already present. They are not bundled
 with this repository or its Python distributions. Downloads and installed
 files must match the SHA-256 digests pinned in SetTag's model catalogue before
 inference can start. Review [Licensing](#licensing) before using the default
@@ -280,6 +282,9 @@ Changing `--top` or `--score-cutoff` does not require reanalysis; SetTag applies
 the new review policy to the stored evidence. Metadata already embedded in the
 audio file is authoritative and supersedes an obsolete workbench entry.
 Successfully written and verified entries are removed from the workbench.
+A track renamed or moved between runs is found again by its audio digest
+when exactly one scanned file matches, so its saved result follows it;
+an ambiguous match is reported as missing rather than guessed.
 Metadata created by the older cutoff-filtered contract needs one reanalysis to
 populate the new bounded evidence bundle.
 
@@ -338,6 +343,9 @@ settag "/path/to/music" --no-tui
 The named commands are also plain CLI commands:
 
 ```sh
+# Which build stamps SETTAG_VERSION
+settag --version
+
 # Human-readable dry-run logs
 settag analyze "/path/to/music"
 
@@ -365,7 +373,7 @@ settag apply settag-plan.jsonl --yes
 
 `analyze` never writes. A reviewed plan is the only route to disk, in the app
 or through `apply`, so every write in SetTag passes the same preflight and
-verification. Standard genre editing is available in the app or in a saved v4
+verification. Standard genre editing is available in the app or in a saved
 plan because it must be staged explicitly per track.
 
 ### Logging
@@ -399,48 +407,17 @@ SetTag-owned model evidence and a conventional file genre are separate:
 | Ranked SetTag evidence | `TXXX:SETTAG_*` | `SETTAG_*` | `----:com.lsdcapital.settag:*` |
 | Standard file genre | `TCON` | `GENRE` | `©gen` |
 
-SetTag owns these logical evidence fields:
+Each task's label field holds bounded ranked evidence, and its `_SCORES` twin
+holds the same labels and order with the raw model scores as one compact JSON
+value. SetTag stores the top 60 results without a score cutoff so consumers such
+as SetPath can apply their own policy. Genre evidence is exclusively
+MAEST-derived; EffNet cannot populate `SETTAG_GENRE` or a conventional genre
+field. Task updates are independent, so an instrument-only run replaces
+instrument evidence while preserving valid genre and mood/theme evidence.
 
-- `SETTAG_GENRE`
-- `SETTAG_GENRE_SCORES`
-- `SETTAG_MOOD_THEME`
-- `SETTAG_MOOD_THEME_SCORES`
-- `SETTAG_INSTRUMENT`
-- `SETTAG_INSTRUMENT_SCORES`
-- `SETTAG_VERSION`
-- `SETTAG_MODEL`
-- `SETTAG_ANALYZED_AT`
-- `SETTAG_CONFIG_SHA256`
-- `SETTAG_PROVENANCE`
-
-Each task's label field contains bounded ranked evidence. Its `_SCORES` field
-is one compact JSON value containing the same labels, order, and raw model
-scores. SetTag stores the top 60 results without a score cutoff so consumers
-such as SetPath can choose their own policy. That bound covers the mood (56)
-and instrument (40) taxonomies completely, so a consumer computing a composite
-across a whole taxonomy sees both ends of it rather than a truncated shortlist.
-
-Genre evidence is exclusively MAEST-derived. EffNet cannot populate
-`SETTAG_GENRE` or a conventional genre field. Task updates are independent:
-an instrument-only run replaces instrument evidence while preserving valid
-genre and mood/theme evidence. `SETTAG_PROVENANCE` is a versioned, task-keyed
-record of exact model identifiers, artifact digests, label taxonomy,
-configuration, thresholds, and analysis timestamps. The conventional genre
-remains a separate staged layer.
-
-Each task's `model.vocabulary` names the taxonomy its labels come from:
-
-| Task | Vocabulary |
-|---|---|
-| `genre` | `discogs519` |
-| `mood-theme` | `mtg-jamendo-moodtheme` |
-| `instrument` | `mtg-jamendo-instrument` |
-
-A field name does not identify a taxonomy — `SETTAG_MOOD_THEME` would keep its
-spelling if the head behind it were swapped for one with a different label set.
-Consumers should key semantic mapping on `(task, vocabulary, label)` and treat
-an undeclared or unrecognized vocabulary as uninterpretable rather than
-assuming labels spelled the same mean the same thing.
+The full field list, the per-task `vocabulary` declaration consumers should
+key on, and the `SETTAG_PROVENANCE` record are specified once, in
+[DESIGN.md](DESIGN.md#settag-evidence-contract).
 
 The standard genre is not part of the SetTag namespace. For newly analyzed
 tracks where it is empty, the app stages the conservative standard-genre
@@ -449,14 +426,18 @@ write. Title, artist, album, artwork, duplicate fields, and metadata owned by
 other software are preserved. Comments and other hygiene fields are preserved
 unless the user explicitly checks their removal in the separate hygiene review.
 
-Before any batch write, SetTag verifies:
+Before any batch write, SetTag verifies for every included track:
 
-1. source SHA-256, size, and observed metadata state;
-2. the detected native adapter;
-3. every reconstructed SetTag change;
-4. any explicitly staged standard genre change.
+1. the audio has not changed since analysis. The check uses a digest of the
+   audio samples only, so another tool retagging the file in between does not
+   block the write, while a re-encode, edit, or truncation does;
+2. the observed conventional genre;
+3. the detected native adapter;
+4. every reconstructed SetTag change;
+5. any explicitly staged standard genre change.
 
-After each write it reopens the file and verifies both the evidence and the
+The audio digest is checked once more immediately before each file is written.
+After each write SetTag reopens the file and verifies both the evidence and the
 expected standard genre. A batch preflight is all-or-nothing, although native
 file writes cannot form one transaction across multiple files.
 
@@ -475,6 +456,10 @@ settag undo --dry-run
 # Revert the most recent write, or a named one
 settag undo
 settag undo 20260725T110349-8993c143
+
+# Show more history, or revert without the confirmation prompt
+settag undo --list --limit 25
+settag undo --yes
 ```
 
 The journal lives in its own database, separate from the workbench cache, so
@@ -482,8 +467,8 @@ clearing the cache never destroys undo history:
 
 | Purpose | Location |
 |---|---|
-| Write journal (durable) | `journal.sqlite3`, overridable with `SETTAG_JOURNAL_DB` |
-| Workbench cache (disposable) | `state.sqlite3`, overridable with `SETTAG_STATE_DB` |
+| Write journal (durable) | `journal.sqlite3`, overridable with `SETTAG_JOURNAL_DB` or `--journal-db` |
+| Workbench cache (disposable) | `state.sqlite3`, overridable with `SETTAG_STATE_DB` or `--state-db` |
 
 Undo restores exactly what a write changed: the SetTag-owned fields listed
 above, the conventional genre tag when that write explicitly staged an edit,
@@ -506,53 +491,12 @@ Entries older than 90 days are pruned.
 
 ## Saved plans
 
-`settag.plan/v4` is the compact review and write contract. It records bounded
-evidence separately from SetTag's current review selection and records the
-observed file genre separately from an optional staged target:
-
-```json
-{
-  "schema": "settag.plan/v4",
-  "path": "/path/to/music/track.mp3",
-  "source": {
-    "sha256": "b7b118125b3289157da76212b54c2e1f91b4db2c3c0ff1bca4094c4d0046ed23",
-    "size": 12605465,
-    "mtime_ns": 1633515033000000000
-  },
-  "file_genre": [],
-  "target_file_genre": ["House"],
-  "evidence": [
-    {
-      "label": "Electronic---Progressive House",
-      "score": 0.664
-    },
-    {
-      "label": "Electronic---Techno",
-      "score": 0.069
-    }
-  ],
-  "selected": [
-    {
-      "label": "Electronic---Progressive House",
-      "score": 0.664
-    }
-  ],
-  "metadata_format": "id3",
-  "provenance": {
-    "settag_version": "0.1.0",
-    "model": "essentia/genre-discogs519-maest/v1",
-    "analyzed_at": "2026-07-24T12:34:56Z",
-    "config_sha256": "3935b3e0c51c85b750ee8cffc471b7a8e0a5a4cec60b336dde42fd321d40b5e6"
-  },
-  "changes": {
-    "settag": [
-      "Genre labels: 0 → 2",
-      "Ranked score data: add"
-    ],
-    "file_genre": "File genre: None → House"
-  }
-}
-```
+A plan is one JSONL record per track on the `settag.plan/v5` schema. It carries
+the bounded evidence separately from SetTag's current review selection, the
+observed file genre separately from an optional staged target, the audio
+digest preflight checks against, and the human-readable change lines `preview`
+prints. The record layout is specified once, in
+[DESIGN.md](DESIGN.md#compact-plan-record).
 
 Plans produced by `analyze --plan` set `target_file_genre` to `null`. Plans
 saved from the app retain explicit edits. `preview` is the built-in
@@ -560,7 +504,10 @@ human-readable renderer; users do not need `jq`.
 
 Every apply performs preflight both before and after confirmation. A source
 change or an analysis-error record rejects the whole plan before writing.
-`settag.plan/v4` is the only accepted plan schema; a plan written with any
+
+Plans on the pre-release `settag.plan/v4` schema still apply. They predate the
+audio digest, so preflight falls back to comparing the whole file for them: a
+tag write by another tool blocks a v4 plan where a v5 plan would proceed. Any
 other schema is rejected with an explicit error.
 
 ## Scores and models

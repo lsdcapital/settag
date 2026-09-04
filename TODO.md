@@ -5,21 +5,18 @@ Each item says what is wrong, where, and why it matters, so it can be picked up
 cold. Items already fixed: journal errors swallowed on insert, abandoned
 `.settag-part` temp files scanned as tracks, unguarded `mark_reverted` in
 `settag undo`, no fsync before the write swap, no model download timeout, tests
-reading the developer's real config, and the stray root `pnpm-lock.yaml`.
+reading the developer's real config, the stray root `pnpm-lock.yaml`, and the
+README and DESIGN drift (plan schema v5, the audio digest, preflight checklist,
+missing flags, duplicated contract sections).
 
 ## Documentation
 
-- **Plan schema.** README and DESIGN.md both say `settag.plan/v4` is the only
-  accepted schema and show v4 JSON. `src/settag/plans.py` emits v5 (adds
-  `source.audio_sha256`) and reads v4 and v5. Update the prose and the sample,
-  and drop the `"settag_version": "0.1.0"` in the sample or make it obviously
-  illustrative.
-- **Undocumented flags.** README omits `--model-dir` (run, analyze, models),
-  `--journal-db` (run, hygiene, apply, undo), `undo --limit`, `undo --yes`,
-  `models download --force`, and `--version`. The undo section mentions only
-  `SETTAG_JOURNAL_DB` even though DESIGN.md names the flag.
 - **THIRD_PARTY_NOTICES.md** omits `tomli` (MIT, Python < 3.11) and the
   transitive `platformdirs` and `pygments` that Textual pulls in.
+- **PRODUCT.md** restates platform, licensing, and positioning facts that
+  README already owns, in a schema the site tooling reads. If the tooling
+  allows it, point at README for facts rather than duplicating them, so they
+  cannot drift the way the plan schema did.
 
 ## Packaging and CI
 

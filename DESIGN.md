@@ -224,7 +224,7 @@ The default SQLite path follows the platform application-data convention:
 `SETTAG_STATE_DB` changes the default and `run --state-db PATH` overrides one
 invocation. Plain CLI commands are stateless and never open the workbench.
 
-Records reuse the validated `settag.plan/v4` representation. An upsert is
+Records reuse the validated `settag.plan/v5` representation. An upsert is
 committed after every successful track analysis and after each staged standard
 genre edit. A verified write deletes its corresponding entry. Persistence
 failure leaves the in-memory review intact; cleanup failure after a verified
@@ -237,6 +237,16 @@ limit reuse the existing evidence; changing how much audio the genre model
 reads does not, because that changes the evidence itself. A true evidence
 mismatch retains the old evidence for inspection but requires reanalysis. Current embedded SetTag
 metadata is authoritative and causes an obsolete local entry to be removed.
+
+A cached plan whose path no longer exists is not discarded on sight. The plan
+carries the audio digest, so `WorkbenchStore.load` first looks for the file
+among the paths being loaded: only candidates sharing the missing file's size,
+directory, or name are hashed, which keeps the search near the hole the move
+left rather than across the library. A plan moves when exactly one candidate
+matches it and it matches exactly one candidate. Anything ambiguous is left to
+be reported as missing, because attaching an analysis to the wrong track is far
+worse than asking for a rescan. Size alone is never enough, because a rename
+usually arrives together with the tag write that changed the length.
 
 A row the running build cannot decode at all — a superseded plan schema after
 an upgrade, or a corrupt record — is deleted and treated as a cache miss, so
@@ -257,7 +267,7 @@ bundle, conventional genre, and any explicitly cleaned hygiene fields exactly
 as they were before that file was written, plus the size and mtime immediately
 after. The before-state is
 captured during preflight and is trustworthy at write time because
-`apply_prepared` rechecks the source SHA-256 and `apply_metadata_tags` rechecks
+`apply_prepared` rechecks the audio digest and `apply_metadata_tags` rechecks
 the plan before saving.
 
 An entry is recorded only after a file is written and verified, so the journal
@@ -338,7 +348,8 @@ if any input fails.
 
 Preflight verifies for every included track:
 
-- the source exists and its SHA-256 matches
+- the source exists and its audio digest matches; a v4 plan predates the
+  digest and falls back to the whole-file SHA-256 it was written with
 - the observed conventional genre still matches
 - the parsed metadata adapter still matches
 - reconstructed SetTag-owned changes match the plan
@@ -387,7 +398,10 @@ labels are drawn from (`discogs519`, `mtg-jamendo-moodtheme`,
 `mtg-jamendo-instrument`). It is declared rather than inferred: only the
 producer knows which taxonomy it ran, field names do not change when a head is
 swapped, and two taxonomies sharing a label spelling are not the same label.
-`ModelSpec` owns the value so it moves with the head it describes.
+`ModelSpec` owns the value so it moves with the head it describes. Consumers
+should key semantic mapping on `(task, vocabulary, label)` and treat an
+undeclared or unrecognized vocabulary as uninterpretable rather than assume
+that labels spelled the same mean the same thing.
 
 `PROVENANCE_SCHEMA` in `tags.py` is both the value written and the value
 required when reading, so the pair cannot drift. Bumping it makes every earlier
@@ -444,41 +458,58 @@ succeeded.
 
 ## Compact plan record
 
-Current compact plans use `settag.plan/v4`:
+Current compact plans use `settag.plan/v5`:
 
 ```json
 {
-  "schema": "settag.plan/v4",
+  "schema": "settag.plan/v5",
   "path": "/absolute/path/track.mp3",
   "source": {
-    "sha256": "...",
+    "sha256": "…",
+    "audio_sha256": "…",
     "size": 12345678,
     "mtime_ns": 1750000000000000000
   },
   "file_genre": [],
   "target_file_genre": ["House"],
   "evidence": [
-    {
-      "label": "Electronic---Progressive House",
-      "score": 0.664
-    }
+    {"label": "Electronic---Progressive House", "score": 0.664},
+    {"label": "Electronic---Techno", "score": 0.069}
   ],
   "selected": [
-    {
-      "label": "Electronic---Progressive House",
-      "score": 0.664
-    }
+    {"label": "Electronic---Progressive House", "score": 0.664}
   ],
+  "tasks": {
+    "genre": {
+      "evidence": [
+        {"label": "Electronic---Progressive House", "score": 0.664},
+        {"label": "Electronic---Techno", "score": 0.069}
+      ],
+      "provenance": {
+        "analyzed_at": "2026-07-24T12:34:56Z",
+        "config": {"evidence": {"…": "…"}, "selection": {"…": "…"}, "sha256": "…"},
+        "model": {"files": {"…": "…"}, "id": "essentia/genre-discogs519-maest/v1"}
+      }
+    }
+  },
+  "metadata": {
+    "fields": {
+      "SETTAG_GENRE": ["Electronic---Progressive House", "Electronic---Techno"],
+      "SETTAG_GENRE_SCORES": ["[{\"label\":\"Electronic---Progressive House\",\"score\":0.664},…]"],
+      "SETTAG_MOOD_THEME": null,
+      "…": "…"
+    }
+  },
   "metadata_format": "id3",
   "provenance": {
-    "settag_version": "0.1.0",
+    "settag_version": "0.1.1",
     "model": "essentia/genre-discogs519-maest/v1",
     "analyzed_at": "2026-07-24T12:34:56Z",
-    "config_sha256": "..."
+    "config_sha256": "…"
   },
   "changes": {
     "settag": [
-      "Genre labels: 0 → 1",
+      "Genre labels: 0 → 2",
       "Ranked score data: add"
     ],
     "file_genre": "File genre: None → House"
@@ -486,17 +517,34 @@ Current compact plans use `settag.plan/v4`:
 }
 ```
 
+`source` carries two digests that answer two different questions.
+`audio_sha256` covers only the audio samples, computed by `hashing.sha256_audio`
+from the container's own layout rather than its extension, so it survives a tag
+write and a rename while still changing on a re-encode, an edit, or a
+truncation. It is what preflight compares and what the workbench uses to follow
+a moved file. `sha256` is the whole file exactly as it was read, kept for the
+write journal's record of what the write replaced. A v4 plan has no
+`audio_sha256`; preflight falls back to comparing `sha256`, which is stricter
+but never wrong.
+
 `file_genre` is the observed safety precondition.
 `target_file_genre` is either `null` (preserve it), an array of desired values,
 or an empty array (explicitly clear it). SetTag and conventional changes are
 serialized separately.
 
-`analyze --plan` writes v4 with a null target. The Textual app may save an
-explicit target. `settag.plan/v4` is the only accepted plan schema; earlier
-drafts were never released. A *plan file* on an earlier schema is rejected with
-an explicit error, because it is user-supplied input that must not be silently
-ignored; the same record in the *workbench* is discarded instead, because that
-is SetTag's own restartable cache.
+`evidence` and `selected` are the genre task's bounded evidence and the review
+selection under the plan's policy. `tasks` repeats the evidence per task
+together with that task's provenance entry, and `metadata.fields` is the
+complete SetTag-owned bundle exactly as it will be written, so an applying
+build reconstructs the write from the record rather than from a live model.
+
+`analyze --plan` writes v5 with a null target. The Textual app may save an
+explicit target. `READABLE_PLAN_SCHEMAS` in `plans.py` accepts v5 and the
+pre-release v4 that preceded the audio digest; no released build wrote anything
+older. Any other schema in a *plan file* is rejected with an explicit error,
+because it is user-supplied input that must not be silently ignored. The same
+record in the *workbench* is discarded instead, because that is SetTag's own
+restartable cache.
 
 Failed tracks use `settag.plan-error/v1`. A file containing any error record
 cannot be applied.
