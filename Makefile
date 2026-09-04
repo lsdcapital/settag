@@ -3,7 +3,7 @@
 help:
 	@echo "Available targets:"
 	@echo "  make build        - Set up development environment"
-	@echo "  make update       - Update all dependencies to latest allowed versions"
+	@echo "  make update       - Bump Python packages, site packages, and pinned actions"
 	@echo "  make check        - Run all quality checks (lint, format, typecheck, test)"
 	@echo "  make fix          - Auto-fix issues (ruff check --fix, ruff format)"
 	@echo "  make format       - Format code with ruff"
@@ -16,8 +16,16 @@ help:
 build:
 	uv sync --group dev
 
+# Three dependency sets live in this repository and no single tool sees all of
+# them: uv owns uv.lock (within the ranges in pyproject.toml), pnpm owns
+# site/pnpm-lock.yaml, and the commit-pinned actions in .github/workflows are
+# plain YAML. `pnpm up -i` is interactive; pinact rewrites each pin to the
+# latest release and keeps the version comment beside it.
 update:
 	uv sync --group dev --upgrade
+	cd site && pnpm run update
+	@command -v pinact >/dev/null || { echo "pinact is not installed: brew install pinact"; exit 1; }
+	pinact run --update
 
 check:
 	@echo "\n========================================================"
