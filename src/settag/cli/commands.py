@@ -559,12 +559,17 @@ def _run_undo(args: argparse.Namespace) -> int:
         print(str(error), file=sys.stderr)
         return 1
 
-    journal.mark_reverted(batch.batch_id)
     print(file=sys.stderr)
     print(
         f"Done. {restored} file{'s' if restored != 1 else ''} restored and verified.",
         file=sys.stderr,
     )
+    try:
+        journal.mark_reverted(batch.batch_id)
+    except JournalError as error:
+        # The files are already restored, so this is not a failed undo. The batch will
+        # still look undoable in the list; the app reports the same case the same way.
+        print(f"The journal could not be updated: {error}", file=sys.stderr)
     return 0
 
 

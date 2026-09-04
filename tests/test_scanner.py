@@ -2,7 +2,12 @@ from pathlib import Path
 
 import pytest
 
-from settag.scanner import SUPPORTED_EXTENSIONS, UnsupportedInputError, scan_audio
+from settag.scanner import (
+    SUPPORTED_EXTENSIONS,
+    WRITE_TEMPORARY_MARKER,
+    UnsupportedInputError,
+    scan_audio,
+)
 
 
 def test_scan_recurses_and_returns_only_sorted_supported_audio(tmp_path: Path) -> None:
@@ -30,3 +35,12 @@ def test_scan_rejects_an_unsupported_file(tmp_path: Path) -> None:
 
 def test_supported_extensions_cover_first_multi_format_slice() -> None:
     assert {".mp3", ".flac", ".m4a", ".mp4", ".aiff", ".wav"} <= SUPPORTED_EXTENSIONS
+
+
+def test_scan_skips_an_abandoned_write_candidate(tmp_path: Path) -> None:
+    """A hard kill mid-write leaves the temporary copy behind with the audio suffix."""
+    track = tmp_path / "track.mp3"
+    track.touch()
+    (tmp_path / f"track{WRITE_TEMPORARY_MARKER}.mp3").touch()
+
+    assert scan_audio(tmp_path) == [track.resolve()]

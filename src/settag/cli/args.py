@@ -10,7 +10,7 @@ import argparse
 from pathlib import Path
 
 from settag import __version__
-from settag.config import DEFAULT_CONFIG_PATH
+from settag.config import default_config_path
 from settag.journal import DEFAULT_JOURNAL_DB
 from settag.model_store import DEFAULT_MODEL_DIR
 from settag.policy import MIDDLE_PATCHES, SPACED_PATCHES, AudioSample, parse_audio_sample
@@ -43,11 +43,14 @@ def build_parser() -> argparse.ArgumentParser:
     _add_analysis_options(run)
     _add_tasks(run, default=None)
     _add_genre_sample(run, default=None)
+    # Resolved per parser rather than at import, so SETTAG_CONFIG set after the
+    # package is imported (by a test fixture or a wrapper) still takes effect.
+    config_path = default_config_path()
     run.add_argument(
         "--config",
         type=Path,
-        default=DEFAULT_CONFIG_PATH,
-        help=(f"TOML config file used for TUI defaults (default: {DEFAULT_CONFIG_PATH})."),
+        default=config_path,
+        help=(f"TOML config file used for TUI defaults (default: {config_path})."),
     )
     run.add_argument(
         "--no-tui",

@@ -200,27 +200,37 @@ class WriteJournal:
             separators=(",", ":"),
             sort_keys=True,
         )
-        with closing(self._connect()) as connection, connection:
-            # rowcount distinguishes the first entry of a new batch from later ones, which is
-            # where retention is enforced: once per batch rather than once per file.
-            started = (
+        # Every storage failure surfaces as JournalError, the one type BatchRecorder
+        # absorbs and reports. A raw sqlite3 error escaping here would pass the recorder
+        # untouched and be silently dropped by the write loop, so the user would never
+        # learn that a write it just made cannot be undone.
+        try:
+            with closing(self._connect()) as connection, connection:
+                # rowcount distinguishes the first entry of a new batch from later ones,
+                # which is where retention is enforced: once per batch rather than once
+                # per file.
+                started = (
+                    connection.execute(
+                        """
+                        INSERT INTO write_batches(batch_id, started_at)
+                        VALUES (?, ?)
+                        ON CONFLICT(batch_id) DO NOTHING
+                        """,
+                        (batch_id, entry.written_at),
+                    ).rowcount
+                    == 1
+                )
                 connection.execute(
                     """
-                    INSERT INTO write_batches(batch_id, started_at)
-                    VALUES (?, ?)
-                    ON CONFLICT(batch_id) DO NOTHING
+                    INSERT INTO write_entries(batch_id, path, record_json, written_at)
+                    VALUES (?, ?, ?, ?)
                     """,
-                    (batch_id, entry.written_at),
-                ).rowcount
-                == 1
-            )
-            connection.execute(
-                """
-                INSERT INTO write_entries(batch_id, path, record_json, written_at)
-                VALUES (?, ?, ?, ?)
-                """,
-                (batch_id, str(entry.path), serialized, entry.written_at),
-            )
+                    (batch_id, str(entry.path), serialized, entry.written_at),
+                )
+        except (sqlite3.Error, OSError) as error:
+            raise JournalError(
+                f"Could not record a write in the SetTag journal {self.path}: {error}"
+            ) from error
         if started:
             self._prune_quietly(keep=batch_id)
 

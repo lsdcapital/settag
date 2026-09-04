@@ -20,6 +20,7 @@ from mutagen.wave import WAVE
 
 from settag import __version__
 from settag.policy import Prediction
+from settag.scanner import WRITE_TEMPORARY_MARKER
 from settag.tasks import TASK_FIELDS, TASK_ORDER, AnalysisTask, task_name
 
 ENCODING_UTF8 = 3
@@ -325,11 +326,18 @@ class OwnedTagStore(ABC):
             self.audio.save()
             return
 
-        temporary = self.path.with_name(f"{self.path.stem}.settag-part{self.path.suffix}")
+        temporary = self.path.with_name(
+            f"{self.path.stem}{WRITE_TEMPORARY_MARKER}{self.path.suffix}"
+        )
         try:
             shutil.copy2(self.path, temporary)
             self.audio.save(temporary)
             self._verify_candidate(temporary, desired, standard_genres, hygiene_values)
+            # The rename is only atomic with respect to other processes. Without flushing
+            # the candidate first, a power loss just after the swap can leave the name
+            # pointing at a truncated file, and the original is already gone.
+            with temporary.open("rb") as handle:
+                os.fsync(handle.fileno())
             os.replace(temporary, self.path)
         finally:
             temporary.unlink(missing_ok=True)

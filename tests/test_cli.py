@@ -1,5 +1,6 @@
 import json
 import logging
+import os
 import sys
 import wave
 from io import StringIO
@@ -16,6 +17,8 @@ from settag.cli import (
     _analyze_one,
     main,
 )
+from settag.cli.args import build_parser
+from settag.journal import JournalError, WriteJournal
 from settag.plans import (
     PLAN_SCHEMA,
     PlanError,
@@ -1344,3 +1347,30 @@ def test_inspect_no_scores_keeps_every_field_but_drops_the_ranked_lines(
     assert "1. Deep" not in quiet
     assert "1. Deep" in full
     assert len(quiet.splitlines()) < len(full.splitlines())
+
+
+def test_undo_reports_a_journal_that_cannot_be_marked_reverted(
+    tmp_path: Path, capsys, monkeypatch
+) -> None:
+    """The files are restored before the journal is touched, so this is not a failed undo."""
+    path = _apply_one_track(tmp_path)
+    capsys.readouterr()
+
+    def refuse(self, batch_id: str) -> None:
+        raise JournalError("journal is read-only")
+
+    monkeypatch.setattr(WriteJournal, "mark_reverted", refuse)
+
+    assert main(["undo", "--yes"]) == 0
+    output = capsys.readouterr().err
+    assert "restored and verified" in output
+    assert "The journal could not be updated: journal is read-only" in output
+    tags = WAVE(path).tags
+    assert tags is None or "TCON" not in tags
+
+
+def test_run_reads_the_config_named_by_settag_config(tmp_path: Path, capsys) -> None:
+    """The parser default follows SETTAG_CONFIG at build time, which is what isolates tests."""
+    args = build_parser().parse_args(["run", str(tmp_path)])
+
+    assert args.config == Path(os.environ["SETTAG_CONFIG"])

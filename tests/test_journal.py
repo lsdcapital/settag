@@ -210,3 +210,24 @@ def test_recorder_reports_no_error_when_every_write_is_journaled(tmp_path: Path)
 
 def test_batch_ids_are_unique(tmp_path: Path) -> None:
     assert new_batch_id() != new_batch_id()
+
+
+def test_recorder_absorbs_a_failing_insert_and_reports_it(tmp_path: Path) -> None:
+    """A storage error on the insert itself, not just on opening the database.
+
+    This used to escape as a raw sqlite3 error, which the recorder did not catch
+    and the write loop silently dropped, so a write that could not be undone
+    was reported as a clean success.
+    """
+    path = tmp_path / "journal.sqlite3"
+    with sqlite3.connect(path) as connection:
+        connection.execute("CREATE TABLE write_entries (id INTEGER PRIMARY KEY, batch_id TEXT)")
+        connection.execute("PRAGMA user_version = 1")
+    recorder = BatchRecorder(WriteJournal(path))
+
+    recorder(_record(tmp_path / "track.wav"))
+
+    assert recorder.recorded == 0
+    assert recorder.error is not None
+    assert "cannot be undone" in recorder.error
+    assert "no column named" in recorder.error

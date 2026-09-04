@@ -7,6 +7,11 @@ class UnsupportedInputError(ValueError):
     pass
 
 
+# Marker in the name of the temporary copy a tag write is built in. It keeps the
+# audio suffix so container detection matches the original, which means a copy
+# abandoned by a hard kill would otherwise look like one more track to scan.
+WRITE_TEMPORARY_MARKER = ".settag-part"
+
 SUPPORTED_EXTENSIONS = frozenset(
     {
         ".aif",
@@ -41,5 +46,7 @@ def scan_audio(path: Path) -> list[Path]:
     return sorted(
         candidate.resolve()
         for candidate in resolved.rglob("*")
-        if candidate.is_file() and candidate.suffix.lower() in SUPPORTED_EXTENSIONS
+        if candidate.is_file()
+        and candidate.suffix.lower() in SUPPORTED_EXTENSIONS
+        and WRITE_TEMPORARY_MARKER not in candidate.name
     )

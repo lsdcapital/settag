@@ -1,4 +1,5 @@
 import json
+import os
 import shutil
 import wave
 from pathlib import Path
@@ -545,3 +546,29 @@ def test_failed_write_leaves_the_original_byte_identical(
 
     assert path.read_bytes() == before
     assert sorted(item.name for item in tmp_path.iterdir()) == [path.name]
+
+
+def test_committed_candidate_is_flushed_before_it_replaces_the_original(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The rename alone is not crash-safe: power loss can truncate an unflushed candidate."""
+    path = _copy_fixture("tagged.flac", tmp_path)
+    events: list[str] = []
+    real_fsync = os.fsync
+    real_replace = os.replace
+
+    def record_fsync(fd: int) -> None:
+        events.append("fsync")
+        real_fsync(fd)
+
+    def record_replace(src, dst, *args, **kwargs):
+        events.append("replace")
+        return real_replace(src, dst, *args, **kwargs)
+
+    monkeypatch.setattr(os, "fsync", record_fsync)
+    monkeypatch.setattr(os, "replace", record_replace)
+
+    apply_metadata_tags(path, _desired())
+
+    assert events == ["fsync", "replace"]

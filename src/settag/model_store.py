@@ -52,8 +52,13 @@ def require_models(
     )
 
 
+# Seconds without any bytes before a model download is abandoned. Each file is
+# fetched in 1 MiB reads, so this bounds one silent stall, not the whole transfer.
+DOWNLOAD_TIMEOUT_SECONDS = 60.0
+
+
 def _default_urlopen(url: str) -> BinaryIO:
-    return urllib.request.urlopen(url)
+    return urllib.request.urlopen(url, timeout=DOWNLOAD_TIMEOUT_SECONDS)
 
 
 def _print_license_notice() -> None:
