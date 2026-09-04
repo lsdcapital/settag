@@ -1,8 +1,8 @@
-import { defineConfig } from 'vite'
+import { defineConfig } from "vite";
 
-import { tanstackStart } from '@tanstack/react-start/plugin/vite'
+import { tanstackStart } from "@tanstack/react-start/plugin/vite";
 
-import viteReact from '@vitejs/plugin-react'
+import viteReact from "@vitejs/plugin-react";
 
 // Prerendered to static HTML so the site can be served from Cloudflare Pages
 // with no Worker behind it. If a page ever needs a server function, drop the
@@ -19,6 +19,6 @@ const config = defineConfig({
     }),
     viteReact(),
   ],
-})
+});
 
-export default config
+export default config;

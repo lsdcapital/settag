@@ -1,8 +1,8 @@
-import { createFileRoute } from '@tanstack/react-router'
+import { createFileRoute } from "@tanstack/react-router";
 
-export const Route = createFileRoute('/')({ component: Home })
+export const Route = createFileRoute("/")({ component: Home });
 
-const REPO = 'https://github.com/lsdcapital/settag'
+const REPO = "https://github.com/lsdcapital/settag";
 
 function Home() {
   return (
@@ -109,7 +109,7 @@ function Home() {
                 evidence when you ask for them.
               </p>
               <p className="block__body">
-                Inference happens on your machine. Model files download once into{' '}
+                Inference happens on your machine. Model files download once into{" "}
                 <code>~/.cache/settag/models</code> and are checked against pinned SHA-256 digests
                 before anything loads. Nothing about your library leaves the machine.
               </p>
@@ -128,8 +128,8 @@ function Home() {
               <li>
                 <code className="steps__line">$ settag models download</code>
                 <span className="steps__gloss">
-                  Fetches the genre model. Add{' '}
-                  <code>--tasks genre,mood-theme,instrument</code> for the rest.
+                  Fetches the genre model. Add <code>--tasks genre,mood-theme,instrument</code> for
+                  the rest.
                 </span>
               </li>
               <li>
@@ -166,7 +166,7 @@ function Home() {
               </table>
             </div>
             <p className="unsupported">
-              Windows and Linux on ARM cannot run SetTag. The analysis backend,{' '}
+              Windows and Linux on ARM cannot run SetTag. The analysis backend,{" "}
               <code>essentia-tensorflow</code>, has never published wheels for either, and there is
               no source build worth attempting.
             </p>
@@ -192,7 +192,7 @@ function Home() {
               <p className="notice__body">
                 <a href="https://essentia.upf.edu/licensing_information.html">
                   Essentia licensing information
-                </a>{' '}
+                </a>{" "}
                 · <a href={`${REPO}/blob/main/THIRD_PARTY_NOTICES.md`}>Third-party notices</a>
               </p>
             </div>
@@ -207,5 +207,5 @@ function Home() {
         <a href={`${REPO}/blob/main/LICENSE`}>AGPL-3.0-only</a>
       </footer>
     </>
-  )
+  );
 }

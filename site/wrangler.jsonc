@@ -29,8 +29,8 @@
     // once the site has a 404 route emitting dist/client/404.html. Never
     // "single-page-application": it would serve index.html with a 200 for
     // every unknown path, turning typos into soft 404s.
-    "not_found_handling": "none"
-  }
+    "not_found_handling": "none",
+  },
 
   // Deliberately no "routes" or "custom_domain". The terraform repo's
   // settag/cloudflare stack owns the settag.dev hostname via
