@@ -1,4 +1,6 @@
-.PHONY: help build update check check-site fix format lint typecheck test clean
+.PHONY: help build update check check-site fix format lint typecheck test release clean
+
+BUMP ?= patch
 
 help:
 	@echo "Available targets:"
@@ -11,6 +13,8 @@ help:
 	@echo "  make lint         - Lint code with ruff"
 	@echo "  make typecheck    - Type check with ty"
 	@echo "  make test         - Run pytest"
+	@echo "  make release      - Check, bump, commit, tag, and publish the next patch release"
+	@echo "                      Use BUMP=minor or BUMP=major for larger releases"
 	@echo "  make clean        - Clean up cache files"
 	@echo "  make help         - Show this help message"
 
@@ -84,6 +88,12 @@ typecheck:
 
 test:
 	uv run pytest
+
+# The release script refuses dirty, non-main, or unsynchronized trees before it
+# changes anything. The final atomic push makes the version commit and its tag
+# visible together; pushing the tag starts .github/workflows/release.yml.
+release:
+	python3 scripts/release.py --bump "$(BUMP)" $(if $(filter 1,$(YES)),--yes,)
 
 clean:
 	find . -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true
