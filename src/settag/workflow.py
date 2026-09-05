@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal, Protocol, runtime_checkable
 
-from settag.hashing import sha256_audio, sha256_file
+from settag.hashing import sha256_audio, sha256_file, sha256_json
 from settag.journal import WriteRecord
 from settag.plans import (
     PLAN_ERROR_SCHEMA,
@@ -93,6 +93,7 @@ CacheStatus = Literal["ready", "stale"]
 @dataclass(frozen=True)
 class PreparedTrack:
     source: SourceRecord
+    source_owned_sha256: str
     analyzed_at: str
     config: dict[str, object]
     predictions: list[Prediction]
@@ -440,6 +441,7 @@ def prepare_track(
     tag_plan = plan_owned_tags(path, desired)
     return PreparedTrack(
         source=source,
+        source_owned_sha256=sha256_json(current_owned),
         analyzed_at=analyzed_at,
         config=config,
         predictions=predictions,
@@ -582,7 +584,7 @@ def inspect_track(
     genre_state = read_genre_state(path)
     owned = read_owned_values(path)
     duration = read_duration_seconds(path)
-    if duration is not None and duration < MIN_GENRE_SECONDS:
+    if "genre" in expected_models and duration is not None and duration < MIN_GENRE_SECONDS:
         # Checked before anything else: what the tags say does not matter when the
         # audio is too short for the model to read.
         return MetadataTrack(
@@ -691,6 +693,7 @@ def planned_write_for_track(track: PreparedTrack) -> PlannedWrite:
     return PlannedWrite(
         path=Path(str(track.source["path"])),
         source_sha256=str(track.source["sha256"]),
+        source_owned_sha256=track.source_owned_sha256,
         source_audio_sha256=str(track.source["audio_sha256"]),
         source_size=track.source["size"],
         source_mtime_ns=track.source["mtime_ns"],
@@ -728,6 +731,14 @@ def preflight_plan(planned: Sequence[PlannedWrite]) -> list[PreparedWrite]:
                 )
             if _source_audio_changed(item):
                 raise RuntimeError(f"source audio changed: {item.path}")
+            owned_before = read_owned_values(item.path)
+            if item.source_owned_sha256 is None:
+                # Older plans did not retain exact metadata state. Only the
+                # original whole-file digest can validate them safely.
+                if sha256_file(item.path) != item.source_sha256:
+                    raise RuntimeError(f"source file changed since legacy plan: {item.path}")
+            elif sha256_json(owned_before) != item.source_owned_sha256:
+                raise RuntimeError(f"SetTag metadata changed: {item.path}")
             genre_state = read_genre_state(item.path)
             if genre_state.standard != item.file_genre:
                 raise RuntimeError(f"file genre tag changed: {item.path}")
@@ -750,7 +761,7 @@ def preflight_plan(planned: Sequence[PlannedWrite]) -> list[PreparedWrite]:
                     genre_state=genre_state,
                     owned_plan=owned_plan,
                     standard_genre_change=standard_change,
-                    owned_before=read_owned_values(item.path),
+                    owned_before=owned_before,
                 )
             )
         except Exception as error:
@@ -861,6 +872,7 @@ def _undo_blocker(entry: WriteRecord, *, force: bool) -> str | None:
 def apply_undo(
     entries: Sequence[WriteRecord],
     *,
+    force: bool = False,
     on_progress: WriteProgressCallback | None = None,
 ) -> int:
     """Restore the tag values each write replaced, newest write first.
@@ -868,12 +880,16 @@ def apply_undo(
     Only the SetTag-owned bundle, an explicitly staged conventional genre edit,
     and explicitly cleaned hygiene fields are rewritten. This is not a
     byte-level restore: mutagen rewrites the tag block on save, so the file will
-    not regain its pre-write SHA-256.
+    not regain its pre-write SHA-256. Each file is checked again immediately
+    before restoring; only an explicit force bypasses the changed-file check.
     """
     total = len(entries)
     completed = 0
     try:
         for entry in entries:
+            blocker = _undo_blocker(entry, force=force)
+            if blocker is not None:
+                raise RuntimeError(f"Cannot restore {entry.path}: {blocker}")
             standard = entry.standard_before if entry.standard_after is not None else None
             expected_standard_change = (
                 plan_standard_genres(entry.path, standard) if standard is not None else None

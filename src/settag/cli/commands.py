@@ -34,6 +34,8 @@ from settag.cli.render import (
     _prompt_for_undo,
 )
 from settag.config import SetTagConfig, load_config
+from settag.embeddings import embedding_record
+from settag.hashing import sha256_file
 from settag.hygiene import inspect_hygiene_paths
 from settag.journal import BatchRecorder, JournalError, WriteJournal, default_journal_db
 from settag.model_store import (
@@ -309,13 +311,29 @@ def _run_analyze(args: argparse.Namespace) -> int:
         print("settag: --plan and --output must use different files", file=sys.stderr)
         return 2
 
+    if args.embeddings and args.tasks == ("genre",):
+        print("settag: --embeddings requires --tasks mood-theme or instrument", file=sys.stderr)
+        return 2
+    destinations = [
+        p.expanduser().resolve() for p in (args.output, args.plan, args.embeddings) if p
+    ]
+    # ui-count: output paths supplied by this command, checked for collisions
+    if len(set(destinations)) != len(destinations):
+        print("settag: output files must be different", file=sys.stderr)
+        return 2
+
     try:
         paths = scan_audio(args.path)
         model_dir = args.model_dir.expanduser().resolve()
         analyzer = (
             EssentiaGenreAnalyzer(model_dir, sample=args.genre_sample)
             if args.tasks == ("genre",)
-            else EssentiaTaskAnalyzer(model_dir, args.tasks, sample=args.genre_sample)
+            else EssentiaTaskAnalyzer(
+                model_dir,
+                args.tasks,
+                sample=args.genre_sample,
+                export_embeddings=bool(args.embeddings),
+            )
         )
     except Exception as error:
         print(str(error), file=sys.stderr)
@@ -325,10 +343,21 @@ def _run_analyze(args: argparse.Namespace) -> int:
         print("No supported audio files found.", file=sys.stderr)
         return 0
 
+    if any(path in paths for path in destinations):
+        print("settag: output must not overwrite a source audio file", file=sys.stderr)
+        return 2
+
     failures = 0
     planned_count = 0
     with ExitStack() as stack:
         try:
+            embeddings_output = (
+                stack.enter_context(
+                    args.embeddings.expanduser().resolve().open("x", encoding="utf-8")
+                )
+                if args.embeddings
+                else None
+            )
             output = (
                 stack.enter_context(args.output.expanduser().resolve().open("w", encoding="utf-8"))
                 if args.output
@@ -354,6 +383,7 @@ def _run_analyze(args: argparse.Namespace) -> int:
                     threshold=args.threshold,
                     output=output,
                     plan_output=plan_output,
+                    embeddings_output=embeddings_output,
                 )
                 if plan_output is not None:
                     planned_count += 1
@@ -553,7 +583,7 @@ def _run_undo(args: argparse.Namespace) -> int:
 
     print(file=sys.stderr)
     try:
-        restored = apply_undo(preflight.restorable, on_progress=progress)
+        restored = apply_undo(preflight.restorable, force=args.force, on_progress=progress)
     except KeyboardInterrupt:
         raise
     except PartialWriteError as error:
@@ -591,6 +621,7 @@ def _analyze_one(
     threshold: float,
     output: TextIO | None,
     plan_output: TextIO | None = None,
+    embeddings_output: TextIO | None = None,
 ) -> None:
     track = prepare_track(
         path,
@@ -598,6 +629,13 @@ def _analyze_one(
         top=top,
         threshold=threshold,
     )
+    if embeddings_output is not None:
+        embedding = getattr(analyzer, "embedding", None)
+        if embedding is None:
+            raise RuntimeError("Analyzer did not produce an embedding")
+        if sha256_file(path) != track.source["sha256"]:
+            raise RuntimeError("Source changed during embedding analysis")
+        _emit_jsonl(embeddings_output, embedding_record(track.source, track.analyzed_at, embedding))
     source = track.source
     analyzed_at = track.analyzed_at
     config = track.config

@@ -53,9 +53,11 @@ def test_native_stderr_is_replayed_when_analysis_fails(capfd) -> None:
     assert capfd.readouterr().err == "real native failure detail\n"
 
 
+@pytest.mark.parametrize("export_embeddings", [False, True])
 def test_task_analyzer_decodes_once_and_shares_effnet_embedding(
     tmp_path: Path,
     monkeypatch,
+    export_embeddings: bool,
 ) -> None:
     metadata = (
         (DISCOGS519_MAEST, "classifier_metadata", ["House", "Techno"]),
@@ -159,6 +161,7 @@ def test_task_analyzer_decodes_once_and_shares_effnet_embedding(
     analyzer = EssentiaTaskAnalyzer(
         tmp_path,
         ("genre", "mood-theme", "instrument"),
+        export_embeddings=export_embeddings,
     )
     result = analyzer.analyze_tasks(tmp_path / "track.wav")
 
@@ -179,3 +182,10 @@ def test_task_analyzer_decodes_once_and_shares_effnet_embedding(
         "Synthesizer",
         "Drum Machine",
     ]
+
+    if export_embeddings:
+        assert analyzer.embedding is not None
+        assert analyzer.embedding["vector"] == [1.0]
+        assert analyzer.embedding["patch_count"] == 2
+    else:
+        assert analyzer.embedding is None

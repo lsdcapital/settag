@@ -14,6 +14,7 @@ from typing import Any
 import numpy as np
 
 from settag.catalog import DISCOGS519_MAEST, MODEL_SPECS_BY_TASK, ModelSpec
+from settag.embeddings import pooled_embedding
 from settag.model_store import (
     installed_manifest,
     installed_task_manifests,
@@ -188,6 +189,9 @@ class EssentiaEffnetAnalyzer:
         log.warningActive = False
         self._loader_type = MonoLoader
         embedding_spec = MODEL_SPECS_BY_TASK[selected[0]]
+        self._embedding_spec = embedding_spec
+        self.export_embeddings = False
+        self.embedding: dict[str, object] | None = None
         self._sample_rate = embedding_spec.sample_rate
         self._embedding_model = TensorflowPredictEffnetDiscogs(
             graphFilename=str(embedding_spec.path(model_dir, "embedding")),
@@ -242,7 +246,10 @@ class EssentiaEffnetAnalyzer:
         return self._predict_audio(audio)
 
     def _predict_audio(self, audio: Any) -> dict[AnalysisTask, list[Prediction]]:
+        self.embedding = None
         embeddings = self._embedding_model(audio)
+        if self.export_embeddings:
+            self.embedding = pooled_embedding(embeddings, self._embedding_spec)
         results: dict[AnalysisTask, list[Prediction]] = {}
         for task, (model, labels, _) in self._heads.items():
             raw = np.asarray(model(embeddings), dtype=float)
@@ -264,6 +271,7 @@ class EssentiaTaskAnalyzer:
         tasks: Sequence[AnalysisTask],
         *,
         sample: AudioSample = "full",
+        export_embeddings: bool = False,
     ) -> None:
         self.tasks = ordered_tasks(tasks)
         if not self.tasks:
@@ -276,6 +284,10 @@ class EssentiaTaskAnalyzer:
         self.min_seconds: float | None = MIN_GENRE_SECONDS if self._genre is not None else None
         effnet_tasks = tuple(task for task in self.tasks if task != "genre")
         self._effnet = EssentiaEffnetAnalyzer(model_dir, effnet_tasks) if effnet_tasks else None
+        if export_embeddings and self._effnet is None:
+            raise ValueError("Embedding export requires mood-theme or instrument analysis")
+        if self._effnet is not None:
+            self._effnet.export_embeddings = export_embeddings
         manifests: dict[AnalysisTask, dict[str, object]] = {}
         if self._genre is not None:
             manifests["genre"] = self._genre.model_manifest
@@ -301,6 +313,10 @@ class EssentiaTaskAnalyzer:
             self._loader_type = None
             self._sample_rate = None
         self._tensorflow_startup_pending = True
+
+    @property
+    def embedding(self) -> dict[str, object] | None:
+        return self._effnet.embedding if self._effnet is not None else None
 
     def analyze_tasks(self, path: Path) -> dict[AnalysisTask, list[Prediction]]:
         if self._genre is not None and self._effnet is not None:

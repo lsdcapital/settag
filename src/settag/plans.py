@@ -67,6 +67,8 @@ class PlannedWrite:
     # ``None`` only for a plan read back in the v4 format, which predates this
     # digest. Callers recompute rather than treating unknown as mismatched.
     source_audio_sha256: str | None = None
+    # Exact observed SetTag metadata; older records fall back to whole-file validation.
+    source_owned_sha256: str | None = None
 
     @property
     def readable_changes(self) -> tuple[str, ...]:
@@ -193,6 +195,7 @@ def planned_write_record(item: PlannedWrite) -> dict[str, object]:
         "source": {
             "sha256": item.source_sha256,
             "audio_sha256": item.source_audio_sha256,
+            "owned_sha256": item.source_owned_sha256,
             "size": item.source_size,
             "mtime_ns": item.source_mtime_ns,
         },
@@ -313,6 +316,12 @@ def _planned_write(
         source_audio_sha256 = _string(audio_value, f"{location}.source.audio_sha256")
         if not _is_sha256(source_audio_sha256):
             raise PlanError(f"{location}.source.audio_sha256: expected a lowercase SHA-256 digest")
+    owned_value = source.get("owned_sha256")
+    source_owned_sha256 = None
+    if owned_value is not None:
+        source_owned_sha256 = _string(owned_value, f"{location}.source.owned_sha256")
+        if not _is_sha256(source_owned_sha256):
+            raise PlanError(f"{location}.source.owned_sha256: expected a lowercase SHA-256 digest")
     source_size = _non_negative_int(source.get("size"), f"{location}.source.size")
     source_mtime_ns = _non_negative_int(source.get("mtime_ns"), f"{location}.source.mtime_ns")
 
@@ -376,6 +385,7 @@ def _planned_write(
         owned_changes=owned_changes,
         target_file_genre=target_file_genre,
         source_audio_sha256=source_audio_sha256,
+        source_owned_sha256=source_owned_sha256,
     )
     expected_standard_change = planned.standard_genre_change
     expected_description = (

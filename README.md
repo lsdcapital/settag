@@ -498,6 +498,11 @@ digest preflight checks against, and the human-readable change lines `preview`
 prints. The record layout is specified once, in
 [DESIGN.md](DESIGN.md#compact-plan-record).
 
+New plans also carry `source.owned_sha256`, a digest of the exact observed
+SetTag-owned metadata. Preflight rejects changes to those values even when
+the display summary is identical. Older plans without this digest require
+the whole file to remain unchanged, including unrelated tags.
+
 Plans produced by `analyze --plan` set `target_file_genre` to `null`. Plans
 saved from the app retain explicit edits. `preview` is the built-in
 human-readable renderer; users do not need `jq`.
@@ -601,3 +606,32 @@ uv run settag analyze "/path/to/track.flac" --tasks genre,mood-theme,instrument
 ```
 
 Architecture and safety contracts are documented in [DESIGN.md](DESIGN.md).
+
+## Optional audio evidence for ranking experiments
+
+SetTag can export pooled EffNet embeddings without writing them into your music
+files. This is optional evidence for consumers such as SetPath, which must remain
+usable without SetTag or its models. It does not declare energy, vocal prominence,
+or any other calibrated perceptual axis.
+
+```sh
+settag analyze "/path/to/music" --tasks mood-theme,instrument --embeddings embeddings.jsonl
+```
+
+The export reuses the same EffNet embedding pass as those tasks. Genre-only runs
+cannot export it; no extra model is silently enabled. The output must be a new
+file. Completed tracks are flushed individually, and any track failures produce
+a nonzero exit status and diagnostics on stderr. The file contains successful
+records only; an interrupted or partially failed batch is not complete coverage.
+
+Each `audio-embedding/v1` record carries source identity, model weights digest,
+output tensor, preprocessing, mean pooling, L2 normalization, dimensions, patch
+count, and the vector. The current EffNet model produces 1,280 dimensions. These
+are whole-track embeddings, not intro/outro or phrase measurements.
+
+A consumer must compare compatible feature spaces and treat missing evidence as
+unknown. Different producers can implement the same contract; there is no runtime
+connection between SetTag and SetPath. SetPath currently consumes these exports
+only through its explicit offline evaluation commands. Export from the final
+file state: its importer verifies the whole-file SHA-256 and rejects files
+retagged or replaced since export.

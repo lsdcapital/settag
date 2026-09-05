@@ -482,6 +482,7 @@ Current compact plans use `settag.plan/v5`:
   "source": {
     "sha256": "…",
     "audio_sha256": "…",
+    "owned_sha256": "…",
     "size": 12345678,
     "mtime_ns": 1750000000000000000
   },
@@ -532,7 +533,14 @@ Current compact plans use `settag.plan/v5`:
 }
 ```
 
-`source` carries two digests that answer two different questions.
+`source` carries three digests for the original file, audio identity, and exact
+SetTag metadata state.
+`owned_sha256` hashes the exact observed SetTag-owned field mapping using
+`hashing.sha256_json`. Preflight compares this independently of the readable
+change summary. Older records without it require the original whole-file
+`sha256` to match before writing; the missing digest is never inferred from
+current metadata.
+
 `audio_sha256` covers only the audio samples, computed by `hashing.sha256_audio`
 from the container's own layout rather than its extension, so it survives a tag
 write and a rename while still changing on a re-encode, an edit, or a
@@ -573,3 +581,29 @@ cannot be applied.
 - analysis-only support for decodable but unwritable containers
 - representative-library calibration of task-specific thresholds
 - curated taxonomy search and aliases beyond direct user input
+
+### Optional audio embedding exchange
+
+`analyze --embeddings PATH` exports one independent `audio-embedding/v1` JSONL
+record per successful track. This format is producer-neutral: it names evidence,
+not a SetPath recommendation, a mandatory preparation stage, or a live provider.
+It is excluded from metadata tags, saved write plans, and workbench state.
+
+The record has:
+
+- `producer: {id, version}` and UTC `analyzed_at`;
+- `source: {path, sha256, audio_sha256, audio_hash_algorithm}`. Whole-file SHA-256
+  is interoperable; the optional consumer use of audio identity must respect its
+  declared algorithm (`settag.audio-sha256/v1` for this producer);
+- `embedding.model: {id, sha256, output}`, identifying the actual embedding
+  weights and output tensor independently of the classifier head;
+- `embedding.preprocessing: {sample_rate, channels, resample_quality, audio_sample}`;
+- `embedding.pooling`, `normalization`, `dimensions`, `patch_count`, and `vector`.
+
+The initial implementation uses full-track mono audio at 16 kHz, resampling
+quality 4, an arithmetic mean over the EffNet patch axis, then L2 normalization.
+The vector must be finite and nonzero; invalid/empty output fails the track.
+No dimensionality reduction or local-library calibration is fitted during export.
+Comparability requires matching model weights, output, dimensions, preprocessing,
+pooling and normalization; producer name alone neither establishes nor prevents
+compatibility. Training a ranker or evaluating uplift remains the consumer's job.

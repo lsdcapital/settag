@@ -106,6 +106,15 @@ def build_parser() -> argparse.ArgumentParser:
         help="Write a compact JSONL plan that can be reviewed and applied later.",
     )
 
+    analyze.add_argument(
+        "--embeddings",
+        type=Path,
+        help=(
+            "Export optional pooled audio embeddings to a new JSONL file "
+            "(requires mood-theme or instrument)."
+        ),
+    )
+
     inspect = subparsers.add_parser(
         "inspect",
         help="Show the existing file genre tag and SetTag metadata without analysis.",

@@ -4,9 +4,16 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from mutagen.id3 import TIT2
 
 from settag.journal import BatchRecorder, WriteJournal
-from settag.plans import PlannedWrite, stage_file_genre
+from settag.plans import (
+    PlannedWrite,
+    friendly_change,
+    planned_write_from_record,
+    planned_write_record,
+    stage_file_genre,
+)
 from settag.policy import Prediction
 from settag.records import config_record
 from settag.tags import (
@@ -14,11 +21,15 @@ from settag.tags import (
     PROVENANCE_SCHEMA,
     apply_metadata_tags,
     build_task_owned_values,
+    owned_tag_store,
+    plan_owned_tags,
     read_genre_state,
     read_owned_values,
 )
 from settag.tasks import AnalysisTask
+from settag.tui.entries import TrackEntry
 from settag.workflow import (
+    PartialWriteError,
     analyze_paths,
     apply_prepared,
     apply_undo,
@@ -353,7 +364,7 @@ def test_force_restores_a_file_that_changed_after_the_write(tmp_path: Path) -> N
     batch = journal.batch(recorder.batch_id)
     assert batch is not None
     preflight = preflight_undo(batch.entries, force=True)
-    apply_undo(preflight.restorable)
+    apply_undo(preflight.restorable, force=True)
 
     assert preflight.blocked == ()
     assert read_owned_values(path) == owned_before
@@ -595,3 +606,85 @@ def test_an_analyzer_without_a_minimum_reads_short_clips(tmp_path: Path) -> None
 
     assert batch.failures == ()
     assert len(batch.planned) == 1
+
+
+@pytest.mark.parametrize("tasks", [{"instrument": "instrument/v1"}, {"mood-theme": "mood/v1"}])
+def test_short_clips_remain_eligible_without_genre(tmp_path: Path, tasks) -> None:
+
+    path = tmp_path / "clip.wav"
+    _silent_wav(path, seconds=10)
+    track = inspect_paths(
+        [path], expected_model_ids=tasks, expected_config_sha256="config/current"
+    ).tracks[0]
+    assert track.status == "not_analyzed"
+    assert track.needs_analysis
+    assert TrackEntry(path, metadata=track).can_analyze
+
+
+@pytest.mark.parametrize("field", ["SETTAG_GENRE", "SETTAG_GENRE_SCORES"])
+def test_saved_plan_rejects_metadata_edits_with_identical_preview(
+    tmp_path: Path, field: str
+) -> None:
+
+    path = tmp_path / "track.wav"
+    _silent_wav(path)
+    initial = _owned_values()
+    initial["SETTAG_GENRE"] = ["Electronic---Techno"]
+    initial["SETTAG_GENRE_SCORES"] = ['[{"label":"Electronic---Techno","score":0.6}]']
+    apply_metadata_tags(path, initial)
+    plan = planned_write_from_record(planned_write_record(_plan(path)))
+    changed = read_owned_values(path)
+    changed[field] = (
+        ["Electronic---Trance"]
+        if field == "SETTAG_GENRE"
+        else ['[{"label":"Electronic---Techno","score":0.9}]']
+    )
+    apply_metadata_tags(path, changed)
+    assert tuple(friendly_change(c) for c in plan_owned_tags(path, plan.desired).changes) == (
+        plan.owned_changes
+    )
+    with pytest.raises(RuntimeError, match="SetTag metadata changed"):
+        preflight_plan([plan])
+    assert read_owned_values(path) == changed
+
+
+def test_old_plan_requires_original_file_when_exact_metadata_is_unknown(tmp_path: Path) -> None:
+
+    path = tmp_path / "track.wav"
+    _silent_wav(path)
+    current_plan = planned_write_from_record(planned_write_record(_plan(path)))
+    record = planned_write_record(current_plan)
+    source = record["source"]
+    assert isinstance(source, dict)
+    source.pop("owned_sha256")
+    plan = planned_write_from_record(record)
+    assert len(preflight_plan([plan])) == 1
+    store = owned_tag_store(path)
+    store.ensure_tags().add(TIT2(text=["New title"]))
+    store.audio.save()
+    assert len(preflight_plan([current_plan])) == 1
+    with pytest.raises(RuntimeError, match="source file changed since legacy plan"):
+        preflight_plan([plan])
+
+
+def test_undo_rechecks_each_file_after_confirmation(tmp_path: Path) -> None:
+
+    paths = [tmp_path / "first.wav", tmp_path / "second.wav"]
+    journal = WriteJournal(tmp_path / "journal.sqlite3")
+    recorder = BatchRecorder(journal)
+    for path in paths:
+        _silent_wav(path)
+    apply_prepared(preflight_plan([_plan(path) for path in paths]), on_write=recorder)
+    batch = journal.batch(recorder.batch_id)
+    assert batch is not None
+    entries = tuple(sorted(preflight_undo(batch.entries).restorable, key=lambda e: e.path))
+    changed = _owned_values(model_id="model/externally-edited")
+
+    def edit_next(completed: int, total: int, path: Path) -> None:
+        if completed == 1:
+            apply_metadata_tags(paths[1], changed)
+
+    with pytest.raises(PartialWriteError, match="file changed after SetTag wrote it") as caught:
+        apply_undo(entries, on_progress=edit_next)
+    assert caught.value.completed == 1
+    assert read_owned_values(paths[1]) == changed

@@ -1410,3 +1410,31 @@ def test_partial_undo_leaves_the_batch_open_for_a_forced_retry(tmp_path: Path, c
     second_tags = WAVE(second).tags
     assert second_tags is not None
     assert second_tags["TCON"].text == ["Techno"]
+
+
+def test_embedding_export_is_explicit_and_does_not_write_tags(tmp_path: Path, monkeypatch) -> None:
+    path = tmp_path / "track.wav"
+    _silent_wav(path)
+    before = path.read_bytes()
+    output = tmp_path / "embeddings.jsonl"
+
+    class EmbeddingAnalyzer(FakeInstrumentAnalyzer):
+        embedding = {"vector": [0.6, 0.8], "dimensions": 2}
+
+    def create(_directory, _tasks, **options):
+        assert options["export_embeddings"] is True
+        return EmbeddingAnalyzer()
+
+    monkeypatch.setattr("settag.cli.commands.EssentiaTaskAnalyzer", create)
+    assert main(["analyze", str(path), "--tasks", "instrument", "--embeddings", str(output)]) == 0
+    record = json.loads(output.read_text())
+    assert record["schema"] == "audio-embedding/v1"
+    assert record["embedding"]["vector"] == [0.6, 0.8]
+    assert path.read_bytes() == before
+    previous = output.read_bytes()
+    assert main(["analyze", str(path), "--tasks", "instrument", "--embeddings", str(output)]) == 2
+    assert output.read_bytes() == previous
+
+
+def test_genre_only_embedding_export_is_rejected_before_loading(tmp_path: Path) -> None:
+    assert main(["analyze", str(tmp_path), "--embeddings", str(tmp_path / "out.jsonl")]) == 2
