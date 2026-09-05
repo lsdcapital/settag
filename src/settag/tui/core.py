@@ -27,6 +27,7 @@ from textual.widgets import (
     Tree,
 )
 
+from settag.freshness import enrichment_record, record_values
 from settag.journal import (
     WriteJournal,
     WriteRecord,
@@ -34,13 +35,12 @@ from settag.journal import (
 from settag.plans import (
     PlannedWrite,
     stage_file_genre,
-    suggested_file_genre,
 )
 from settag.policy import Prediction
+from settag.review_evidence import StoredEvidence, describe_evidence
 from settag.tags import OwnedValues, read_task_provenance, task_evidence_from_owned
 from settag.tasks import AnalysisTask, ordered_tasks
 from settag.tui.entries import (
-    STATUS_LABELS,
     TASK_LABELS,
     AnalysisLoader,
     AppPhase,
@@ -54,7 +54,7 @@ from settag.tui.entries import (
     latest_analyzed_at,
     suggested_label,
 )
-from settag.tui.review import NodeKey, ReviewTree
+from settag.tui.review import NodeKey, ReviewTree, review_track
 from settag.tui.screens import (
     GenreEditScreen,
 )
@@ -83,7 +83,7 @@ FILTER_ORDER: tuple[LibraryFilter, ...] = (
 
 FILTER_LABELS: dict[LibraryFilter, str] = {
     "all": "All",
-    "needs_analysis": "Needs analysis",
+    "needs_analysis": "Needs enrichment",
     "missing_genre": "Missing genre",
     "current": "Analysis current",
 }
@@ -194,6 +194,7 @@ class SetTagAppCore(App[TuiOutcome]):
         self._analysis_cancel_requested = Event()
         self._analysis_completed_count = 0
         self._analysis_success_count = 0
+        self._analysis_partial_count = 0
         self._analysis_failure_count = 0
         self._analysis_current_path: Path | None = None
         self._analysis_navigation_changed = False
@@ -222,7 +223,7 @@ class SetTagAppCore(App[TuiOutcome]):
             yield Static("", markup=False, id="library-filters")
             with Vertical(id="analysis-activity"):
                 yield Static(
-                    "Preparing analysis",
+                    "Preparing enrichment",
                     markup=False,
                     id="analysis-activity-title",
                 )
@@ -433,10 +434,10 @@ class SetTagAppCore(App[TuiOutcome]):
         self.query_one("#review-tree").display = False
         self.query_one("#library-filters").display = True
         self.query_one("#tracks").display = True
-        self.sub_title = "Choose tracks to analyze"
+        self.sub_title = "Choose tracks to enrich"
         self.refresh_bindings()
         self.query_one("#tracks-pane .section-title", Static).update(
-            "Library · choose tracks to analyze"
+            "Library · choose tracks to enrich"
         )
         self._rebuild_table(preferred_index)
         self.call_after_refresh(self._sync_table_columns)
@@ -448,7 +449,7 @@ class SetTagAppCore(App[TuiOutcome]):
         self.query_one("#library-filters").display = False
         self.query_one("#library-empty").display = False
         self.query_one("#review-tree").display = True
-        self.sub_title = "Review analyzed tracks"
+        self.sub_title = "Review enriched tracks"
         self.refresh_bindings()
         self.query_one("#tracks-pane .section-title", Static).update(
             "Review · tracks and proposed changes"
@@ -575,7 +576,7 @@ class SetTagAppCore(App[TuiOutcome]):
             text = (
                 # ui-count: every row this view has loaded
                 f"{len(self.entries)} tracks"
-                f"  ·  {needs} need analysis"
+                f"  ·  {needs} need enrichment"
                 f"{ready_text}"
                 f"  ·  {errors} metadata error{'s' if errors != 1 else ''}"
             )
@@ -584,11 +585,15 @@ class SetTagAppCore(App[TuiOutcome]):
             failures = sum(
                 self.entries[index].analysis_error is not None for index in self.review_indices
             )
-            text = (
-                # ui-count: the review selection for this session
-                f"{len(self.review_indices)} ready to review"
-                f"  ·  {failures} analysis error{'s' if failures != 1 else ''}"
+            plans = [self.entries[index].plan for index in self.review_indices]
+            # ui-count: review entries with a usable result in this session
+            ready = sum(plan is not None for plan in plans)
+            # ui-count: partial results in the currently accumulated review set
+            partial = sum(
+                plan is not None and plan.enrichment_status != "current" for plan in plans
             )
+            text = f"{ready} ready to review  ·  {partial} partial  ·  {failures} failed"
+
         self.query_one("#context", Static).update(
             f"{text}\nTasks: {task_text}  ·  {_display_path(self.source)}"
         )
@@ -621,8 +626,6 @@ class SetTagAppCore(App[TuiOutcome]):
     def _open_details(self) -> None:
         if not self.has_class("details-open"):
             self.action_toggle_details()
-        else:
-            self.query_one("#inspector-scroll", VerticalScroll).focus()
 
     def _current_index(self) -> int | None:
         if self.phase == "review":
@@ -670,43 +673,50 @@ class SetTagAppCore(App[TuiOutcome]):
         assert entry.metadata is not None
         metadata = entry.metadata
         genre = ", ".join(metadata.genre_state.standard) or "None"
-        cached_plan = metadata.cached_plan
-        cache_status = (
-            "Local result ready to review"
-            if entry.plan is not None
-            else (
-                f"Local result needs reanalysis ({metadata.cache_reason})"
-                if metadata.cache_status == "stale"
-                else None
+        evidence_owned = entry.plan.desired if entry.plan is not None else metadata.owned
+        if entry.plan is not None:
+            review = describe_evidence(entry.plan)
+        else:
+            display_owned = dict(metadata.owned)
+            # Identity validation applies to display as well as lookup reuse.
+            record = enrichment_record(display_owned)
+            if (
+                record
+                and isinstance(record.get("catalog"), dict)
+                and record["catalog"].get("status") in ("matched", "no_match")
+                and not metadata.catalog_current
+            ):
+                display_owned["SETTAG_ENRICHMENT"] = record_values(
+                    audio_complete=record.get("audio") == "complete",
+                    catalog={"status": "unavailable", "reason": "Catalog check needs refreshing"},
+                )
+            selected = (
+                tuple(self._row_context.select_for_review(metadata.stored_predictions))
+                if metadata.status == "current"
+                else ()
             )
-        )
-        evidence_owned = (
-            entry.plan.desired
-            if entry.plan is not None
-            else cached_plan.desired
-            if cached_plan is not None and metadata.cache_status == "stale"
-            else metadata.owned
-        )
-        candidate_title = (
-            "Local candidates (stale)"
-            if metadata.cache_status == "stale"
-            else ("Local candidates (ready)" if entry.plan is not None else "Stored candidates")
+            review = describe_evidence(
+                StoredEvidence(display_owned, metadata.genre_state.standard, selected)
+            )
+        state = (
+            entry.plan.enrichment_status if entry.plan is not None else metadata.enrichment_status
         )
         lines.extend(
             [
-                f"Standard genre: {genre}",
-                *genre_check(entry, self._row_context).details,
+                f"Recommendation: {review.recommendation}",
+                f"Based on: {review.recommendation_source}",
+                f"Current file tag: {genre}",
                 "",
-                f"Analysis: {cache_status or STATUS_LABELS[metadata.status]}",
-                f"Last analyzed: {self._full_analyzed_at(entry)}",
-                "Analysis freshness does not indicate genre agreement.",
-                *(
-                    [f"Staged file genre: {', '.join(entry.plan.target_file_genre) or 'None'}"]
-                    if entry.plan is not None and entry.plan.target_file_genre is not None
-                    else []
-                ),
+                review.catalog_title,
+                *(f"  {detail}" for detail in review.catalog_details),
                 "",
-                f"{candidate_title} · {self._candidate_policy()}",
+                f"Enrichment: {state.replace('_', ' ').capitalize()}",
+                *review.notices,
+                "",
+                "Audio models · predictions",
+                *review.model_details,
+                f"Audio last analyzed: {self._full_analyzed_at(entry)}",
+                f"Candidates · {self._candidate_policy()}",
             ]
         )
         lines.extend(
@@ -721,7 +731,7 @@ class SetTagAppCore(App[TuiOutcome]):
                 "",
                 *(
                     [
-                        "Last analysis attempt failed",
+                        "Last enrichment attempt failed",
                         f"  {entry.analysis_error.description}",
                         "",
                     ]
@@ -729,12 +739,12 @@ class SetTagAppCore(App[TuiOutcome]):
                     else []
                 ),
                 (
-                    "Selected for analysis."
+                    "Selected for enrichment."
                     if index in self.analysis_selected
-                    else "Not selected for analysis."
+                    else "Not selected for enrichment."
                 ),
                 *(["Press V to review this saved result."] if entry.plan is not None else []),
-                "The audio model has not been loaded.",
+                "Viewing evidence does not run enrichment or write tags.",
                 *identity,
             ]
         )
@@ -758,47 +768,26 @@ class SetTagAppCore(App[TuiOutcome]):
         if entry.analysis_error is not None:
             return [
                 *lines,
-                "Analysis failed",
+                "Enrichment failed",
                 f"  {entry.analysis_error.description}",
                 "",
                 "Return to the library with B to retry or choose another track.",
                 *identity,
             ]
         if entry.plan is None:
-            return ["No analysis result is available.", *identity]
+            return ["No enrichment result is available.", *identity]
 
-        item = entry.plan
-        current = ", ".join(item.file_genre) or "None"
-        if item.target_file_genre is None:
-            genre_line = f"  {current} (unchanged)"
-        else:
-            target = ", ".join(item.target_file_genre) or "None"
-            genre_line = f"  {current} → {target} (staged)"
+        review = review_track(index, entry, index in self.write_selected, self._row_context)
 
-        suggestion = suggested_file_genre(item)
-        model_child = suggested_label(item.selected)
-        rollup_line = (
-            f"  Suggestion: {model_child} → {suggestion}"
-            if suggestion and model_child and suggestion != model_child
-            else None
-        )
-        lines.extend(
-            [
-                (
-                    "Write plan · Included"
-                    if index in self.write_selected
-                    else "Write plan · Excluded"
-                ),
-                f"  {item.evidence_write_label}",
-                f"  Standard genre: {genre_line.strip()}",
-                *([rollup_line] if rollup_line else []),
-                "",
-                *genre_check(entry, self._row_context).details,
-                "",
-                f"Candidates · {self._candidate_policy()}",
-            ]
-        )
-        lines.extend(self._task_candidate_sections(item.desired))
+        def describe(node, depth=0):
+            result = ["  " * depth + node.label]
+            for child in node.children:
+                result.extend(describe(child, depth + 1))
+            return result
+
+        for section in review.children:
+            lines.extend(describe(section))
+            lines.append("")
         lines.extend(identity)
         return lines
 
@@ -882,7 +871,7 @@ class SetTagAppCore(App[TuiOutcome]):
                 progress = "Stopping after the current track"
             else:
                 progress = (
-                    "Analysis running in background"
+                    "Enrichment running in background"
                     f"  ·  {self._analysis_completed_count} of "
                     # ui-count: background tracks queued for this analysis run
                     f"{len(self._pending_analysis_indices)} complete"
@@ -917,7 +906,7 @@ class SetTagAppCore(App[TuiOutcome]):
                 f"  ·  V review {len(self.review_indices)} ready" if self.review_indices else ""
             )
             base = (
-                f"R analyze selected  ·  Enter details  ·  {selected} selected in this view"
+                f"R enrich selected  ·  Enter details  ·  {selected} selected in this view"
                 f"{review_hint}"
             )
         else:
@@ -989,16 +978,11 @@ class SetTagAppCore(App[TuiOutcome]):
             if self.phase == "review"
             else self.query_one("#tracks", DataTable)
         )
-        inspector_scroll = self.query_one("#inspector-scroll", VerticalScroll)
         index = self._current_index()
-        if visible:
-            if index is not None:
-                self._update_inspector(index)
-        else:
-            track_view.focus()
+        if visible and index is not None:
+            self._update_inspector(index)
+        track_view.focus()
         self.call_after_refresh(self._sync_table_columns)
-        if visible:
-            self.call_after_refresh(inspector_scroll.focus)
 
     def action_cycle_filter(self) -> None:
         if self.busy:
@@ -1023,7 +1007,7 @@ class SetTagAppCore(App[TuiOutcome]):
         if self.busy or self.phase != "choose":
             return
         if not self.review_indices:
-            self.notify("There are no analyzed tracks ready to review.")
+            self.notify("There are no enriched tracks ready to review.")
             return
         if self.analysis_running:
             self._analysis_navigation_changed = True
@@ -1056,7 +1040,7 @@ class SetTagAppCore(App[TuiOutcome]):
 
     def _current_review_index(self) -> int | None:
         if self.phase != "review":
-            self.notify("Analyze a selection before editing genre suggestions.")
+            self.notify("Enrich a selection before editing genre suggestions.")
             return None
         index = self._current_index()
         if index is None or self.entries[index].plan is None:

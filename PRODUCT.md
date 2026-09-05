@@ -34,8 +34,8 @@ installation constraints understandable before asking a visitor to install.
 SetTag combines local, on-device music analysis with a reviewable staging
 workflow: it proposes evidence-backed metadata changes, shows the user what
 would change, and keeps writing behind a separate explicit approval. It
-preserves unrelated metadata and does not send information about the library
-off the machine.
+preserves unrelated metadata. Audio analysis stays on-device; catalog enrichment
+sends artist/title or ISRC search text to Beatport and caches successful responses.
 
 ## Operating Context
 

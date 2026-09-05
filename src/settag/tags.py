@@ -5,7 +5,7 @@ import os
 import shutil
 from abc import ABC, abstractmethod
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Literal
 from urllib.parse import quote, unquote
@@ -19,6 +19,8 @@ from mutagen.mp4 import MP4, AtomDataType, MP4FreeForm
 from mutagen.wave import WAVE
 
 from settag import __version__
+from settag.beatport import TrackIdentity
+from settag.hashing import sha256_json
 from settag.policy import Prediction
 from settag.scanner import WRITE_TEMPORARY_MARKER
 from settag.tasks import TASK_FIELDS, TASK_ORDER, AnalysisTask, task_name
@@ -35,6 +37,8 @@ MP4_MEAN = "com.lsdcapital.settag"
 # v3 added `model.vocabulary`, the taxonomy a task's labels are drawn from.
 PROVENANCE_SCHEMA = "settag.provenance/v3"
 OWNED_DESCRIPTIONS = (
+    "SETTAG_BEATPORT",
+    "SETTAG_ENRICHMENT",
     "SETTAG_GENRE",
     "SETTAG_GENRE_SCORES",
     "SETTAG_MOOD_THEME",
@@ -893,6 +897,46 @@ def read_owned_values(path: Path) -> OwnedValues:
     return {description: store.read_value(description) for description in OWNED_DESCRIPTIONS}
 
 
+def track_identity(store: OwnedTagStore) -> TrackIdentity:
+    tags = store.audio.tags
+
+    def values(id3: str, vorbis: str, mp4: str) -> tuple[str, ...]:
+        if tags is None:
+            return ()
+        if isinstance(tags, ID3):
+            frame = tags.get(id3)
+            return tuple(str(v).strip() for v in getattr(frame, "text", ()) if str(v).strip())
+        key = mp4 if isinstance(store.audio, MP4) else vorbis
+        return tuple(
+            (v.decode("utf-8") if isinstance(v, bytes) else str(v)).strip()
+            for v in tags.get(key, ())
+        )
+
+    def first(id3: str, vorbis: str, mp4: str) -> str:
+        return next(iter(values(id3, vorbis, mp4)), "")
+
+    return TrackIdentity(
+        first("TIT2", "title", "\xa9nam"),
+        values("TPE1", "artist", "\xa9ART"),
+        getattr(store.audio.info, "length", None),
+        first("TSRC", "isrc", "----:com.apple.iTunes:ISRC"),
+        first(
+            "TXXX:BEATPORT_TRACK_ID", "BEATPORT_TRACK_ID", "----:com.apple.iTunes:BEATPORT_TRACK_ID"
+        ),
+    )
+
+
+def track_identity_sha256(store: OwnedTagStore) -> str:
+    return sha256_json(asdict(track_identity(store)))
+
+
+def read_track_metadata(path: Path) -> tuple[GenreState, OwnedValues, float | None, str]:
+    """Read startup metadata from a single parsed container."""
+    store = owned_tag_store(path)
+    owned = {description: store.read_value(description) for description in OWNED_DESCRIPTIONS}
+    return store.genre_state(), owned, _duration_seconds(store.audio), track_identity_sha256(store)
+
+
 def read_hygiene_tags(path: Path) -> tuple[HygieneTag, ...]:
     return owned_tag_store(path).read_hygiene_tags()
 
@@ -915,6 +959,10 @@ def read_duration_seconds(path: Path) -> float | None:
         parsed = mutagen.File(path)
     except Exception:
         return None
+    return _duration_seconds(parsed)
+
+
+def _duration_seconds(parsed: Any) -> float | None:
     length = getattr(getattr(parsed, "info", None), "length", None)
     if not isinstance(length, (int, float)) or length <= 0:
         return None

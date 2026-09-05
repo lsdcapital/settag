@@ -12,6 +12,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Literal
 
+from settag.freshness import current_catalog_evidence, enrichment_record
 from settag.hashing import sha256_audio, sha256_file
 from settag.plans import (
     PlanError,
@@ -20,7 +21,7 @@ from settag.plans import (
     planned_write_record,
 )
 from settag.records import ProvenanceStatus, orphaned_tasks, read_task_provenance_status
-from settag.tags import read_task_provenance
+from settag.tags import owned_tag_store, read_task_provenance, track_identity_sha256
 from settag.tasks import AnalysisTask, checked_expected_models
 
 STATE_SCHEMA_VERSION = 2
@@ -398,12 +399,27 @@ def _classify(
     ) and _audio_differs(plan):
         return WorkbenchEntry(plan, "stale", "source file changed")
 
+    record = enrichment_record(plan.desired)
+    catalog = record.get("catalog") if record else None
+    if (
+        (stat.st_size != plan.source_size or stat.st_mtime_ns != plan.source_mtime_ns)
+        and isinstance(catalog, dict)
+        and catalog.get("identity_sha256")
+        and catalog["identity_sha256"] != track_identity_sha256(owned_tag_store(plan.path))
+    ):
+        return WorkbenchEntry(plan, "stale", "catalog track identity changed")
+
     # Checked before the per-task comparison below, which only sees configured tasks and
     # would pass a plan that still writes labels it cannot attribute.
     if orphaned_tasks(plan.desired, checked=expected_model_ids):
         return WorkbenchEntry(plan, "stale", "analysis labels have no provenance")
 
     provenance = read_task_provenance(plan.desired)
+    if current_catalog_evidence(plan.desired) and record and record.get("audio") == "unavailable":
+        # Partial enrichment preserves old audio without claiming it is current.
+        return WorkbenchEntry(plan, "ready")
+    if plan.desired.get("SETTAG_BEATPORT") and not provenance:
+        return WorkbenchEntry(plan, "ready")
     for task, expected_model_id in expected_model_ids.items():
         reading = read_task_provenance_status(
             provenance.get(task),

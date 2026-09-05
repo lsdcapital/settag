@@ -16,10 +16,11 @@ from collections.abc import Sequence
 from pathlib import Path
 from typing import TextIO
 
-from settag.hygiene import HygieneBatch
+from settag.hygiene import SCAN_LABELS, HygieneBatch
 from settag.journal import BatchRecorder, JournalBatch, WriteJournal
 from settag.plans import PlannedWrite
 from settag.policy import Prediction
+from settag.review_evidence import describe_evidence
 from settag.tags import GenreState, read_task_provenance, task_evidence_from_owned
 from settag.tasks import TASK_FIELDS, TASK_ORDER, AnalysisTask
 from settag.workflow import AnalysisBatch, UndoPreflight, WriteSummary, summarize_planned
@@ -50,28 +51,30 @@ def _print_plain_batch(source: Path, batch: AnalysisBatch) -> None:
     print("SetTag dry run", file=sys.stderr)
     print(source.expanduser().resolve(), file=sys.stderr)
     print(file=sys.stderr)
-    print(f"  Analyzed:            {summary.track_count}", file=sys.stderr)
+    print(f"  Current results:     {batch.current_count}", file=sys.stderr)
+    print(f"  Partial results:     {batch.partial_count}", file=sys.stderr)
     print(f"  Would write:         {summary.write_count}", file=sys.stderr)
     print(f"  Already current:     {summary.unchanged_count}", file=sys.stderr)
     print(f"  Without file genre:  {summary.empty_file_genres}", file=sys.stderr)
     print(f"  Errors:              {batch.failure_count}", file=sys.stderr)
 
     for item in planned:
-        primary = item.selected[0] if item.selected else None
-        standard = ", ".join(item.file_genre) or "None"
-        suggestion = (
-            f"{primary.label}  score {primary.score:.3f}"
-            if primary is not None
-            else "No selected label"
-        )
+        review = describe_evidence(item)
         print(file=sys.stderr)
         print(item.path.name, file=sys.stderr)
-        print(f"  File genre:  {standard} (unchanged)", file=sys.stderr)
-        print(f"  Suggested:   {suggestion}", file=sys.stderr)
-        print(
-            f"  Changes:     SetTag analysis bundle ({item.owned_change_count} internal fields)",
-            file=sys.stderr,
-        )
+        for line in (
+            f"Recommendation: {review.recommendation}",
+            f"Based on: {review.recommendation_source}",
+            f"Current file tag: {review.current_genre}",
+            review.catalog_title,
+            *review.catalog_details,
+            "Audio models · predictions",
+            *review.model_details,
+            "Changes to save:",
+            *review.changes,
+            *review.notices,
+        ):
+            print(f"  {line}", file=sys.stderr)
 
     for failure in batch.failures:
         print(file=sys.stderr)
@@ -90,9 +93,13 @@ def _print_hygiene_batch(source: Path, batch: HygieneBatch) -> None:
     print(source.expanduser().resolve(), file=sys.stderr)
     print(file=sys.stderr)
     print(f"  Tracks scanned:       {batch.track_count}", file=sys.stderr)
-    print(f"  Tracks with findings: {batch.affected_track_count}", file=sys.stderr)
-    print(f"  Cleanup suggestions:  {batch.finding_count}", file=sys.stderr)
-    print(f"  Tracks already clean: {batch.clean_track_count}", file=sys.stderr)
+    print(f"  Tool:                 {SCAN_LABELS[batch.scan]}", file=sys.stderr)
+    if batch.scan != "duplicates":
+        print(f"  Tracks with findings: {batch.affected_track_count}", file=sys.stderr)
+        print(f"  Cleanup suggestions:  {batch.finding_count}", file=sys.stderr)
+        print(f"  Metadata clean:       {batch.clean_track_count}", file=sys.stderr)
+    if batch.scan != "metadata":
+        print(f"  Duplicate groups:     {len(batch.duplicate_groups)}", file=sys.stderr)
     print(f"  Errors:               {batch.failure_count}", file=sys.stderr)
 
     for track in batch.tracks:
@@ -104,6 +111,12 @@ def _print_hygiene_batch(source: Path, batch: HygieneBatch) -> None:
             print(f"  {finding.label}: {finding.current_text}", file=sys.stderr)
             print(f"    Suggestion: {finding.result_text}", file=sys.stderr)
             print(f"    Reason: {finding.reason_text}", file=sys.stderr)
+
+    for group in batch.duplicate_groups:
+        print(file=sys.stderr)
+        print(f"Duplicate audio · {len(group.paths)} files (review only)", file=sys.stderr)
+        for path in group.paths:
+            print(f"  {path}", file=sys.stderr)
 
     for failure in batch.failures:
         print(file=sys.stderr)
@@ -173,6 +186,12 @@ def _print_plan_preview(plan_path: Path, planned: Sequence[PlannedWrite]) -> Non
                 print("  Candidate only; SetTag will not write the file genre tag.")
         print()
 
+        if item.source_details:
+            print("Source evidence")
+            for detail in item.source_details:
+                print(f"  {detail}")
+            print()
+
         print("SetTag model evidence")
         if item.evidence:
             # ui-count: column width to align evidence labels in this listing
@@ -188,7 +207,7 @@ def _print_plan_preview(plan_path: Path, planned: Sequence[PlannedWrite]) -> Non
             print("  No ranked evidence was returned by the model.")
         print()
 
-        print(f"SetTag analysis bundle ({item.owned_change_count} internal field changes)")
+        print(f"Enrichment evidence ({item.owned_change_count} internal field changes)")
         if item.readable_changes:
             for change in item.readable_changes:
                 print(f"  {change}")

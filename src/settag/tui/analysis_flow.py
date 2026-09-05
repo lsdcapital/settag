@@ -20,7 +20,7 @@ class AnalysisFlow(SetTagAppCore):
         if self.busy or self.analysis_running:
             return
         if self.phase != "choose":
-            self.notify("Press B to choose another analysis batch.")
+            self.notify("Press B to choose another enrichment batch.")
             return
         indices = tuple(
             index
@@ -37,10 +37,11 @@ class AnalysisFlow(SetTagAppCore):
         self._pending_analysis_indices = indices
         self._analysis_completed_count = 0
         self._analysis_success_count = 0
+        self._analysis_partial_count = 0
         self._analysis_failure_count = 0
         self._analysis_current_path = self.entries[indices[0]].path
         self._analysis_navigation_changed = False
-        self.sub_title = "Analyzing in background"
+        self.sub_title = "Enriching in background"
         self.refresh_bindings()
         self._show_analysis_activity()
         self._update_status()
@@ -60,6 +61,9 @@ class AnalysisFlow(SetTagAppCore):
     def _analyze_selected(self, indices: tuple[int, ...]) -> None:
         # ui-count: rows selected in this view for this analysis run
         total = len(indices)
+        begin_batch = getattr(self.analysis_loader, "begin_batch", None)
+        if begin_batch is not None:
+            begin_batch()
         completed = 0
         cancelled = False
         for index in indices:
@@ -120,7 +124,7 @@ class AnalysisFlow(SetTagAppCore):
         activity = self.query_one("#analysis-activity")
         activity.display = True
         self.query_one("#analysis-activity-title", Static).update(
-            f"Analyzing in background  ·  track 1 of {total}  ·  0 complete"
+            f"Enriching in background  ·  track 1 of {total}  ·  0 complete"
         )
         if path is not None:
             self.query_one("#analysis-activity-file", Static).update(
@@ -156,7 +160,7 @@ class AnalysisFlow(SetTagAppCore):
         if self._analysis_cancel_requested.is_set():
             self._analysis_current_path = path
             self.query_one("#analysis-activity-title", Static).update(
-                f"Stopping analysis  ·  {completed} of {total} complete"
+                f"Stopping enrichment  ·  {completed} of {total} complete"
             )
             self.query_one("#analysis-activity-file", Static).update(
                 f"Finished {path.name}  ·  completed results will be kept"
@@ -169,7 +173,7 @@ class AnalysisFlow(SetTagAppCore):
             next_path = self.entries[next_index].path
             self._analysis_current_path = next_path
             self.query_one("#analysis-activity-title", Static).update(
-                f"Analyzing in background  ·  track {completed + 1} of {total}"
+                f"Enriching in background  ·  track {completed + 1} of {total}"
                 f"  ·  {completed} complete"
             )
             self.query_one("#analysis-activity-file", Static).update(
@@ -197,17 +201,17 @@ class AnalysisFlow(SetTagAppCore):
         self._analysis_cancel_requested.clear()
         self._hide_analysis_activity()
         self.sub_title = (
-            "Review analyzed tracks" if self.phase == "review" else "Choose tracks to analyze"
+            "Review enriched tracks" if self.phase == "review" else "Choose tracks to enrich"
         )
         self.refresh_bindings()
         if completed:
             self._update_status(
-                f"Analysis stopped after {completed} of {total} tracks"
+                f"Enrichment stopped after {completed} of {total} tracks"
                 f"  ·  {remaining} remain selected"
             )
         else:
-            self._update_status("Analysis did not start; nothing was written")
-        self.push_screen(ErrorScreen("Could not analyze selection", message))
+            self._update_status("Enrichment did not start; nothing was written")
+        self.push_screen(ErrorScreen("Could not enrich selection", message))
 
     def _analysis_item_complete(
         self,
@@ -232,7 +236,10 @@ class AnalysisFlow(SetTagAppCore):
                 self.write_selected.add(index)
             if persist_error is not None:
                 self._report_persist_failure(persist_error)
-            self._analysis_success_count += 1
+            if plan.enrichment_status == "current":
+                self._analysis_success_count += 1
+            else:
+                self._analysis_partial_count += 1
         else:
             if failure is None:
                 failure = AnalysisFailure(
@@ -291,16 +298,24 @@ class AnalysisFlow(SetTagAppCore):
                 )
             else:
                 self._show_library()
-                self._update_status("Analysis cancelled; visible tracks remain selected")
+                self._update_status("Enrichment cancelled; visible tracks remain selected")
             return
 
         summary = (
-            f"Analysis complete  ·  {self._analysis_success_count} analyzed"
+            f"Enrichment finished  ·  {self._analysis_success_count} current"
+            f"  ·  {self._analysis_partial_count} partial"
             f"  ·  {self._analysis_failure_count} failed"
         )
         if not self.busy:
             self._update_status(summary)
-        self.notify(summary, title="Background analysis complete", timeout=6)
+        self.notify(
+            summary,
+            title="Enrichment finished",
+            timeout=6,
+            severity="warning"
+            if self._analysis_partial_count or self._analysis_failure_count
+            else "information",
+        )
 
     def _persist(self, index: int) -> None:
         """Persist one entry's plan from the main thread, after a user edit."""

@@ -35,6 +35,7 @@ from settag.cli.render import (
 )
 from settag.config import SetTagConfig, load_config
 from settag.embeddings import embedding_record
+from settag.enrichment import EnrichmentLoader
 from settag.hashing import sha256_file
 from settag.hygiene import inspect_hygiene_paths
 from settag.journal import BatchRecorder, JournalError, WriteJournal, default_journal_db
@@ -77,7 +78,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 2
 
     try:
-        if args.command == "run":
+        if args.command in {"run", "enrich"}:
             return _run_default(args)
         if args.command == "models":
             return _run_models(args)
@@ -171,11 +172,8 @@ def _run_default(args: argparse.Namespace) -> int:
                 expected_config=current_config,
                 on_progress=on_progress,
             )
-            current_paths = [track.path for track in metadata.tracks if track.status == "current"]
-            if current_paths:
-                store.delete(current_paths)
             cached = store.load(
-                [track.path for track in metadata.tracks if track.status != "current"],
+                [track.path for track in metadata.tracks],
                 expected_model_ids=expected_model_ids,
                 expected_config_sha256=config_sha256,
                 expected_config=current_config,
@@ -184,6 +182,15 @@ def _run_default(args: argparse.Namespace) -> int:
             for track in metadata.tracks:
                 entry = cached.get(track.path.expanduser().resolve())
                 if entry is None:
+                    merged.append(track)
+                    continue
+
+                if (
+                    track.status == "current"
+                    and entry.plan.desired == track.owned
+                    and entry.plan.target_file_genre in (None, track.genre_state.standard)
+                ):
+                    store.delete((track.path,))
                     merged.append(track)
                     continue
 
@@ -212,6 +219,15 @@ def _run_default(args: argparse.Namespace) -> int:
                 )
             return replace(metadata, tracks=tuple(merged))
 
+        def cached_audio(path: Path):
+            cached = store.load(
+                (path,),
+                expected_model_ids=expected_model_ids,
+                expected_config_sha256=config_sha256,
+                expected_config=current_config,
+            ).get(path)
+            return cached.plan if cached is not None and cached.status == "ready" else None
+
         analysis_loader = SubprocessAnalysisLoader(
             model_dir,
             tasks,
@@ -227,11 +243,17 @@ def _run_default(args: argparse.Namespace) -> int:
                     f"Could not start the interactive analyzer: {type(error).__name__}: {error}",
                     file=sys.stderr,
                 )
-                return 2
             outcome = SetTagApp(
                 source=args.path,
                 metadata_loader=load_metadata,
-                analysis_loader=analysis_loader,
+                analysis_loader=EnrichmentLoader(
+                    analysis_loader,
+                    expected_model_ids=expected_model_ids,
+                    expected_config=current_config,
+                    cached_audio=cached_audio,
+                    top=args.top,
+                    threshold=args.threshold,
+                ),
                 persist_plan=store.save,
                 discard_plans=store.delete,
                 journal=_journal_db(args),
@@ -258,7 +280,15 @@ def _run_default(args: argparse.Namespace) -> int:
         return outcome.status
 
     try:
-        batch = load_analysis_in_process(
+        batch = EnrichmentLoader(
+            load_analysis_in_process,
+            expected_model_ids={task: MODEL_SPECS_BY_TASK[task].id for task in tasks},
+            expected_config=config_record(
+                top=args.top, threshold=args.threshold, tasks=tasks, genre_sample=sample
+            ),
+            top=args.top,
+            threshold=args.threshold,
+        )(
             paths,
             lambda index, total, path: LOGGER.info(
                 "[%d/%d] %s",
@@ -457,6 +487,7 @@ def _run_hygiene(args: argparse.Namespace) -> int:
             source=args.path,
             paths=paths,
             batch=None,
+            scan=args.scan,
             journal=_journal_db(args),
         ).run()
         if outcome is None:
@@ -464,7 +495,7 @@ def _run_hygiene(args: argparse.Namespace) -> int:
         print(outcome.message, file=sys.stderr)
         return outcome.status
 
-    batch = inspect_hygiene_paths(paths)
+    batch = inspect_hygiene_paths(paths, scan=args.scan or "metadata")
     _print_hygiene_batch(args.path, batch)
     return 1 if batch.failures else 0
 

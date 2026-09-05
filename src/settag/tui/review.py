@@ -10,6 +10,7 @@ from textual.binding import Binding
 from textual.widgets import Tree
 from textual.widgets.tree import TreeNode
 
+from settag.review_evidence import describe_evidence
 from settag.tags import read_task_provenance, task_evidence_from_owned
 from settag.tui.entries import TASK_LABELS, TrackEntry, suggested_label
 from settag.tui.table import RowContext
@@ -30,30 +31,19 @@ def review_track(index: int, entry: TrackEntry, selected: bool, context: RowCont
     if entry.analysis_error is not None:
         return ReviewNode(
             (index, "track"),
-            f"! {entry.path.name} · Analysis failed",
+            f"! {entry.path.name} · Enrichment failed",
             (ReviewNode((index, "error"), entry.analysis_error.description),),
             expanded=True,
         )
     plan = entry.plan
     if plan is None:
-        return ReviewNode((index, "track"), f"{entry.path.name} · No analysis result")
+        return ReviewNode((index, "track"), f"{entry.path.name} · No enrichment result")
 
     inclusion = "Included in write" if selected else "Excluded from write"
     marker = "[x]" if selected else "[ ]"
     if not entry.has_changes:
         marker, inclusion = "—", "No changes to write"
-    current = ", ".join(plan.file_genre) or "None"
-    if plan.standard_genre_change is not None:
-        target = ", ".join(plan.target_file_genre or ()) or "None"
-        genre = f"Standard genre: {current} → {target}"
-    else:
-        genre = f"Standard genre: {current} (unchanged)"
-    evidence = {
-        "unchanged": "unchanged",
-        "refreshed": "refresh analysis time and provenance",
-        "updated": "update stored results",
-    }[plan.evidence_write_kind]
-
+    review = describe_evidence(plan)
     by_task = task_evidence_from_owned(plan.desired)
     provenance = read_task_provenance(plan.desired)
     candidates: list[ReviewNode] = []
@@ -85,9 +75,44 @@ def review_track(index: int, entry: TrackEntry, selected: bool, context: RowCont
         (index, "track"),
         f"{marker} {entry.path.name} · {inclusion}",
         (
-            ReviewNode((index, "genre"), genre),
-            ReviewNode((index, "evidence"), f"SetTag analysis: {evidence}"),
-            ReviewNode((index, "candidates"), "Model candidates · read-only", tuple(candidates)),
+            ReviewNode((index, "recommendation"), f"Recommendation: {review.recommendation}"),
+            ReviewNode(
+                (index, "recommendation-source"), f"Based on: {review.recommendation_source}"
+            ),
+            ReviewNode((index, "genre"), f"Current file tag: {review.current_genre}"),
+            ReviewNode(
+                (index, "beatport"),
+                review.catalog_title,
+                tuple(
+                    ReviewNode((index, f"source:{number}"), detail)
+                    for number, detail in enumerate(review.catalog_details)
+                ),
+                expanded=True,
+            ),
+            ReviewNode(
+                (index, "candidates"),
+                "Audio models · predictions",
+                (
+                    *(
+                        ReviewNode((index, f"model-note:{number}"), detail)
+                        for number, detail in enumerate(review.model_details)
+                    ),
+                    *candidates,
+                ),
+            ),
+            ReviewNode(
+                (index, "changes"),
+                "Changes to save" if selected else "Changes if included",
+                tuple(
+                    ReviewNode((index, f"change:{number}"), detail)
+                    for number, detail in enumerate(review.changes)
+                ),
+                expanded=True,
+            ),
+            *(
+                ReviewNode((index, f"notice:{number}"), detail)
+                for number, detail in enumerate(review.notices)
+            ),
         ),
         expanded=True,
     )

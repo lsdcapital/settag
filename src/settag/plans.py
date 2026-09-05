@@ -6,6 +6,13 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Literal, cast
 
+from settag.freshness import (
+    EnrichmentStatus,
+    catalog_evidence,
+    current_catalog_evidence,
+    enrichment_status,
+    evidence_genres,
+)
 from settag.policy import EVIDENCE_LIMIT, Prediction
 from settag.tags import (
     OWNED_DESCRIPTIONS,
@@ -27,24 +34,8 @@ PLAN_ERROR_SCHEMA = "settag.plan-error/v1"
 READABLE_PLAN_SCHEMAS = frozenset({"settag.plan/v4", PLAN_SCHEMA})
 REFRESH_ONLY_CHANGE_PREFIXES = ("Analysis time:", "Task provenance:")
 
-HOUSE_MODEL_LABELS = frozenset(
-    {
-        "Electronic---Acid House",
-        "Electronic---Deep House",
-        "Electronic---Electro House",
-        "Electronic---Euro House",
-        "Electronic---Garage House",
-        "Electronic---Ghetto House",
-        "Electronic---Hard House",
-        "Electronic---Hip-House",
-        "Electronic---House",
-        "Electronic---Italo House",
-        "Electronic---Progressive House",
-        "Electronic---Tech House",
-        "Electronic---Tribal House",
-        "Electronic---Tropical House",
-    }
-)
+
+GenreEditSource = Literal["manual", "beatport", "model"]
 
 
 class PlanError(ValueError):
@@ -69,6 +60,27 @@ class PlannedWrite:
     source_audio_sha256: str | None = None
     # Exact observed SetTag metadata; older records fall back to whole-file validation.
     source_owned_sha256: str | None = None
+    notices: tuple[str, ...] = ()
+    genre_edit_source: GenreEditSource | None = None
+
+    @property
+    def enrichment_status(self) -> EnrichmentStatus:
+        return enrichment_status(self.desired, audio_current=True)
+
+    @property
+    def source_details(self) -> tuple[str, ...]:
+        lines = list(self.notices)
+        data = catalog_evidence(self.desired)
+        if data:
+            agreed = ", ".join(evidence_genres(data)) or "None"
+            qualifier = "" if current_catalog_evidence(self.desired) else "Stored "
+            lines.append(f"{qualifier}Beatport genres: {agreed}")
+            if data["alternative_genres"]:
+                lines.append(f"Additional release labels: {', '.join(data['alternative_genres'])}")
+            lines.extend(source["url"] for source in data["sources"])
+        elif self.desired.get("SETTAG_BEATPORT"):
+            lines.append("Stored Beatport evidence is unreadable; enrich again.")
+        return tuple(lines)
 
     @property
     def readable_changes(self) -> tuple[str, ...]:
@@ -142,6 +154,8 @@ class PlannedWrite:
 def stage_file_genre(
     item: PlannedWrite,
     genres: tuple[str, ...] | None,
+    *,
+    source: GenreEditSource | None = "manual",
 ) -> PlannedWrite:
     """Return a plan with an explicit conventional genre edit staged.
 
@@ -149,37 +163,64 @@ def stage_file_genre(
     removes it. Staging the original value collapses back to no edit.
     """
     target = None if genres is None or genres == item.file_genre else genres
-    return replace(item, target_file_genre=target)
+    return replace(item, target_file_genre=target, genre_edit_source=source)
+
+
+def catalog_genres(owned: OwnedValues, current: tuple[str, ...] = ()) -> tuple[str, ...]:
+    catalog = current_catalog_evidence(owned)
+    if catalog is None:
+        return ()
+    genres = evidence_genres(catalog)
+    # Keep an existing primary only when a verified Beatport release also provides it.
+    primary = next((g for old in current for g in genres if old.casefold() == g.casefold()), None)
+    return (primary, *(g for g in genres if g != primary)) if primary else genres
+
+
+def catalog_genre_summary(owned: OwnedValues) -> str:
+    return "Multiple Beatport genres" if len(catalog_genres(owned)) > 1 else "Use Beatport genre"
+
+
+def catalog_suggestion(owned: OwnedValues) -> str | None:
+    return ", ".join(catalog_genres(owned)) or None
 
 
 def suggested_file_genre(item: PlannedWrite) -> str | None:
-    if not item.selected:
+    return genre_suggestion(item.desired, item.selected, item.file_genre)
+
+
+def genre_suggestion(
+    owned: OwnedValues, selected: tuple[Prediction, ...], current: tuple[str, ...] = ()
+) -> str | None:
+    genres = catalog_genres(owned, current)
+    if genres:
+        return ", ".join(genres)
+    if not selected:
         return None
-    return standard_genre_from_model_label(item.selected[0].label)
+    return standard_genre_from_model_label(selected[0].label)
 
 
 def standard_genre_from_model_label(label: str) -> str | None:
-    """Return the conservative conventional genre for a model label.
-
-    SetTag keeps the complete child label in its evidence. The standard genre
-    rolls up only explicitly reviewed families; all other labels retain their
-    direct Discogs child name.
-    """
+    """Remove the taxonomy parent prefix while preserving the model's genre detail."""
     normalized = label.strip()
     child = normalized.rsplit("---", 1)[-1].strip()
     if not child:
         return None
-    if normalized in HOUSE_MODEL_LABELS:
-        return "House"
     return child
 
 
 def stage_default_file_genre(item: PlannedWrite) -> PlannedWrite:
-    """Stage its conservative standard-genre suggestion when the genre is empty."""
-    if item.file_genre or item.target_file_genre is not None:
+    """Prefer all verified catalog genres; audio only fills an empty genre."""
+    if item.genre_edit_source == "manual" or (
+        item.target_file_genre is not None and item.genre_edit_source is None
+    ):
         return item
-    suggestion = suggested_file_genre(item)
-    return stage_file_genre(item, (suggestion,)) if suggestion is not None else item
+    genres = catalog_genres(item.desired, item.file_genre)
+    if genres:
+        return stage_file_genre(item, genres, source="beatport")
+    suggestion = genre_suggestion(item.desired, item.selected)
+    if not item.file_genre and suggestion:
+        return stage_file_genre(item, (suggestion,), source="model")
+    return stage_file_genre(item, None, source=None)
 
 
 def planned_write_record(item: PlannedWrite) -> dict[str, object]:
@@ -192,6 +233,8 @@ def planned_write_record(item: PlannedWrite) -> dict[str, object]:
     return {
         "schema": PLAN_SCHEMA,
         "path": str(item.path),
+        "notices": list(item.notices),
+        "genre_edit_source": item.genre_edit_source,
         "source": {
             "sha256": item.source_sha256,
             "audio_sha256": item.source_audio_sha256,
@@ -332,6 +375,9 @@ def _planned_write(
         if target_value is None
         else tuple(_string_list(target_value, f"{location}.target_file_genre"))
     )
+    genre_edit_source = record.get("genre_edit_source")
+    if genre_edit_source not in (None, "manual", "beatport", "model"):
+        raise PlanError(f"{location}.genre_edit_source: invalid genre edit source")
     selected = tuple(_predictions(record.get("selected"), f"{location}.selected"))
     evidence = tuple(_predictions(record.get("evidence"), f"{location}.evidence"))
     _validate_evidence(evidence, f"{location}.evidence")
@@ -357,7 +403,9 @@ def _planned_write(
     metadata = _mapping(record.get("metadata"), f"{location}.metadata")
     fields = _mapping(metadata.get("fields"), f"{location}.metadata.fields")
     unknown = sorted(set(fields) - set(OWNED_DESCRIPTIONS))
-    missing = sorted(set(OWNED_DESCRIPTIONS) - set(fields))
+    missing = sorted(
+        set(OWNED_DESCRIPTIONS) - set(fields) - {"SETTAG_BEATPORT", "SETTAG_ENRICHMENT"}
+    )
     if unknown or missing:
         raise PlanError(f"{location}.metadata.fields: expected the complete SetTag field set")
     desired = {
@@ -384,8 +432,10 @@ def _planned_write(
         metadata_format=metadata_format,
         owned_changes=owned_changes,
         target_file_genre=target_file_genre,
+        genre_edit_source=genre_edit_source,
         source_audio_sha256=source_audio_sha256,
         source_owned_sha256=source_owned_sha256,
+        notices=tuple(_string_list(record.get("notices", []), f"{location}.notices")),
     )
     expected_standard_change = planned.standard_genre_change
     expected_description = (
@@ -477,6 +527,10 @@ def friendly_change(change: TagChange) -> str:
     before_count = len(change.before or ())
     after_count = len(change.after or ())
 
+    if logical == "SETTAG_ENRICHMENT":
+        return "Enrichment status: update"
+    if logical == "SETTAG_BEATPORT":
+        return "Beatport genre evidence: update"
     if logical == "SETTAG_GENRE":
         return f"Genre labels: {before_count} → {after_count}"
     if logical == "SETTAG_GENRE_SCORES":

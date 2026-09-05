@@ -17,4 +17,5 @@ def isolated_settag_state(tmp_path_factory, monkeypatch) -> Path:
     monkeypatch.setenv("SETTAG_JOURNAL_DB", str(base / "journal.sqlite3"))
     monkeypatch.setenv("SETTAG_STATE_DB", str(base / "state.sqlite3"))
     monkeypatch.setenv("SETTAG_CONFIG", str(base / "config.toml"))
+    monkeypatch.setenv("SETTAG_BEATPORT_CACHE", str(base / "beatport-cache"))
     return base

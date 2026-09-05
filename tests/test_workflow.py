@@ -3,6 +3,7 @@ from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 
+import mutagen
 import pytest
 from mutagen.id3 import TIT2
 
@@ -90,6 +91,7 @@ def _owned_values(
 
 def test_metadata_inspection_classifies_current_stale_missing_and_invalid(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     missing = tmp_path / "missing.wav"
     current = tmp_path / "current.wav"
@@ -104,6 +106,15 @@ def test_metadata_inspection_classifies_current_stale_missing_and_invalid(
     invalid_values["SETTAG_VERSION"] = None
     apply_metadata_tags(invalid, invalid_values)
 
+    parsed_paths: list[Path] = []
+    original_file = mutagen.File
+
+    def count_reads(path: Path):
+        parsed_paths.append(path)
+        return original_file(path)
+
+    monkeypatch.setattr("settag.tags.mutagen.File", count_reads)
+
     progress: list[tuple[int, int, Path]] = []
     batch = inspect_paths(
         (missing, current, stale, invalid),
@@ -111,6 +122,8 @@ def test_metadata_inspection_classifies_current_stale_missing_and_invalid(
         expected_config_sha256="config/current",
         on_progress=lambda completed, total, path: progress.append((completed, total, path)),
     )
+    assert parsed_paths == [missing, current, stale, invalid]
+    assert all(track.duration_seconds == 35.0 for track in batch.tracks)
     statuses = {track.path.name: track.status for track in batch.tracks}
 
     assert batch.failures == ()

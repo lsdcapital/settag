@@ -1,4 +1,5 @@
 import asyncio
+import time
 import wave
 from collections.abc import Sequence
 from dataclasses import replace
@@ -12,10 +13,11 @@ from mutagen.wave import WAVE
 from textual.containers import VerticalScroll
 from textual.widgets import Button, DataTable, ProgressBar, Static
 
+from settag.freshness import record_values
 from settag.journal import WriteJournal
-from settag.plans import PlannedWrite
+from settag.plans import PlannedWrite, friendly_change
 from settag.policy import Prediction
-from settag.tags import OWNED_DESCRIPTIONS, GenreState, task_evidence_from_owned
+from settag.tags import OWNED_DESCRIPTIONS, GenreState, plan_owned_tags, task_evidence_from_owned
 from settag.tasks import AnalysisTask
 from settag.tui import (
     ConfirmUndoScreen,
@@ -109,7 +111,29 @@ def _analysis_batch(
             top=top,
             threshold=threshold,
         )
-        planned.append(planned_write_for_track(track))
+        item = planned_write_for_track(track)
+        planned.append(
+            replace(
+                item,
+                desired={
+                    **item.desired,
+                    "SETTAG_ENRICHMENT": record_values(
+                        audio_complete=True,
+                        catalog={"status": "no_match", "checked_at": time.time()},
+                    ),
+                },
+            )
+        )
+    planned = [
+        replace(
+            item,
+            owned_changes=tuple(
+                friendly_change(change)
+                for change in plan_owned_tags(item.path, item.desired).changes
+            ),
+        )
+        for item in planned
+    ]
     return AnalysisBatch(planned=tuple(planned), failures=())
 
 
@@ -123,7 +147,29 @@ def _task_analysis_batch(paths: Sequence[Path]) -> AnalysisBatch:
             top=5,
             threshold=0.10,
         )
-        planned.append(planned_write_for_track(track))
+        item = planned_write_for_track(track)
+        planned.append(
+            replace(
+                item,
+                desired={
+                    **item.desired,
+                    "SETTAG_ENRICHMENT": record_values(
+                        audio_complete=True,
+                        catalog={"status": "no_match", "checked_at": time.time()},
+                    ),
+                },
+            )
+        )
+    planned = [
+        replace(
+            item,
+            owned_changes=tuple(
+                friendly_change(change)
+                for change in plan_owned_tags(item.path, item.desired).changes
+            ),
+        )
+        for item in planned
+    ]
     return AnalysisBatch(planned=tuple(planned), failures=())
 
 
@@ -141,7 +187,14 @@ def _metadata_track(
             standard=standard_genre,
             settag=tuple(prediction.label for prediction in predictions),
         ),
-        owned=dict.fromkeys(OWNED_DESCRIPTIONS),
+        owned={
+            **dict.fromkeys(OWNED_DESCRIPTIONS),
+            "SETTAG_ENRICHMENT": record_values(
+                audio_complete=True, catalog={"status": "no_match", "checked_at": time.time()}
+            )
+            if status == "current"
+            else None,
+        },
         stored_predictions=predictions,
         status=status,
         analyzed_at="2026-07-23T12:00:00Z" if status == "current" else None,
@@ -204,9 +257,11 @@ def test_tui_reads_metadata_before_loading_model_and_analyzes_only_selection(
             assert app.analysis_selected == {0, 1}
             assert table.get_row_at(0)[0] == "✓"
             assert table.get_row_at(0)[4] == "Never"
-            assert table.get_row_at(2)[4] == "Current · 2026-07-23"
+            assert table.get_row_at(2)[4] == "Current"
             assert inspector_pane.display is False
-            assert "The audio model has not been loaded." in str(inspector.render())
+            assert "Viewing evidence does not run enrichment or write tags." in str(
+                inspector.render()
+            )
             choose_actions = {
                 active.binding.action for active in app.screen.active_bindings.values()
             }
@@ -312,11 +367,12 @@ def test_tui_analyzes_and_reviews_all_configured_tasks(tmp_path: Path) -> None:
             assert set(evidence) == {"genre", "mood-theme", "instrument"}
 
             details = str(app.query_one("#inspector", Static).render())
-            assert "Write plan · Included" in details
-            assert "Evidence update" in details
-            assert "Candidates · cutoff ≥ 0.10 · top 5" in details
-            assert "Genre · 2 scores" in details
-            assert "Progressive House 0.664 · Techno 0.269" in details
+            assert "Changes to save" in details
+            assert "Save audio predictions and analysis provenance" in details
+            assert "Audio models · predictions" in details
+            assert "Genre:" in details
+            assert "Genre: Progressive House · 0.664" in details
+            assert "Genre: Techno · 0.269" in details
             assert "energetic" in details
             assert "synthesizer" in details
             assert "internal field changes" not in details
@@ -356,11 +412,15 @@ def test_review_tree_inspects_without_running_work_and_keeps_candidates_read_onl
             assert not track.is_expanded
             assert not isinstance(app.screen, ConfirmWriteScreen)
             await pilot.press("right", "right")
-            assert tree.cursor_node is tree.nodes[(0, "genre")]
+            assert tree.cursor_node is tree.nodes[(0, "recommendation")]
             await pilot.press("enter")
             assert app.has_class("details-open")
             assert not isinstance(app.screen, ConfirmWriteScreen)
-            await pilot.press("i", "down", "down", "enter", "right")
+            await pilot.press("i")
+            tree.move_cursor(tree.nodes[(0, "candidates")])
+            await pilot.press("enter")
+            tree.move_cursor(tree.nodes[(0, "candidate:genre:0")])
+            await pilot.pause()
             assert tree.cursor_node is tree.nodes[(0, "candidate:genre:0")]
             for task in ("genre", "mood-theme", "instrument"):
                 label = tree.nodes[(0, f"candidate:{task}:0")].label.plain
@@ -411,7 +471,7 @@ def test_review_tree_keeps_focus_expansion_and_scroll_when_results_arrive(tmp_pa
             await pilot.pause()
             focused = tree.nodes[(2, "candidate:instrument:1")]
             tree.move_cursor(focused)
-            await pilot.press("i")
+            await pilot.press("i", "tab")
             scroll = app.query_one("#inspector-scroll", VerticalScroll)
             scroll.scroll_end(animate=False)
             await pilot.pause()
@@ -475,6 +535,8 @@ def test_tui_details_scroll_and_return_focus_to_review_tree(tmp_path: Path) -> N
             await pilot.press("i")
             await pilot.pause()
             assert inspector_pane.display is True
+            assert app.focused is tree
+            await pilot.press("tab")
             assert app.focused is inspector_scroll
             assert inspector_scroll.max_scroll_y > 0
 
@@ -575,21 +637,21 @@ def test_genre_filters_combine_with_library_filters_and_keep_analysis_scoped(
             assert app.analysis_selected == {4, 5}
             await pilot.press("g")
             assert app.genre_filter == "needs_review"
-            assert app.visible_indices == [2, 3]
+            assert app.visible_indices == [0, 2, 3]
             await pilot.press("a")
-            assert app.analysis_selected == {2, 3, 4, 5}
+            assert app.analysis_selected == {0, 2, 3, 4, 5}
             await pilot.press("g")
             assert app.genre_filter == "missing_genre"
             assert app.visible_indices == [3, 4, 5]
             await pilot.press("g")
             assert app.genre_filter == "matches"
-            assert app.visible_indices == [0, 1]
+            assert app.visible_indices == [1]
             await pilot.press("f")
             assert app.library_filter == "needs_analysis"
             assert app.visible_indices == []
             assert app.query_one("#library-empty").display
             filters = str(app.query_one("#library-filters", Static).render())
-            assert "Library: Needs analysis" in filters
+            assert "Library: Needs enrichment" in filters
             assert "Genre: Matches" in filters
 
             await pilot.press("g")
@@ -597,14 +659,14 @@ def test_genre_filters_combine_with_library_filters_and_keep_analysis_scoped(
             await pilot.press("g", "r")
             assert app.visible_indices == []
             assert scheduled == []
-            assert app.analysis_selected == {2, 3, 4, 5}
+            assert app.analysis_selected == {0, 2, 3, 4, 5}
 
             await pilot.press("f", "f", "f")
             assert app.library_filter == "all"
             assert app.genre_filter == "needs_review"
-            assert app.visible_indices == [2, 3]
+            assert app.visible_indices == [0, 2, 3]
             await pilot.press("r")
-            assert scheduled == [(2, 3)]
+            assert scheduled == [(0, 2, 3)]
             app._pending_analysis_indices = ()
 
     asyncio.run(exercise())
@@ -674,7 +736,7 @@ def test_escape_cancels_after_current_track_and_keeps_remaining_selected(
             activity_file = app.query_one("#analysis-activity-file", Static)
             activity_progress = app.query_one("#analysis-progress", ProgressBar)
             assert activity.display is True
-            assert "Analyzing in background" in str(activity_title.render())
+            assert "Enriching in background" in str(activity_title.render())
             assert "track 1 of 2" in str(activity_title.render())
             assert "0 complete" in str(activity_title.render())
             assert first.name in str(activity_file.render())
@@ -748,7 +810,7 @@ def test_analysis_progress_advances_to_the_next_filename(tmp_path: Path) -> None
                 title = app.query_one("#analysis-activity-title", Static)
                 current_file = app.query_one("#analysis-activity-file", Static)
                 progress = app.query_one("#analysis-progress", ProgressBar)
-                assert "Analyzing in background" in str(title.render())
+                assert "Enriching in background" in str(title.render())
                 assert "track 2 of 2" in str(title.render())
                 assert "1 complete" in str(title.render())
                 assert second.name in str(current_file.render())
@@ -815,7 +877,7 @@ def test_completed_tracks_can_be_reviewed_and_written_during_analysis(
                 assert app.entries[0].plan is not None
                 assert app.entries[1].plan is None
                 status = app.query_one("#status", Static)
-                assert "Analysis running in background" in str(status.render())
+                assert "Enrichment running in background" in str(status.render())
                 assert "1 of 2 complete" in str(status.render())
 
                 await pilot.press("i")
@@ -886,7 +948,7 @@ def test_tui_score_cutoff_filters_suggestion_not_stored_evidence(
 
             assert str(table.get_row_at(0)[3]) == "No suggestion"
             details = str(inspector.render())
-            assert "Stored candidates · cutoff ≥ 0.80 · top 5" in details
+            assert "Candidates · cutoff ≥ 0.80 · top 5" in details
             assert "Genre · 1 score" in details
             assert "No candidate met the cutoff" in details
             assert "Electronic---House" not in details
@@ -929,7 +991,7 @@ def test_tui_leaves_empty_genre_unchanged_without_review_candidate(
             assert plan.standard_genre_change is None
             inspector = app.query_one("#inspector", Static)
             details = str(inspector.render())
-            assert "Genre · 2 scores" in details
+            assert "Genre:" in details
             assert "No candidate met the cutoff" in details
 
     asyncio.run(exercise())
@@ -965,12 +1027,13 @@ def test_tui_defaults_empty_genre_to_suggestion_and_allows_opt_out(
 
             inspector = app.query_one("#inspector", Static)
             details = str(inspector.render())
-            assert "Progressive House 0.664 · Techno 0.269" in details
-            assert "Suggestion: Progressive House → House" in details
+            assert "Genre: Progressive House · 0.664" in details
+            assert "Genre: Techno · 0.269" in details
+            assert "Suggestion: Progressive House → House" not in details
 
             plan = app.entries[0].plan
             assert plan is not None
-            assert plan.target_file_genre == ("House",)
+            assert plan.target_file_genre == ("Progressive House",)
             assert plan.standard_genre_change is not None
             assert app.write_selected == {0}
 
@@ -987,7 +1050,7 @@ def test_tui_defaults_empty_genre_to_suggestion_and_allows_opt_out(
             await pilot.pause()
             plan = app.entries[0].plan
             assert plan is not None
-            assert plan.target_file_genre == ("House",)
+            assert plan.target_file_genre == ("Progressive House",)
             assert plan.standard_genre_change is not None
             assert app.write_selected == {0}
 
@@ -995,16 +1058,14 @@ def test_tui_defaults_empty_genre_to_suggestion_and_allows_opt_out(
             await pilot.pause()
             assert isinstance(app.screen, GenreEditScreen)
             dialog_suggestion = app.screen.query_one("#dialog-suggestion", Static)
-            assert "Standard genre suggestion: House (from model label Progressive House)" in str(
-                dialog_suggestion.render()
-            )
+            assert "Standard genre suggestion: Progressive House" in str(dialog_suggestion.render())
             await pilot.press("escape")
 
     asyncio.run(exercise())
     assert [plan.target_file_genre for plan in persisted] == [
-        ("House",),
+        ("Progressive House",),
         None,
-        ("House",),
+        ("Progressive House",),
     ]
     assert WAVE(path).tags is None
 
@@ -1049,10 +1110,10 @@ def test_tui_requires_genre_screen_before_replacing_an_existing_standard_genre(
             await pilot.pause()
             plan = app.entries[0].plan
             assert plan is not None
-            assert plan.target_file_genre == ("House",)
+            assert plan.target_file_genre == ("Progressive House",)
             assert plan.standard_genre_change is not None
             assert plan.standard_genre_change.before == ["201705"]
-            assert plan.standard_genre_change.after == ["House"]
+            assert plan.standard_genre_change.after == ["Progressive House"]
 
     asyncio.run(exercise())
     tags = WAVE(path).tags
@@ -1304,10 +1365,10 @@ def test_tui_restores_cached_plan_in_library_and_opens_review_on_request(
             assert app.review_indices == {0}
             assert app.write_selected == {0}
             assert app.analysis_selected == set()
-            assert table.get_row_at(0)[4].startswith("Ready · ")
+            assert table.get_row_at(0)[4] == "Ready"
             assert "Restored 1 ready-to-review track" in str(status.render())
             assert "Press V to review" in str(status.render())
-            assert "Local result ready to review" in str(inspector.render())
+            assert "Enrichment: Current" in str(inspector.render())
             assert "Press V to review this saved result." in str(inspector.render())
             active_actions = {
                 active.binding.action for active in app.screen.active_bindings.values()
@@ -1363,7 +1424,7 @@ def test_tui_requires_confirmation_then_writes_and_verifies(tmp_path: Path) -> N
             assert app.write_selected == {0}
             plan = app.entries[0].plan
             assert plan is not None
-            assert plan.target_file_genre == ("House",)
+            assert plan.target_file_genre == ("Progressive House",)
             await pilot.press("w")
             await pilot.pause(0.2)
             assert isinstance(app.screen, ConfirmWriteScreen)
@@ -1376,7 +1437,7 @@ def test_tui_requires_confirmation_then_writes_and_verifies(tmp_path: Path) -> N
             rendered_summary = str(summary.render())
             assert "track.wav" in rendered_summary
             assert "SetTag evidence: update · 2 ranked scores" in rendered_summary
-            assert "Standard genre: None → House" in rendered_summary
+            assert "Standard genre: None → Progressive House" in rendered_summary
             assert "Batch total: 1 SetTag evidence write · 1 standard genre edit" in (
                 rendered_summary
             )
@@ -1391,15 +1452,15 @@ def test_tui_requires_confirmation_then_writes_and_verifies(tmp_path: Path) -> N
             assert app.entries[0].plan is None
             assert app.entries[0].metadata is not None
             assert app.entries[0].metadata.status == "current"
-            assert app.entries[0].metadata.genre_state.standard == ("House",)
-            assert table.get_row_at(0)[4].startswith("Current · ")
+            assert app.entries[0].metadata.genre_state.standard == ("Progressive House",)
+            assert table.get_row_at(0)[4] == "Current"
             assert "Done. 1 file written and verified." in str(status.render())
 
     asyncio.run(exercise())
     assert discarded == [(path,)]
     tags = WAVE(path).tags
     assert isinstance(tags, ID3)
-    assert tags["TCON"].text == ["House"]
+    assert tags["TCON"].text == ["Progressive House"]
     assert tags["TXXX:SETTAG_GENRE"].text == [
         "Electronic---Progressive House",
         "Electronic---Techno",
@@ -1440,7 +1501,7 @@ def test_tui_write_is_journaled_and_can_be_undone_in_app(tmp_path: Path) -> None
 
             tags = WAVE(path).tags
             assert isinstance(tags, ID3)
-            assert tags["TCON"].text == ["House"]
+            assert tags["TCON"].text == ["Progressive House"]
 
             await pilot.press("u")
             for _ in range(30):
@@ -1820,3 +1881,60 @@ def test_s_saves_the_included_plan_off_the_event_loop(
     assert len(saved) == 1
     assert f"Saved {saved[0].name}" in rendered[0]
     assert saved[0].read_text(encoding="utf-8").count("\n") == 1
+
+
+@pytest.mark.parametrize("size", [(120, 36), (80, 24)])
+@pytest.mark.parametrize("phase", ["choose", "review"])
+@pytest.mark.parametrize("opening_key", ["i", "enter"])
+def test_opening_info_keeps_arrow_navigation_in_main_view(tmp_path, size, phase, opening_key):
+    paths = tuple(tmp_path / name for name in ("first.wav", "second.wav"))
+    for path in paths:
+        _silent_wav(path)
+    plans = _task_analysis_batch(paths).planned
+    metadata = tuple(
+        replace(_metadata_track(path), cached_plan=plan, cache_status="ready")
+        for path, plan in zip(paths, plans, strict=True)
+    )
+    app = SetTagApp(
+        source=tmp_path,
+        initial_metadata=MetadataBatch(metadata, ()),
+        analysis_loader=lambda *_args: pytest.fail("Opening Info must not run enrichment"),
+    )
+
+    async def exercise():
+        async with app.run_test(size=size) as pilot:
+            await pilot.pause()
+            if phase == "review":
+                await pilot.press("v")
+                view = app.query_one(ReviewTree)
+                view.move_cursor(view.nodes[(0, "recommendation")])
+            else:
+                view = app.query_one("#tracks", DataTable)
+            await pilot.press(opening_key)
+            await pilot.pause()
+            assert app.has_class("details-open")
+            assert app.focused is view
+            # Repeated Enter on a details row must not silently transfer focus either.
+            await pilot.press("enter")
+            assert app.focused is view
+            if isinstance(view, ReviewTree):
+                before = view.cursor_node
+                await pilot.press("down")
+                assert view.cursor_node is not before
+                for _ in range(len(view.nodes)):
+                    if view.current_index == 1:
+                        break
+                    await pilot.press("down")
+                assert view.cursor_node is view.nodes[(1, "track")]
+            else:
+                await pilot.press("down")
+                assert view.cursor_row == 1
+            assert "second.wav" in str(app.query_one("#inspector", Static).render())
+            await pilot.press("tab")
+            assert app.focused is app.query_one("#inspector-scroll", VerticalScroll)
+            await pilot.press("shift+tab")
+            assert app.focused is view
+            await pilot.press("up")
+            assert app.has_class("details-open")
+
+    asyncio.run(exercise())

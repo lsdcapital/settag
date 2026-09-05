@@ -19,14 +19,17 @@ from textual import events, on, work
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
-from textual.widgets import Footer, Header, Static, Tree
+from textual.widgets import Button, Footer, Header, Static, Tree
 from textual.widgets.tree import TreeNode
 
 from settag.hygiene import (
+    SCAN_LABELS,
     HygieneBatch,
+    HygieneDuplicateGroup,
     HygieneFailure,
     HygieneFinding,
     HygienePlan,
+    HygieneScan,
     HygieneSummary,
     HygieneTrack,
     PartialHygieneWriteError,
@@ -49,6 +52,7 @@ class HygieneReviewRow:
     track: HygieneTrack | None = None
     finding: HygieneFinding | None = None
     failure: HygieneFailure | None = None
+    duplicate: HygieneDuplicateGroup | None = None
 
     @property
     def is_selectable(self) -> bool:
@@ -95,6 +99,7 @@ class HygieneApp(App[TuiOutcome]):
         Binding("a", "toggle_all", "All/None"),
         Binding("i", "toggle_details", "Details"),
         Binding("w", "write", "Clean"),
+        Binding("t", "tools", "Tools"),
         Binding("q", "quit", "Quit"),
     ]
 
@@ -104,28 +109,51 @@ class HygieneApp(App[TuiOutcome]):
         source: Path,
         paths: Sequence[Path],
         batch: HygieneBatch | None = None,
+        scan: HygieneScan | None = None,
         journal: WriteJournal,
     ) -> None:
         super().__init__()
         self.source = source.expanduser().resolve()
         self.paths = tuple(paths)
+        self.scan = batch.scan if batch is not None else scan
+        self.choosing_tool = batch is None and scan is None
         self.batch = batch
         self.journal = journal
         self.rows: list[HygieneReviewRow] = []
         self.selected: set[int] = set()
         self._finding_nodes: dict[int, TreeNode[int | Path]] = {}
         self._track_nodes: dict[Path, TreeNode[int | Path]] = {}
-        self.busy = batch is None
+        self.busy = batch is None and not self.choosing_tool
         self._pending: tuple[HygienePlan, ...] = ()
         self._pending_prepared: tuple[PreparedHygiene, ...] = ()
         if batch is not None:
             self._rebuild_rows(select_all=True)
-        self.sub_title = "Scanning metadata" if batch is None else "Review suspicious metadata"
+        self.sub_title = "Choose a hygiene tool" if self.choosing_tool else self._scan_label
+
+    @property
+    def _scan_label(self) -> str:
+        return SCAN_LABELS[self.scan or "metadata"]
+
+    def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
+        del parameters
+        if action in {"toggle_finding", "toggle_all", "write"}:
+            return not self.choosing_tool and self.scan != "duplicates"
+        if action in {"toggle_details", "tools"}:
+            return not self.choosing_tool
+        return True
 
     def compose(self) -> ComposeResult:
         yield Header()
         with Vertical(id="hygiene-main"):
             yield Static("", markup=False, id="context")
+            with VerticalScroll(id="hygiene-tools"):
+                yield Static("Choose a hygiene tool", classes="section-title")
+                yield Button("Metadata cleanup", id="scan-metadata", variant="primary")
+                yield Static("Review comments, URLs, encoder tags, and empty or repeated values.")
+                yield Button("Duplicate detection", id="scan-duplicates")
+                yield Static("Read audio to find matching copies, ignoring tags and filenames.")
+                yield Button("Run both", id="scan-all")
+                yield Static("Review metadata and duplicate audio in one scan.")
             with Horizontal(id="workspace"):
                 with Vertical(id="tracks-pane"):
                     yield Static(
@@ -145,9 +173,52 @@ class HygieneApp(App[TuiOutcome]):
         tree.show_root = False
         tree.auto_expand = False
         self._update_layout(self.size.width)
+        self._show_tool_choice(self.choosing_tool)
+        if not self.choosing_tool:
+            self._rebuild_tree()
+            if self.batch is None:
+                self._load_hygiene()
+
+    def _show_tool_choice(self, visible: bool) -> None:
+        self.choosing_tool = visible
+        self.query_one("#hygiene-tools").display = visible
+        self.query_one("#workspace").display = not visible
+        self.refresh_bindings()
+        if visible:
+            self.sub_title = "Choose a hygiene tool"
+            self.query_one("#context", Static).update(str(self.source))
+            self.query_one("#status", Static).update("Choose a tool to start its scan.")
+            self.query_one("#scan-metadata", Button).focus()
+
+    @on(Button.Pressed, "#scan-metadata")
+    def scan_metadata(self) -> None:
+        self._start_scan("metadata")
+
+    @on(Button.Pressed, "#scan-duplicates")
+    def scan_duplicates(self) -> None:
+        self._start_scan("duplicates")
+
+    @on(Button.Pressed, "#scan-all")
+    def scan_all(self) -> None:
+        self._start_scan("all")
+
+    def _start_scan(self, scan: HygieneScan) -> None:
+        if self.busy:
+            return
+        self.scan = scan
+        self.batch = None
+        self.rows = []
+        self.selected.clear()
+        self.busy = True
+        self.sub_title = self._scan_label
+        self.set_class(False, "details-open")
+        self._show_tool_choice(False)
         self._rebuild_tree()
-        if self.batch is None:
-            self._load_hygiene()
+        self._load_hygiene()
+
+    def action_tools(self) -> None:
+        if not self.busy:
+            self._show_tool_choice(True)
 
     def on_resize(self, event: events.Resize) -> None:
         self._update_layout(event.size.width)
@@ -165,7 +236,11 @@ class HygieneApp(App[TuiOutcome]):
         failure_rows = [
             HygieneReviewRow(path=failure.path, failure=failure) for failure in self.batch.failures
         ]
-        self.rows = [*finding_rows, *failure_rows]
+        duplicate_rows = [
+            HygieneReviewRow(path=group.paths[0], duplicate=group)
+            for group in self.batch.duplicate_groups
+        ]
+        self.rows = [*finding_rows, *failure_rows, *duplicate_rows]
         self.selected = (
             {index for index, row in enumerate(self.rows) if row.is_selectable}
             if select_all
@@ -177,7 +252,11 @@ class HygieneApp(App[TuiOutcome]):
         assert finding is not None
         marker = "[x]" if index in self.selected else "[ ]"
         operation = "Update values" if finding.after else "Remove tag"
-        return Text(f"{marker} {finding.label} → {operation} · {finding.reason_text}")
+        value = " ".join(finding.current_text.split())
+        reason = (
+            "" if finding.reasons == ("generated encoder marker",) else f" · {finding.reason_text}"
+        )
+        return Text(f"{marker} {finding.label}: {value} → {operation}{reason}")
 
     def _track_label(self, path: Path) -> Text:
         node = self._track_nodes[path]
@@ -195,12 +274,10 @@ class HygieneApp(App[TuiOutcome]):
         self._finding_nodes.clear()
         self._track_nodes.clear()
         if self.batch is None:
-            tree.root.add_leaf("Scanning metadata…")
+            tree.root.add_leaf(f"{self._scan_label}: scanning…")
             self._update_context()
-            self._update_status(message or "Preparing metadata scan…")
-            self.query_one("#inspector", Static).update(
-                "Scanning comment-like and generated text fields…"
-            )
+            self._update_status(message or f"{self._scan_label}: preparing scan…")
+            self.query_one("#inspector", Static).update(f"{self._scan_label}: inspecting files…")
             return
         for index, row in enumerate(self.rows):
             if row.finding is not None:
@@ -210,16 +287,24 @@ class HygieneApp(App[TuiOutcome]):
                     )
                 parent = self._track_nodes[row.path]
                 self._finding_nodes[index] = parent.add_leaf(self._finding_label(index), data=index)
+            elif row.duplicate is not None:
+                tree.root.add_leaf(
+                    Text(f"Duplicate audio · {len(row.duplicate.paths)} files · {row.path.name}"),
+                    data=index,
+                )
             else:
                 assert row.failure is not None
                 tree.root.add_leaf(Text(f"! {row.path.name} · Inspection error"), data=index)
         for path, node in self._track_nodes.items():
             node.set_label(self._track_label(path))
         if not self.rows:
-            tree.root.add_leaf("No cleanup needed. No suspicious metadata found.")
-            self.query_one("#inspector", Static).update(
-                "No cleanup needed. No suspicious metadata found in the scanned files."
-            )
+            empty = {
+                "metadata": "No cleanup needed. No suspicious metadata found.",
+                "duplicates": "No duplicate audio found.",
+                "all": "No suspicious metadata or duplicate audio found.",
+            }[self.scan or "metadata"]
+            tree.root.add_leaf(empty)
+            self.query_one("#inspector", Static).update(empty)
         tree.root.expand()
         self._update_context()
         self._update_status(message)
@@ -230,17 +315,24 @@ class HygieneApp(App[TuiOutcome]):
 
     def _update_context(self) -> None:
         if self.batch is None:
-            self.query_one("#context", Static).update(
-                f"{self.source}\nScanning metadata without loading an analysis model"
-            )
-            return
-        self.query_one("#context", Static).update(
-            f"{self.batch.affected_track_count} affected of {self.batch.track_count} scanned"
-            f"  ·  {self.batch.finding_count} suggestions"
-            f"  ·  {self.batch.failure_count} errors\n{self.source}"
-        )
+            summary = f"{self._scan_label}: scanning"
+        else:
+            summary = f"{self._scan_label} · {self.batch.track_count} scanned"
+            if self.scan != "duplicates":
+                summary += f" · {self.batch.finding_count} cleanup suggestions"
+            if self.scan != "metadata":
+                summary += f" · {len(self.batch.duplicate_groups)} duplicate groups"
+            summary += f" · {self.batch.failure_count} errors"
+        self.query_one("#context", Static).update(f"{summary}\n{self.source}")
 
     def _update_status(self, message: str | None = None) -> None:
+        if self.choosing_tool:
+            return
+        if not self.busy and self.scan == "duplicates":
+            self.query_one("#status", Static).update(
+                "Review only · Select a group to compare paths · T chooses another tool"
+            )
+            return
         if self.busy:
             if message is not None:
                 self.query_one("#status", Static).update(message)
@@ -259,7 +351,11 @@ class HygieneApp(App[TuiOutcome]):
 
     @work(thread=True, exclusive=True, group="hygiene-scan", exit_on_error=False)
     def _load_hygiene(self) -> None:
-        batch = inspect_hygiene_paths(self.paths, on_progress=self._scan_progress_from_worker)
+        batch = inspect_hygiene_paths(
+            self.paths,
+            scan=self.scan or "metadata",
+            on_progress=self._scan_progress_from_worker,
+        )
         self.call_from_thread(self._scan_complete, batch)
 
     def _scan_progress_from_worker(self, completed: int, total: int, path: Path) -> None:
@@ -271,7 +367,7 @@ class HygieneApp(App[TuiOutcome]):
     def _scan_complete(self, batch: HygieneBatch) -> None:
         self.batch = batch
         self.busy = False
-        self.sub_title = "Review suspicious metadata"
+        self.sub_title = self._scan_label
         self._rebuild_rows(select_all=True)
         self._rebuild_tree()
 
@@ -315,6 +411,20 @@ class HygieneApp(App[TuiOutcome]):
         if index >= len(self.rows):
             return
         row = self.rows[index]
+        if row.duplicate is not None:
+            self.query_one("#inspector", Static).update(
+                "\n".join(
+                    (
+                        f"Duplicate audio · {len(row.duplicate.paths)} files",
+                        "Matching audio payloads, ignoring tags and filenames.",
+                        "Review only. Cleanup does not delete or move these files.",
+                        "Different encodings of the same recording may not match.",
+                        "",
+                        *(str(path) for path in row.duplicate.paths),
+                    )
+                )
+            )
+            return
         if row.failure is not None:
             self.query_one("#inspector", Static).update(
                 "\n".join(
@@ -355,7 +465,7 @@ class HygieneApp(App[TuiOutcome]):
         )
 
     def action_toggle_finding(self) -> None:
-        if self.busy:
+        if self.busy or self.choosing_tool:
             return
         item = self._current_item()
         if item is None:
@@ -370,7 +480,7 @@ class HygieneApp(App[TuiOutcome]):
             eligible = {item}
         else:
             self.notify(
-                "This file could not be inspected and cannot be selected.", severity="warning"
+                "This row is for information only and cannot be selected.", severity="warning"
             )
             return
         if eligible.issubset(self.selected):
@@ -390,7 +500,7 @@ class HygieneApp(App[TuiOutcome]):
         self._update_status()
 
     def action_toggle_all(self) -> None:
-        if self.busy or not self.rows:
+        if self.busy or self.choosing_tool or not self.rows:
             return
         eligible = set(self._finding_nodes)
         if not eligible:
@@ -399,6 +509,8 @@ class HygieneApp(App[TuiOutcome]):
         self._refresh_selection(eligible)
 
     def action_toggle_details(self) -> None:
+        if self.choosing_tool:
+            return
         visible = not self.has_class("details-open")
         self.set_class(visible, "details-open")
         if visible:
@@ -425,7 +537,7 @@ class HygieneApp(App[TuiOutcome]):
         )
 
     def action_write(self) -> None:
-        if self.busy:
+        if self.busy or self.choosing_tool:
             return
         plans = self._selected_plans()
         if not plans:
@@ -474,9 +586,9 @@ class HygieneApp(App[TuiOutcome]):
                 on_progress=self._progress_from_worker,
                 on_write=recorder,
             )
-            refreshed = inspect_hygiene_paths(self.paths)
+            refreshed = inspect_hygiene_paths(self.paths, scan=self.scan or "metadata")
         except PartialHygieneWriteError as error:
-            refreshed = inspect_hygiene_paths(self.paths)
+            refreshed = inspect_hygiene_paths(self.paths, scan=self.scan or "metadata")
             self.call_from_thread(
                 self._partly_failed,
                 str(error),

@@ -114,6 +114,12 @@ the single interactive product.
 
 ## Metadata hygiene workflow
 
+Hygiene opens a tool chooser for metadata cleanup, duplicate detection, or both.
+`T` returns to the chooser. `--scan metadata|duplicates|all` starts a chosen scan
+directly; noninteractive runs default to metadata. Metadata scans do not hash
+audio, and duplicate scans do not inspect cleanup tags. Duplicate groups are
+read-only findings and never enter tag cleanup plans.
+
 Hygiene is a sibling workflow, not an analysis phase. It never constructs or
 loads a model:
 

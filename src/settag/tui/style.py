@@ -56,6 +56,19 @@ Footer > .footer--key {
     height: 1fr;
 }
 
+#hygiene-tools {
+    padding: 1 2;
+}
+
+#hygiene-tools Button {
+    margin-top: 1;
+    width: 26;
+}
+
+#hygiene-tools Static {
+    height: auto;
+}
+
 #hygiene-main {
     height: 1fr;
 }

@@ -4,12 +4,14 @@ These went through the Textual pilot harness before they took their inputs
 explicitly, which made a wrong cell expensive to pin down.
 """
 
+import time
 from dataclasses import replace
 from pathlib import Path
 
 import pytest
 from rich.text import Text
 
+from settag.freshness import record_values
 from settag.plans import PlannedWrite
 from settag.policy import Prediction
 from settag.tags import OWNED_DESCRIPTIONS, GenreState
@@ -40,6 +42,10 @@ def _track(
     analyzed_at: str | None = None,
 ) -> MetadataTrack:
     owned: dict[str, list[str] | None] = dict.fromkeys(OWNED_DESCRIPTIONS)
+    if status == "current":
+        owned["SETTAG_ENRICHMENT"] = record_values(
+            audio_complete=True, catalog={"status": "no_match", "checked_at": time.time()}
+        )
     return MetadataTrack(
         path=path,
         genre_state=GenreState(standard=standard, settag=()),
@@ -85,7 +91,7 @@ def test_analysis_column_leads_with_the_error_that_matters() -> None:
     assert entry_analysis(metadata_failed, CONTEXT) == "Metadata error"
 
 
-def test_analysis_column_names_each_metadata_state_with_its_date() -> None:
+def test_enrichment_column_does_not_mislabel_audio_date_as_enrichment_date() -> None:
     path = Path("/music/track.wav")
     states: tuple[tuple[MetadataStatus, str], ...] = (
         ("current", "Current"),
@@ -95,7 +101,7 @@ def test_analysis_column_names_each_metadata_state_with_its_date() -> None:
 
     for status, label in states:
         entry = _entry(_track(path, status=status, analyzed_at="2026-07-25T10:00:00Z"))
-        assert entry_analysis(entry, CONTEXT) == f"{label} · 2026-07-25"
+        assert entry_analysis(entry, CONTEXT) == label
 
 
 def test_predictions_below_the_cutoff_are_not_suggested() -> None:
@@ -116,7 +122,7 @@ def test_a_missing_genre_shows_the_mapped_file_suggestion() -> None:
 
     cells = row_cells(entry, selected=False, context=CONTEXT)
 
-    assert cells[4] == "House"
+    assert cells[4] == "Deep House"
     assert genre_check(entry, CONTEXT).model_genre == "Deep House"
     assert "0.720" not in cells
 
@@ -165,12 +171,12 @@ def test_visible_cells_follow_the_columns_that_fit() -> None:
 @pytest.mark.parametrize(
     ("current", "expected"),
     [
-        (("House",), "Matches suggestion"),
+        (("House",), "Differs → Progressive House"),
         (("Progressive House",), "Matches model"),
         ((" progressive house ",), "Matches model"),
-        (("Techno",), "Differs → House"),
-        ((), "Missing → House"),
-        (("House", "Techno"), "Includes suggestion"),
+        (("Techno",), "Differs → Progressive House"),
+        ((), "Missing → Progressive House"),
+        (("Progressive House", "Techno"), "Includes suggestion"),
     ],
 )
 def test_genre_agreement_is_independent_of_current_analysis(
@@ -187,7 +193,7 @@ def test_genre_agreement_is_independent_of_current_analysis(
     check = genre_check(entry, CONTEXT)
     assert check.summary == expected
     assert check.model_genre == "Progressive House"
-    assert check.suggested_genre == "House"
+    assert check.suggested_genre == "Progressive House"
     assert entry_analysis(entry, CONTEXT) == "Current"
 
 
@@ -223,30 +229,30 @@ def test_a_staged_genre_is_not_reported_as_already_matching_the_file() -> None:
         desired=metadata.owned,
         metadata_format="id3",
         owned_changes=(),
-        target_file_genre=("House",),
+        target_file_genre=("Progressive House",),
     )
     entry = TrackEntry(path=metadata.path, metadata=metadata, plan=plan)
     assert row_cells(entry, selected=False, context=CONTEXT)[2] == "None"
-    assert genre_check(entry, CONTEXT).summary == "Missing → House"
+    assert genre_check(entry, CONTEXT).summary == "Missing → Progressive House"
 
     # The check changes to a match only after the stored metadata reflects the write.
     written = replace(
         metadata,
         status="current",
         stored_predictions=(prediction,),
-        genre_state=GenreState(standard=("House",), settag=()),
+        genre_state=GenreState(standard=("Progressive House",), settag=()),
     )
-    assert genre_check(_entry(written), CONTEXT).summary == "Matches suggestion"
+    assert genre_check(_entry(written), CONTEXT).summary == "Matches model"
 
 
 @pytest.mark.parametrize(
     ("current", "text", "style"),
     [
-        (("House",), "✓ House", GENRE_MATCH_STYLE),
-        (("Progressive House",), "✓ House", GENRE_MATCH_STYLE),
-        (("House", "Techno"), "✓ House", GENRE_MATCH_STYLE),
-        (("Techno",), "House", GENRE_REVIEW_STYLE),
-        ((), "House", GENRE_REVIEW_STYLE),
+        (("House",), "Progressive House", GENRE_REVIEW_STYLE),
+        (("Progressive House",), "✓ Progressive House", GENRE_MATCH_STYLE),
+        (("Progressive House", "Techno"), "✓ Progressive House", GENRE_MATCH_STYLE),
+        (("Techno",), "Progressive House", GENRE_REVIEW_STYLE),
+        ((), "Progressive House", GENRE_REVIEW_STYLE),
     ],
 )
 def test_suggestion_cells_show_mapped_genres_with_review_and_match_cues(

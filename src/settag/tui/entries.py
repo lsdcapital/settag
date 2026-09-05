@@ -81,7 +81,9 @@ class TrackEntry:
 
     @property
     def needs_analysis(self) -> bool:
-        return self.metadata is not None and self.plan is None and self.metadata.needs_analysis
+        if self.plan is not None:
+            return self.plan.enrichment_status != "current"
+        return self.metadata is not None and self.can_analyze and self.metadata.needs_analysis
 
     @property
     def has_changes(self) -> bool:
@@ -97,7 +99,11 @@ class TrackEntry:
 
     @property
     def is_current_unplanned(self) -> bool:
-        return self.metadata is not None and self.metadata.status == "current" and self.plan is None
+        return (
+            self.metadata is not None
+            and self.metadata.enrichment_status == "current"
+            and self.plan is None
+        )
 
 
 def suggested_label(predictions: Sequence[Prediction]) -> str | None:

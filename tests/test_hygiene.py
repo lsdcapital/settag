@@ -8,11 +8,14 @@ from mutagen.id3 import APIC, COMM, ID3, TCON, TIT2, TXXX
 from mutagen.mp4 import MP4
 from mutagen.wave import WAVE
 
+from settag import hygiene
+from settag.cli.render import _print_hygiene_batch
 from settag.hygiene import (
     _WEB_ADDRESS,
     apply_hygiene,
     hygiene_finding,
     inspect_hygiene_path,
+    inspect_hygiene_paths,
     plan_hygiene_track,
     preflight_hygiene,
 )
@@ -223,3 +226,92 @@ def test_short_top_level_domains_are_not_flagged_without_a_scheme(value: str) ->
 )
 def test_web_addresses_are_still_flagged(value: str) -> None:
     assert _WEB_ADDRESS.search(value) is not None
+
+
+def test_duplicate_audio_ignores_tags_but_distinguishes_samples(tmp_path: Path) -> None:
+    first = tmp_path / "first.wav"
+    second = tmp_path / "second.wav"
+    distinct = tmp_path / "distinct.wav"
+    _silent_wav(first)
+    _tagged_wav(second)
+    with wave.open(str(distinct), "wb") as output:
+        output.setnchannels(1)
+        output.setsampwidth(2)
+        output.setframerate(8000)
+        output.writeframes(b"\x01\x00" * 8000)
+    before = {path: path.read_bytes() for path in (first, second, distinct)}
+    progress = []
+    batch = inspect_hygiene_paths(
+        (first, second, distinct, first),
+        scan="all",
+        on_progress=lambda done, total, path: progress.append(done),
+    )
+    assert batch.track_count == 3
+    assert batch.failure_count == 0
+    assert len(batch.duplicate_groups) == 1
+    assert batch.duplicate_groups[0].paths == (first, second)
+    assert progress == [1, 2, 3, 4]
+    assert {path: path.read_bytes() for path in before} == before
+
+
+def test_duplicate_hash_failure_does_not_mark_file_clean(tmp_path: Path, monkeypatch) -> None:
+    first = tmp_path / "first.wav"
+    second = tmp_path / "second.wav"
+    _silent_wav(first)
+    _silent_wav(second)
+    original = hygiene.sha256_audio
+
+    def fail_one(path):
+        if path == first:
+            raise OSError("unreadable audio")
+        return original(path)
+
+    monkeypatch.setattr(hygiene, "sha256_audio", fail_one)
+    batch = inspect_hygiene_paths((first, second), scan="duplicates")
+    assert batch.track_count == 1
+    assert batch.failure_count == 1
+    assert batch.failures[0].path == first
+    assert batch.duplicate_groups == ()
+
+
+def test_plain_hygiene_reports_duplicate_paths(tmp_path: Path, capsys) -> None:
+    first = tmp_path / "first.wav"
+    second = tmp_path / "second.wav"
+    _silent_wav(first)
+    _silent_wav(second)
+    _print_hygiene_batch(tmp_path, inspect_hygiene_paths((first, second), scan="duplicates"))
+    output = capsys.readouterr().err
+    assert "Duplicate groups:     1" in output
+    assert "Duplicate audio · 2 files (review only)" in output
+    assert str(first) in output
+    assert str(second) in output
+
+
+def test_metadata_scan_never_hashes_audio(tmp_path: Path, monkeypatch) -> None:
+    path = tmp_path / "track.wav"
+    _tagged_wav(path)
+
+    def unexpected_hash(path):
+        pytest.fail("metadata scan must not hash audio")
+
+    monkeypatch.setattr(hygiene, "sha256_audio", unexpected_hash)
+    batch = inspect_hygiene_paths((path,))
+    assert batch.scan == "metadata"
+    assert batch.finding_count == 1
+    assert batch.duplicate_groups == ()
+
+
+def test_duplicate_scan_never_inspects_metadata(tmp_path: Path, monkeypatch) -> None:
+    first = tmp_path / "first.wav"
+    second = tmp_path / "second.wav"
+    _tagged_wav(first)
+    _silent_wav(second)
+
+    def unexpected_inspection(path):
+        pytest.fail("duplicate scan must not inspect metadata")
+
+    monkeypatch.setattr(hygiene, "inspect_hygiene_path", unexpected_inspection)
+    batch = inspect_hygiene_paths((first, second), scan="duplicates")
+    assert batch.scan == "duplicates"
+    assert batch.finding_count == 0
+    assert len(batch.duplicate_groups) == 1

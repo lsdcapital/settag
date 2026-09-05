@@ -52,7 +52,7 @@ def test_hygiene_app_reviews_field_level_findings_and_toggles_details(tmp_path: 
             track = tree.root.children[0]
             assert str(track.label) == "[x] track.wav · 1/1 checked"
             assert str(track.children[0].label) == (
-                "[x] Comment (download) → Remove tag · contains a web address"
+                "[x] Comment (download): electronicfresh.com → Remove tag · contains a web address"
             )
             await pilot.press("down")
             assert app.selected == {0}
@@ -189,6 +189,7 @@ def test_hygiene_app_scans_inside_the_interactive_loading_state(tmp_path: Path) 
         source=path,
         paths=(path,),
         batch=None,
+        scan="metadata",
         journal=WriteJournal(tmp_path / "journal.sqlite3"),
     )
 
@@ -200,7 +201,7 @@ def test_hygiene_app_scans_inside_the_interactive_loading_state(tmp_path: Path) 
                     break
             assert app.batch is not None
             assert app.batch.finding_count == 1
-            assert app.sub_title == "Review suspicious metadata"
+            assert app.sub_title == "Metadata cleanup"
             assert len(app.query_one(Tree).root.children[0].children) == 1
 
     asyncio.run(exercise())
@@ -266,5 +267,95 @@ def test_hygiene_app_does_not_reselect_an_opted_out_finding_after_write(
             assert len(app.query_one(Tree).root.children[0].children) == 1
             assert app.selected == set()
             assert str(app.query_one(Tree).root.children[0].children[0].label).startswith("[ ]")
+
+    asyncio.run(exercise())
+
+
+@pytest.mark.parametrize("size", [(120, 36), (80, 24)])
+def test_duplicate_groups_are_visible_but_never_selected(tmp_path: Path, size) -> None:
+    first = tmp_path / "first.wav"
+    second = tmp_path / "second.wav"
+    _hygiene_wav(first)
+    _hygiene_wav(second)
+    app = HygieneApp(
+        source=tmp_path,
+        paths=(first, second),
+        batch=inspect_hygiene_paths((first, second), scan="all"),
+        journal=WriteJournal(tmp_path / "journal.sqlite3"),
+    )
+
+    async def exercise() -> None:
+        async with app.run_test(size=size) as pilot:
+            await pilot.pause()
+            tree = app.query_one(Tree)
+            node = tree.root.children[-1]
+            assert "Duplicate audio" in str(node.label)
+            tree.move_cursor(node)
+            await pilot.pause()
+            inspector = str(app.query_one("#inspector", Static).render())
+            assert str(first) in inspector
+            assert str(second) in inspector
+            assert "does not delete" in inspector
+            await pilot.press("space")
+            assert node.data not in app.selected
+            await pilot.press("a", "a")
+            assert node.data not in app.selected
+            assert len(app._selected_plans()) == 2
+
+    asyncio.run(exercise())
+
+
+@pytest.mark.parametrize("size", [(120, 36), (80, 24)])
+def test_hygiene_tools_wait_for_choice_and_run_only_selected_scan(
+    tmp_path: Path, monkeypatch, size
+) -> None:
+    first = tmp_path / "first.wav"
+    second = tmp_path / "second.wav"
+    _hygiene_wav(first)
+    _hygiene_wav(second)
+    calls = []
+
+    def inspect(paths, **kwargs):
+        calls.append(kwargs["scan"])
+        return inspect_hygiene_paths(paths, **kwargs)
+
+    monkeypatch.setattr("settag.tui.hygiene.inspect_hygiene_paths", inspect)
+    app = HygieneApp(
+        source=tmp_path,
+        paths=(first, second),
+        journal=WriteJournal(tmp_path / "journal.sqlite3"),
+    )
+
+    async def exercise() -> None:
+        async with app.run_test(size=size) as pilot:
+            await pilot.pause()
+            assert calls == []
+            assert app.choosing_tool
+            app.query_one("#scan-duplicates", Button).focus()
+            await pilot.press("enter")
+            await pilot.pause()
+            assert calls == ["duplicates"]
+            assert app.batch is not None
+            assert len(app.batch.duplicate_groups) == 1
+            assert app.batch.finding_count == 0
+            assert app.selected == set()
+            assert not app.query_one("#hygiene-tools").display
+            await pilot.press("t")
+            assert app.choosing_tool
+            assert calls == ["duplicates"]
+            app.query_one("#scan-metadata", Button).focus()
+            await pilot.press("enter")
+            await pilot.pause()
+            assert calls == ["duplicates", "metadata"]
+            assert app.batch.scan == "metadata"
+            assert app.batch.finding_count == 2
+            assert app.batch.duplicate_groups == ()
+            await pilot.press("t")
+            app.query_one("#scan-all", Button).focus()
+            await pilot.press("enter")
+            await pilot.pause()
+            assert calls == ["duplicates", "metadata", "all"]
+            assert app.batch.finding_count == 2
+            assert len(app.batch.duplicate_groups) == 1
 
     asyncio.run(exercise())

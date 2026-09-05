@@ -17,7 +17,7 @@ from textual.screen import ModalScreen
 from textual.widgets import Button, DataTable, Input, Label, Static
 
 from settag.journal import JournalBatch
-from settag.plans import PlannedWrite, suggested_file_genre
+from settag.plans import PlannedWrite, catalog_genres, suggested_file_genre
 from settag.tui.entries import suggested_label
 from settag.workflow import UndoPreflight
 
@@ -65,7 +65,9 @@ class GenreEditScreen(ModalScreen[str | None]):
             if suggestion:
                 model_child = suggested_label(self.item.selected)
                 source = (
-                    f" (from model label {model_child})"
+                    " (from verified Beatport matches)"
+                    if catalog_genres(self.item.desired)
+                    else f" (from model label {model_child})"
                     if model_child and model_child != suggestion
                     else ""
                 )

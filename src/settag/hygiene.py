@@ -6,8 +6,9 @@ import re
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Literal
 
-from settag.hashing import sha256_file
+from settag.hashing import sha256_audio, sha256_file
 from settag.journal import WriteRecord
 from settag.records import utc_now
 from settag.tags import (
@@ -36,6 +37,13 @@ _PROMOTIONAL_COMMENT = re.compile(
     r"(?ix)\b(?:downloaded\s+from|visit\s+(?:our\s+)?website|free\s+mp3|"
     r"music\s+download|provided\s+by|ripped\s+by)\b"
 )
+
+HygieneScan = Literal["metadata", "duplicates", "all"]
+SCAN_LABELS: dict[HygieneScan, str] = {
+    "metadata": "Metadata cleanup",
+    "duplicates": "Duplicate detection",
+    "all": "Metadata and duplicates",
+}
 
 WriteCallback = Callable[[WriteRecord], None]
 WriteProgressCallback = Callable[[int, int, Path], None]
@@ -98,9 +106,19 @@ class HygieneFailure:
 
 
 @dataclass(frozen=True)
+class HygieneDuplicateGroup:
+    """Matching audio payloads, reported for review without a deletion plan."""
+
+    audio_sha256: str
+    paths: tuple[Path, ...]
+
+
+@dataclass(frozen=True)
 class HygieneBatch:
     tracks: tuple[HygieneTrack, ...]
     failures: tuple[HygieneFailure, ...]
+    duplicate_groups: tuple[HygieneDuplicateGroup, ...] = ()
+    scan: HygieneScan = "metadata"
 
     @property
     def track_count(self) -> int:
@@ -227,13 +245,34 @@ def inspect_hygiene_paths(
     paths: Sequence[Path],
     *,
     on_progress: HygieneProgressCallback | None = None,
+    scan: HygieneScan = "metadata",
 ) -> HygieneBatch:
+    if scan not in SCAN_LABELS:
+        raise ValueError(f"Unknown hygiene scan: {scan}")
     tracks: list[HygieneTrack] = []
     failures: list[HygieneFailure] = []
+    audio_matches: dict[str, list[Path]] = {}
+    seen_paths: set[Path] = set()
     total = len(paths)
     for index, path in enumerate(paths, start=1):
         try:
-            tracks.append(inspect_hygiene_path(path))
+            resolved = path.expanduser().resolve()
+            if resolved in seen_paths:
+                continue
+            seen_paths.add(resolved)
+            if scan == "duplicates":
+                stat = resolved.stat()
+                track = HygieneTrack(resolved, "", stat.st_size, stat.st_mtime_ns, ())
+            else:
+                track = inspect_hygiene_path(resolved)
+            if scan in {"duplicates", "all"}:
+                # Stream the encoded payload: no decoding or model inference needed.
+                digest = sha256_audio(track.path)
+                stat = track.path.stat()
+                if (stat.st_size, stat.st_mtime_ns) != (track.source_size, track.source_mtime_ns):
+                    raise RuntimeError("file changed during duplicate scan; scan again")
+                audio_matches.setdefault(digest, []).append(track.path)
+            tracks.append(track)
         except Exception as error:
             failures.append(
                 HygieneFailure(
@@ -245,7 +284,16 @@ def inspect_hygiene_paths(
         finally:
             if on_progress is not None:
                 on_progress(index, total, path)
-    return HygieneBatch(tracks=tuple(tracks), failures=tuple(failures))
+    return HygieneBatch(
+        tracks=tuple(tracks),
+        failures=tuple(failures),
+        scan=scan,
+        duplicate_groups=tuple(
+            HygieneDuplicateGroup(audio_sha256=digest, paths=tuple(matches))
+            for digest, matches in audio_matches.items()
+            if len(matches) > 1
+        ),
+    )
 
 
 def hygiene_finding(tag: HygieneTag) -> HygieneFinding | None:

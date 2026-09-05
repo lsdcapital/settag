@@ -22,7 +22,7 @@ class SetTagApp(AnalysisFlow, WriteFlow, UndoFlow):
     ENABLE_COMMAND_PALETTE = False
     BINDINGS = [
         Binding("w", "write", "Write"),
-        Binding("r", "analyze", "Analyze"),
+        Binding("r", "analyze", "Enrich"),
         Binding("space", "toggle_track", "Toggle"),
         Binding("a", "toggle_all", "All/None"),
         Binding("i", "toggle_details", "Details"),

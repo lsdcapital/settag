@@ -122,11 +122,11 @@ class TtyStringIO(StringIO):
         "Electronic---Tropical House",
     ],
 )
-def test_house_model_labels_roll_up_to_standard_house(label: str) -> None:
-    assert standard_genre_from_model_label(label) == "House"
+def test_house_model_labels_preserve_subgenre(label: str) -> None:
+    assert standard_genre_from_model_label(label) == label.rsplit("---", 1)[-1]
 
 
-def test_standard_genre_rollup_does_not_guess_from_house_suffix() -> None:
+def test_standard_genre_preserves_other_children() -> None:
     assert standard_genre_from_model_label("Electronic---Witch House") == "Witch House"
     assert standard_genre_from_model_label("Electronic---Techno") == "Techno"
 
@@ -535,7 +535,7 @@ def test_path_shorthand_runs_a_noninteractive_dry_run_without_writing(
 
     assert result == 0
     assert "SetTag dry run" in captured.err
-    assert "Electronic---Deep House" in captured.err
+    assert "Deep House" in captured.err
     assert "Dry run only; nothing was written." in captured.err
     assert "\x1b[" not in captured.err
     assert WAVE(path).tags is None
@@ -908,6 +908,7 @@ def test_compact_plan_is_human_readable_and_applies_after_one_confirmation(
         "source",
         "file_genre",
         "target_file_genre",
+        "genre_edit_source",
         "evidence",
         "selected",
         "tasks",
@@ -915,6 +916,7 @@ def test_compact_plan_is_human_readable_and_applies_after_one_confirmation(
         "metadata_format",
         "provenance",
         "changes",
+        "notices",
     }
     assert WAVE(path).tags is None
 
@@ -964,7 +966,7 @@ def test_preview_renders_a_saved_plan_without_external_json_tools_or_writing(
     assert "SetTag model evidence" in captured.out
     assert "Electronic---Deep House  score 0.720  selected" in captured.out
     assert "Electronic---House       score 0.050  available" in captured.out
-    assert "SetTag analysis bundle (7 internal field changes)" in captured.out
+    assert "Enrichment evidence (7 internal field changes)" in captured.out
     assert "Genre labels: 0 → 2" in captured.out
     assert "This preview reads only the saved plan" in captured.out
     assert f"uv run settag apply {plan_path}" in captured.out
@@ -1438,3 +1440,17 @@ def test_embedding_export_is_explicit_and_does_not_write_tags(tmp_path: Path, mo
 
 def test_genre_only_embedding_export_is_rejected_before_loading(tmp_path: Path) -> None:
     assert main(["analyze", str(tmp_path), "--embeddings", str(tmp_path / "out.jsonl")]) == 2
+
+
+@pytest.mark.parametrize("scan", ["metadata", "duplicates", "all"])
+def test_hygiene_cli_scan_modes(tmp_path: Path, capsys, scan: str) -> None:
+    first = tmp_path / "first.wav"
+    second = tmp_path / "second.wav"
+    _silent_wav(first)
+    _silent_wav(second)
+    assert main(["hygiene", str(tmp_path), "--no-tui", "--scan", scan]) == 0
+    output = capsys.readouterr().err
+    assert ("Duplicate groups:" in output) == (scan != "metadata")
+    assert ("Metadata clean:" in output) == (scan != "duplicates")
+    if scan != "metadata":
+        assert "Duplicate groups:     1" in output

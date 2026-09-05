@@ -30,7 +30,7 @@ settag "/path/to/music"
 
 Or with pipx: `pipx install settag`. SetTag needs Python 3.10–3.14.
 
-The app scans your library first. Select tracks to analyze, review the
+The app scans your library first. Select tracks to enrich, review the
 suggestions, then approve any writes. See [Run the app](#run-the-app) for the
 controls, or [Plain CLI mode](#plain-cli-mode) for scripts.
 
@@ -111,7 +111,8 @@ track, because they are cheap and their taxonomies want whole-track averaging.
 | `spaced` | 6 patches spread across the track | 1.6x |
 
 Measured against the full-track answer over 14 tracks, `middle` preserved the
-rolled-up conventional genre on 14/14 and `spaced` on 13/14, both with a rank
+broad genre under the former House-family mapping on 14/14 and `spaced` on
+13/14; these figures do not measure exact subgenre agreement. Both had a rank
 correlation above 0.98 across all 519 labels. What moves is the crowded
 0.1-0.25 tail, where the model is not confident anyway. Fewer patches also
 means less averaging, so scores come out more peaked.
@@ -152,46 +153,51 @@ step after any running analysis has stopped. Use `--no-tui` to print findings
 without changing files.
 
 In an interactive terminal this opens the Textual app as a full-width track
-list. Press `I` whenever you want to toggle the details panel. With details
+list. Press `I` whenever you want to toggle the details panel. Arrow keys keep
+navigating the main list while details follow the selected track. Press `Tab` to
+focus and scroll the details pane; `Shift+Tab` returns to the list. With details
 open, the library looks like this:
 
 ```text
-  ✓  Track                       File genre  Analysis
-  ✓  Eli & Dani - What Do...     None        Never
-     Robin Schulz - Sugar.mp3    House       Current · 2026-07-23
+  ✓  Track                         File genre              Enrichment
+     Brigado Crew - Sunrise.mp3    Melodic House & Techno   Ready
 
- Standard genre: None
- Genre check: Not analyzed
- Run genre analysis to obtain a suggestion.
+ Recommendation: Keep Melodic House & Techno
+ Based on: Beatport verified matches
+ Current file tag: Melodic House & Techno
 
- Analysis: Never analyzed
- Last analyzed: Never
+ Beatport · verified track match
+   Catalog genre: Melodic House & Techno
+   Supports keeping your existing genre.
 
- Selected for analysis.
- The audio model has not been loaded.
+ Audio models · predictions
+   This genre model cannot predict "Melodic House & Techno".
+ Audio last analyzed: 2026-07-26T17:52:49Z
 ```
 
 SetTag first scans existing metadata only. Tracks with no analysis, incomplete
 metadata for any configured task, or a changed task model/config are selected
-by default. Up-to-date tracks remain visible but unselected. The active task
+by default, along with tracks missing Beatport evidence. Fully enriched tracks remain visible but unselected. The active task
 families are shown in the library context line. Adjust the selection, then
-press `R` to load MAEST, EffNet, or both and analyze only the selected tracks
+press `R` to enrich the selected tracks with Beatport metadata and any needed audio analysis
 visible in the current filter. Selections in other filtered views are not
 included.
 
-The library separates **analysis freshness** from **genre agreement**:
+The library separates **enrichment freshness** from **genre agreement**:
 
-- **Analysis: Current** means saved results match the model and settings.
+- **Enrichment: Current** means compatible audio and a fresh catalog check for this track.
+  **Ready** means a result is awaiting review; **Partial** means a source is incomplete.
+  Audio-analysis dates are labeled separately in Details.
 - **File genre** is the tag currently stored in the file; staged edits appear in Review.
 - **Suggested genre** shows the mapped file-genre suggestion. A muted `✓` marks
   an existing match; amber highlights a different or missing genre worth reviewing.
 
-For a model result of `Progressive House`, the file-genre suggestion is `House`.
-Both an existing `Progressive House` and `House` show a muted `✓ House`.
-An existing `Techno` or an empty genre shows `House` in amber. Amber means
-"worth reviewing," not "incorrect." Details explain exact matches, mapped
-matches, and staged edits. Stale results show **Reanalyze**, and results below
-the review cutoff show **No suggestion**.
+For a model result of `Progressive House`, the file-genre suggestion is
+`Progressive House`. An existing matching genre shows a muted `✓ Progressive House`.
+An existing `House`, `Techno`, or an empty genre shows the suggestion in amber.
+Amber means "worth reviewing," not "incorrect." Details explain matches and
+staged edits. Stale results show **Reanalyze**, and results below the review
+cutoff show **No suggestion**.
 
 Press `G` to cycle the genre filter: **All**, **Needs review**, **Missing genre**,
 and **Matches**. Needs review includes differing or missing genres with a usable
@@ -210,14 +216,14 @@ The library keys are:
 | Key | Action |
 |---|---|
 | `↑` / `↓` | Move through tracks |
-| `Space` | Select or unselect the current track for analysis |
+| `Space` | Select or unselect the current track for enrichment |
 | `A` | Toggle all eligible tracks in the current view on or off |
 | `I` | Show or hide details for the highlighted track |
-| `F` | Cycle All, Needs analysis, Missing genre, and Analysis current views |
+| `F` | Cycle All, Needs enrichment, Missing genre, and Analysis current views |
 | `G` | Cycle All, Needs review, Missing genre, and Matches genre filters |
 | `V` | Open saved results that are ready to review, when available |
 | `Enter` | Open details for the highlighted track |
-| `R` | Analyze the selected tracks |
+| `R` | Enrich the selected tracks |
 | `Esc` | Stop after the track currently being analyzed |
 | `U` | Undo a previous write |
 | `H` | Switch to the separate metadata-hygiene review |
@@ -237,14 +243,22 @@ Press `V` as soon as the first track completes to open review. If you stay in
 the library, the app switches to review when the full batch finishes:
 
 ```text
-▼ [x] Eli & Dani - What Do.wav · Included in write
-├── Standard genre: None → House
-├── SetTag analysis: update stored results
-└── ▶ Model candidates · read-only
+▼ [x] Brigado Crew - Sunrise (Paride Saraceni Remix).mp3 · Included in write
+├── Recommendation: Keep Melodic House & Techno
+├── Based on: Beatport verified matches
+├── Current file tag: Melodic House & Techno
+├── ▼ Beatport · verified track match
+│   ├── Catalog genre: Melodic House & Techno
+│   └── Supports keeping your existing genre.
+├── ▶ Audio models · predictions
+└── ▼ Changes to save
+    ├── Save Beatport catalog evidence and source links
+    ├── Save enrichment status and catalog check date
+    └── Genre stays unchanged
 ```
 
 Track branches start expanded so proposed changes are immediately visible.
-Expand Model candidates to inspect the ranked scores for each configured task.
+Expand Audio models to inspect the ranked scores for each configured task.
 The review cutoff and top limit control which candidates are displayed; the
 complete stored analysis remains one coherent write. Child rows describe the
 track's changes and evidence; they are not independent write selections.
@@ -263,7 +277,7 @@ The review keys are:
 | `Enter` | Expand/collapse a branch, or open details for a change |
 | `←` / `→` | Collapse/expand branches or move between parent and child |
 | `W` | Preflight, confirm once, write, and verify completed tracks |
-| `B` | Return to the metadata library to choose another analysis batch |
+| `B` | Return to the metadata library to choose another enrichment batch |
 | `U` | Undo a previous write |
 | `H` | Switch to the separate metadata-hygiene review |
 | `Q` | Quit |
@@ -274,26 +288,24 @@ While background analysis continues, review, genre editing, plan saving, and
 writing operate on the completed snapshot only. The in-flight track cannot
 enter a write until its analysis plan is complete.
 When a newly analyzed track has no conventional genre, SetTag visibly stages
-the conservative standard-genre suggestion there by default. It never replaces
+the standard-genre suggestion there by default. It never replaces
 a non-empty genre automatically. Use `E` to change the staged value or clear it
 to preserve the empty genre; the `before → after` value remains visible in the
 list and inspector. If no candidate clears the review cutoff, the genre remains
 empty.
 
-The automatic default and the editor's `Use suggestion` action remove the
-Discogs parent prefix. For an explicit allowlist of House-family labels, they
-also roll the detailed child label up to the stable conventional genre `House`:
+The automatic default and the editor's `Use suggestion` action remove only the
+Discogs parent prefix, preserving the model's detailed genre:
 
 ```text
-Electronic---Progressive House → House
-Electronic---Tropical House    → House
+Electronic---Progressive House → Progressive House
+Electronic---Tropical House    → Tropical House
 ```
 
-The inspector shows this transformation. Other model children keep their
-direct name; SetTag deliberately does not infer a family from a suffix alone
-(`Witch House` remains `Witch House`). Detailed labels and scores are unchanged
-in the SetTag evidence. Use `E` to open the genre screen, where you can restore
-the suggestion after opting out or enter the exact value you want.
+Specificity does not guarantee accuracy: suggestions still use the review cutoff
+and should be reviewed. Detailed labels and scores are unchanged in the SetTag
+evidence. Use `E` to open the genre screen, where you can restore the suggestion
+after opting out or enter the exact value you want.
 
 `W` runs a complete preflight and shows one batch confirmation. `Write` is the
 default focused action, so `Enter` confirms it; `Esc` returns to review. SetTag
@@ -373,6 +385,26 @@ A comment such as `electronicfresh.com` is suggested for removal because it
 contains a web address. An ordinary DJ note remains untouched. Encoder markers
 such as `Lavf62.12.102`, empty values, and exact duplicate values are also
 suggested. These rules create review suggestions, never automatic writes.
+
+Opening hygiene presents three tools: **Metadata cleanup**, **Duplicate detection**,
+and **Run both**. Press `T` in a review to choose another tool. Metadata cleanup
+only reads tags; duplicate detection only hashes audio.
+
+Use `--scan metadata|duplicates|all` to start a particular scan directly:
+
+```sh
+settag hygiene "/path/to/music/library" --scan duplicates
+settag hygiene "/path/to/music/library" --scan duplicates --no-tui
+```
+
+Without `--scan`, noninteractive output defaults to metadata cleanup.
+
+Duplicate detection groups files with identical audio-payload SHA-256 hashes, ignoring
+tags and filenames. Duplicate groups show full paths in both the interactive
+review and `--no-tui` output; cleanup never deletes or moves files. Different
+encodings of the same recording may not match. Each duplicate scan streams the audio
+without decoding or loading models; scan time depends on library size and disk
+speed, and hashes are not cached between scans.
 
 Tracks appear as expandable branches with their proposed fixes underneath.
 Each track shows its checked/total count; fixes show the field, proposed
@@ -476,7 +508,7 @@ key on, and the `SETTAG_PROVENANCE` record are specified once, in
 [DESIGN.md](DESIGN.md#settag-evidence-contract).
 
 The standard genre is not part of the SetTag namespace. For newly analyzed
-tracks where it is empty, the app stages the conservative standard-genre
+tracks where it is empty, the app stages the standard-genre
 suggestion by default; the user can edit or opt out before confirming the
 write. Title, artist, album, artwork, duplicate fields, and metadata owned by
 other software are preserved. Comments and other hygiene fields are preserved
@@ -692,3 +724,35 @@ connection between SetTag and SetPath. SetPath currently consumes these exports
 only through its explicit offline evaluation commands. Export from the final
 file state: its importer verifies the whole-file SHA-256 and rejects files
 retagged or replaced since export.
+
+### One enrichment workflow
+
+Open SetTag as usual and press **R — Enrich** on selected tracks. SetTag checks
+Beatport, reuses current audio evidence and runs audio analysis when needed. Review
+the combined result and write it through the existing verified, undoable workflow.
+Fresh, verified Beatport matches take priority over existing genres. The app stages
+all supplied labels as multiple genre values and keeps each release’s source link.
+An existing genre stays first when Beatport also supplies it; otherwise stored
+release order determines the first value, without implying higher confidence.
+Manual genre choices are preserved. Without a verified catalog match, the audio
+model can fill a blank genre but does not replace an existing one.
+
+`settag enrich /path/to/music` is an alias for opening the same app. There is no
+separate Beatport workflow or required plan/report/cache argument. For unattended
+preview, `settag /path/to/music --no-tui` runs that same enrichment operation.
+The advanced `analyze` command remains a raw audio-model export/diagnostic tool.
+
+Beatport requests send track identity text, such as artist/title or ISRC, to Beatport;
+audio stays local. Successful catalog pages are cached for seven days under
+`~/.cache/settag/beatport` (`SETTAG_BEATPORT_CACHE` overrides that location). Source
+failures are shown in review while useful results from other sources are retained.
+SetPath does not yet use the additional catalog evidence in ranking.
+
+The combined freshness contract is `settag.enrichment/v2`, stored in
+`SETTAG_ENRICHMENT`. **Current** requires valid audio evidence and a completed catalog
+check less than seven days old for the current artist, title, duration, ISRC and
+Beatport ID. Editing that identity invalidates both cached matches and cached misses;
+older checks without an identity fingerprint are checked again. **Partial** indicates a source failure; **Needs
+enrichment** includes missing/older contracts and expired checks. Upgrading the
+contract reuses compatible audio results. The app version remains **0.2.1** while
+this change is tested.

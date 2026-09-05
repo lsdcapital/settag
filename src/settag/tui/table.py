@@ -14,7 +14,8 @@ from textual import events
 from textual.message import Message
 from textual.widgets import DataTable
 
-from settag.plans import standard_genre_from_model_label
+from settag.freshness import current_catalog_evidence
+from settag.plans import catalog_genre_summary, catalog_genres, standard_genre_from_model_label
 from settag.policy import Prediction, select_predictions
 from settag.tags import OwnedValues, task_evidence_from_owned
 from settag.tasks import AnalysisTask
@@ -49,7 +50,7 @@ TRACK_TABLE_COLUMNS = (
     TrackTableColumn("track", "Track", 1, 8, 1_000),
     TrackTableColumn("file_genre", "File genre", 2, 10, 18),
     TrackTableColumn("suggested_genre", "Suggested genre", 4, 16, 20),
-    TrackTableColumn("analysis", "Analysis", 3, 12, 24),
+    TrackTableColumn("analysis", "Enrichment", 3, 12, 24),
     TrackTableColumn("write_plan", "Write plan", 5, 16, 16),
 )
 
@@ -169,7 +170,7 @@ def entry_analyzed_at(entry: TrackEntry, context: RowContext) -> str:
     return value[:10] if value else "—"
 
 
-def entry_analysis(entry: TrackEntry, context: RowContext) -> str:
+def entry_analysis(entry: TrackEntry, _context: RowContext) -> str:
     if entry.metadata_error is not None:
         return "Metadata error"
     if entry.analysis_error is not None:
@@ -178,23 +179,34 @@ def entry_analysis(entry: TrackEntry, context: RowContext) -> str:
         duration = entry.metadata.duration_seconds
         return f"Sample · {round(duration)}s" if duration is not None else "Sample"
 
-    analyzed_at = entry_analyzed_at(entry, context)
     if entry.plan is not None:
-        state = "Ready" if entry.plan_cached else "New"
+        state = (
+            "Partial"
+            if entry.plan.enrichment_status == "partial"
+            else "Needs enrichment"
+            if entry.plan_cached and entry.plan.enrichment_status != "current"
+            else "Ready"
+        )
     else:
         assert entry.metadata is not None
-        if entry.metadata.cache_status == "stale":
-            state = "Reanalyze"
+        if entry.metadata.enrichment_status == "partial":
+            state = "Partial"
+        elif entry.metadata.cache_status == "stale":
+            state = "Needs enrichment"
         elif entry.metadata.status == "not_analyzed":
             return "Never"
         else:
             state = {
-                "current": "Current",
+                "current": {
+                    "current": "Current",
+                    "needs_enrichment": "Needs enrichment",
+                    "partial": "Partial",
+                }[entry.metadata.enrichment_status],
                 "stale": "Reanalyze",
                 "invalid": "Incomplete",
             }[entry.metadata.status]
 
-    return f"{state} · {analyzed_at}" if analyzed_at != "—" else state
+    return state
 
 
 GENRE_MATCH_STYLE = "#8ea09b"
@@ -236,12 +248,28 @@ class GenreCheck:
 
 
 def genre_check(entry: TrackEntry, context: RowContext) -> GenreCheck:
-    if "genre" not in context.tasks:
-        return GenreCheck("Not assessed", "Genre is not part of this analysis run.")
     metadata = entry.metadata
     plan = entry.plan
     if entry.metadata_error is not None or entry.analysis_error is not None:
         return GenreCheck("Unavailable", "Resolve the track error before comparing its genre.")
+    owned = plan.desired if plan is not None else metadata.owned if metadata is not None else {}
+    catalog = current_catalog_evidence(owned)
+    if plan is None and metadata is not None and not metadata.catalog_current:
+        catalog = None
+    if catalog:
+        current_genres = (
+            plan.file_genre if plan else metadata.genre_state.standard if metadata else ()
+        )
+        genres = catalog_genres(owned, current_genres)
+        matches = {g.casefold() for g in genres} == {g.casefold() for g in current_genres}
+        return GenreCheck(
+            "Matches catalog" if matches else catalog_genre_summary(owned),
+            "Verified matching releases provide: " + ", ".join(genres),
+            suggested_genre=", ".join(genres),
+            relation="match" if matches else "different" if current_genres else "missing",
+        )
+    if "genre" not in context.tasks:
+        return GenreCheck("Not assessed", "No genre evidence is available.")
     if plan is not None:
         current = plan.file_genre
         evidence = task_evidence_from_owned(plan.desired).get("genre", plan.evidence)

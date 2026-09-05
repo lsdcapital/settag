@@ -17,7 +17,9 @@ from settag.policy import MIDDLE_PATCHES, SPACED_PATCHES, AudioSample, parse_aud
 from settag.state import DEFAULT_STATE_DB
 from settag.tasks import AnalysisTask, parse_tasks
 
-COMMANDS = frozenset({"run", "models", "analyze", "inspect", "hygiene", "preview", "apply", "undo"})
+COMMANDS = frozenset(
+    {"run", "models", "analyze", "inspect", "hygiene", "preview", "apply", "undo", "enrich"}
+)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -37,6 +39,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     run = subparsers.add_parser(
         "run",
+        aliases=["enrich"],
         help="Open the interactive app for a file or directory.",
     )
     run.add_argument("path", type=Path)
@@ -89,7 +92,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     analyze = subparsers.add_parser(
         "analyze",
-        help="Analyze one supported audio file or a directory recursively.",
+        help="Export raw audio-model diagnostics for a file or directory (advanced).",
     )
     analyze.add_argument("path", type=Path)
     _add_analysis_options(analyze)
@@ -135,6 +138,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="Review suspicious comments, URLs, duplicates, and encoder markers.",
     )
     hygiene.add_argument("path", type=Path)
+    hygiene.add_argument(
+        "--scan",
+        choices=("metadata", "duplicates", "all"),
+        default=None,
+        help="Scan to run (default: choose interactively, metadata with --no-tui).",
+    )
     hygiene.add_argument(
         "--no-tui",
         action="store_true",

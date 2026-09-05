@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal, Protocol, runtime_checkable
 
+from settag.freshness import EnrichmentStatus, catalog_current, enrichment_record, enrichment_status
 from settag.hashing import sha256_audio, sha256_file, sha256_json
 from settag.journal import WriteRecord
 from settag.plans import (
@@ -37,6 +38,7 @@ from settag.tags import (
     TagPlan,
     apply_metadata_tags,
     build_task_owned_values,
+    owned_tag_store,
     plan_hygiene_tags,
     plan_owned_tags,
     plan_standard_genres,
@@ -44,7 +46,9 @@ from settag.tags import (
     read_genre_state,
     read_owned_values,
     read_task_provenance,
+    read_track_metadata,
     task_evidence_from_owned,
+    track_identity_sha256,
 )
 from settag.tasks import (
     TASK_FIELDS,
@@ -137,6 +141,14 @@ class AnalysisBatch:
     cancelled: bool = False
 
     @property
+    def current_count(self) -> int:
+        return sum(item.enrichment_status == "current" for item in self.planned)
+
+    @property
+    def partial_count(self) -> int:
+        return len(self.planned) - self.current_count
+
+    @property
     def write_count(self) -> int:
         return sum(bool(item.readable_changes) for item in self.planned)
 
@@ -157,6 +169,11 @@ class MetadataTrack:
     cache_status: CacheStatus | None = None
     cache_reason: str | None = None
     duration_seconds: float | None = None
+    catalog_identity_sha256: str | None = None
+
+    @property
+    def catalog_current(self) -> bool:
+        return catalog_current(self.owned, identity_sha256=self.catalog_identity_sha256)
 
     @property
     def is_sample(self) -> bool:
@@ -170,10 +187,15 @@ class MetadataTrack:
         return self.status == "sample"
 
     @property
+    def enrichment_status(self) -> EnrichmentStatus:
+        status = enrichment_status(self.owned, audio_current=self.status == "current")
+        return "needs_enrichment" if status == "current" and not self.catalog_current else status
+
+    @property
     def needs_analysis(self) -> bool:
         if self.is_sample:
             return False
-        return self.status != "current" and self.cache_status != "ready"
+        return self.enrichment_status != "current" and self.cache_status != "ready"
 
 
 @dataclass(frozen=True)
@@ -581,9 +603,7 @@ def inspect_track(
     expected_model_ids: Mapping[AnalysisTask, str],
 ) -> MetadataTrack:
     expected_models = checked_expected_models(expected_model_ids)
-    genre_state = read_genre_state(path)
-    owned = read_owned_values(path)
-    duration = read_duration_seconds(path)
+    genre_state, owned, duration, identity_hash = read_track_metadata(path)
     if "genre" in expected_models and duration is not None and duration < MIN_GENRE_SECONDS:
         # Checked before anything else: what the tags say does not matter when the
         # audio is too short for the model to read.
@@ -595,6 +615,7 @@ def inspect_track(
             status="sample",
             analyzed_at=None,
             duration_seconds=duration,
+            catalog_identity_sha256=identity_hash,
         )
 
     has_settag_metadata = any(values is not None for values in owned.values())
@@ -607,6 +628,7 @@ def inspect_track(
             status="not_analyzed",
             analyzed_at=None,
             duration_seconds=duration,
+            catalog_identity_sha256=identity_hash,
         )
 
     stored_by_task = task_evidence_from_owned(owned)
@@ -659,6 +681,7 @@ def inspect_track(
         status=status,
         analyzed_at=analyzed_at,
         duration_seconds=duration,
+        catalog_identity_sha256=identity_hash,
     )
 
 
@@ -707,13 +730,21 @@ def planned_write_for_track(track: PreparedTrack) -> PlannedWrite:
 
 
 def _source_audio_changed(item: PlannedWrite) -> bool:
-    """Report whether the audio has changed since this plan was made.
+    """Report changed audio or catalog lookup identity since this plan was made.
 
     A plan carrying an audio digest is checked against that, so a tag write by
     another tool between analysis and write no longer reads as a changed
     source. A v4 plan predates the digest and falls back to the whole-file
     comparison it was written with, which is stricter but never wrong.
     """
+    record = enrichment_record(item.desired)
+    catalog = record.get("catalog") if record else None
+    if (
+        isinstance(catalog, dict)
+        and catalog.get("identity_sha256")
+        and catalog["identity_sha256"] != track_identity_sha256(owned_tag_store(item.path))
+    ):
+        return True
     if item.source_audio_sha256 is None:
         return sha256_file(item.path) != item.source_sha256
     return sha256_audio(item.path) != item.source_audio_sha256
