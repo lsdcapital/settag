@@ -19,6 +19,9 @@ Supported files:
 
 ## Install
 
+Install [uv](https://docs.astral.sh/uv/getting-started/installation/) first,
+then run these commands in your terminal. No repository checkout is needed:
+
 ```sh
 uv tool install settag
 settag models download
@@ -26,6 +29,28 @@ settag "/path/to/music"
 ```
 
 Or with pipx: `pipx install settag`. SetTag needs Python 3.10–3.14.
+
+The app scans your library first. Select tracks to analyze, review the
+suggestions, then approve any writes. See [Run the app](#run-the-app) for the
+controls, or [Plain CLI mode](#plain-cli-mode) for scripts.
+
+### Upgrade
+
+Use the same installer you used originally:
+
+```sh
+uv tool upgrade settag
+settag --version
+```
+
+For pipx installations, use `pipx upgrade settag` instead. If analysis reports
+missing models after an upgrade, run `settag models download` again (include
+`--tasks genre,mood-theme,instrument` if you use all three tasks).
+
+Published versions are available on [PyPI](https://pypi.org/project/settag/)
+and [GitHub Releases](https://github.com/lsdcapital/settag/releases/latest).
+
+### Supported platforms and models
 
 Platform support is inherited from `essentia-tensorflow`, which ships only
 prebuilt binary wheels. There is no pure-Python fallback and no source build
@@ -615,6 +640,7 @@ usable without SetTag or its models. It does not declare energy, vocal prominenc
 or any other calibrated perceptual axis.
 
 ```sh
+settag models download --tasks mood-theme,instrument
 settag analyze "/path/to/music" --tasks mood-theme,instrument --embeddings embeddings.jsonl
 ```
 

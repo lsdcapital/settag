@@ -10,7 +10,9 @@ function Home() {
       <header className="bar">
         <div className="shell bar__inner">
           <span className="bar__mark">settag</span>
-          <span className="bar__meta">v0.1.0 · AGPL-3.0 · Python 3.10–3.14</span>
+          <span className="bar__meta">
+            <a href={`${REPO}/releases/latest`}>Latest release</a> · AGPL-3.0 · Python 3.10–3.14
+          </span>
         </div>
       </header>
 
@@ -23,9 +25,9 @@ function Home() {
             <span className="hero__title-step hero__title-step--decision">You decide.</span>
           </h1>
           <p className="hero__lead">
-            SetTag runs Essentia&rsquo;s MAEST model over your tracks on your own machine, proposes
-            genre, mood, and instrument tags, and holds every change in a staging list. You read the
-            diff. You decide what lands.
+            SetTag analyzes your tracks on your own machine: MAEST suggests genres, and optional
+            Discogs-EffNet models add mood and instrument evidence. Changes wait in a staging list.
+            You read the diff. You decide what lands.
           </p>
 
           <figure className="product-shot">
@@ -120,6 +122,10 @@ function Home() {
         <section className="band band--sunk">
           <div className="shell">
             <h2 className="section-label">Install</h2>
+            <p className="block__body">
+              Install <a href="https://docs.astral.sh/uv/getting-started/installation/">uv</a>, then
+              run these commands in your terminal. No repository checkout is needed.
+            </p>
             <ol className="steps">
               <li>
                 <code className="steps__line">$ uv tool install settag</code>
@@ -135,10 +141,25 @@ function Home() {
               <li>
                 <code className="steps__line">$ settag ~/Music/crate</code>
                 <span className="steps__gloss">
-                  Opens the review app. Pass a single file or a whole directory.
+                  Scans your library. Select tracks to analyze, review suggestions, then approve
+                  writes. Pass a single file or a whole directory.
                 </span>
               </li>
             </ol>
+            <p className="block__body">
+              Genre is the default. After downloading the optional models, launch with{" "}
+              <code>--tasks genre,mood-theme,instrument</code> to use all three tasks.
+            </p>
+            <p className="block__body">
+              Already installed? Run <code>uv tool upgrade settag</code>, then{" "}
+              <code>settag --version</code> to check. For pipx installations, use{" "}
+              <code>pipx upgrade settag</code>.
+            </p>
+            <p className="block__body">
+              <a href={`${REPO}#run-the-app`}>App usage guide</a> ·{" "}
+              <a href={`${REPO}#plain-cli-mode`}>CLI examples</a> ·{" "}
+              <a href={`${REPO}/releases/latest`}>Latest release</a>
+            </p>
 
             <div className="table-scroll">
               <table className="table">
@@ -175,6 +196,23 @@ function Home() {
 
         <section className="band">
           <div className="shell">
+            <h2 className="block__title">Optional evidence for ranking experiments</h2>
+            <p className="block__body">
+              Export audio embeddings from a mood or instrument analysis to a separate JSONL file.
+              The export writes no music tags and can support offline similarity and ranking
+              experiments. SetTag is an optional, recommended evidence source for SetPath; SetPath
+              can run independently. Embeddings are not yet used in its live ranking.
+            </p>
+            <p className="block__body">
+              <a href={`${REPO}#optional-audio-evidence-for-ranking-experiments`}>
+                Export commands and limitations
+              </a>
+            </p>
+          </div>
+        </section>
+
+        <section className="band">
+          <div className="shell">
             <h2 className="section-label">Before you use this at work</h2>
             <div className="notice">
               <p className="notice__body">
@@ -202,6 +240,7 @@ function Home() {
 
       <footer className="shell foot">
         <a href={REPO}>Source</a>
+        <a href={`${REPO}#run-the-app`}>Usage guide</a>
         <a href={`${REPO}/issues`}>Issues</a>
         <a href="https://pypi.org/project/settag/">PyPI</a>
         <a href={`${REPO}/blob/main/LICENSE`}>AGPL-3.0-only</a>
