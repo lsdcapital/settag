@@ -50,8 +50,8 @@ def test_hygiene_app_reviews_field_level_findings_and_toggles_details(tmp_path: 
             await pilot.pause()
             tree = app.query_one("#hygiene-tree", Tree)
             track = tree.root.children[0]
-            assert track.label.plain == "[x] track.wav · 1/1 checked"
-            assert track.children[0].label.plain == (
+            assert str(track.label) == "[x] track.wav · 1/1 checked"
+            assert str(track.children[0].label) == (
                 "[x] Comment (download) → Remove tag · contains a web address"
             )
             await pilot.press("down")
@@ -95,8 +95,8 @@ def test_hygiene_tree_preserves_selection_and_position_when_collapsed(
             assert len(other.children) == 1
             await pilot.press("right", "space")
             assert app.selected == {1, 2}
-            assert track.label.plain.startswith("[-]")
-            assert "1/2 checked" in track.label.plain
+            assert str(track.label).startswith("[-]")
+            assert "1/2 checked" in str(track.label)
             assert "Excluded from cleanup" in str(app.query_one("#inspector", Static).render())
 
             # Collapsing a branch does not exclude its hidden, selected child.
@@ -167,7 +167,7 @@ def test_hygiene_app_confirms_writes_verifies_and_journals(tmp_path: Path) -> No
                 if not app.busy:
                     break
             assert app.busy is False
-            assert "No cleanup needed" in app.query_one(Tree).root.children[0].label.plain
+            assert "No cleanup needed" in str(app.query_one(Tree).root.children[0].label)
             status = str(app.query_one("#status", Static).render())
             assert "Cleaned and verified 1 file." in status
             assert "Undo with: settag undo" in status
@@ -221,7 +221,7 @@ def test_hygiene_app_shows_scan_failures_as_nonselectable_rows(tmp_path: Path) -
         async with app.run_test(size=(100, 30)) as pilot:
             await pilot.pause()
             tree = app.query_one(Tree)
-            assert tree.root.children[0].label.plain == "! broken.wav · Inspection error"
+            assert str(tree.root.children[0].label) == "! broken.wav · Inspection error"
             assert app.selected == set()
             inspector = str(app.query_one("#inspector", Static).render())
             assert "Inspection error" in inspector
@@ -265,6 +265,6 @@ def test_hygiene_app_does_not_reselect_an_opted_out_finding_after_write(
                     break
             assert len(app.query_one(Tree).root.children[0].children) == 1
             assert app.selected == set()
-            assert app.query_one(Tree).root.children[0].children[0].label.plain.startswith("[ ]")
+            assert str(app.query_one(Tree).root.children[0].children[0].label).startswith("[ ]")
 
     asyncio.run(exercise())

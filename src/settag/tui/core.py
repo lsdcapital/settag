@@ -459,6 +459,7 @@ class SetTagAppCore(App[TuiOutcome]):
         if self.phase == "review":
             return sorted(self.review_indices)
 
+        # ui-count: enumerate the view entries for filtering
         indices = list(range(len(self.entries)))
         if self.library_filter == "needs_analysis":
             indices = [index for index in indices if self.entries[index].needs_analysis]
@@ -1014,6 +1015,7 @@ class SetTagAppCore(App[TuiOutcome]):
         if self.busy or self.phase != "choose":
             return
         position = GENRE_FILTER_ORDER.index(self.genre_filter)
+        # ui-count: cycle the fixed genre filter options
         self.genre_filter = GENRE_FILTER_ORDER[(position + 1) % len(GENRE_FILTER_ORDER)]
         self._rebuild_table()
 

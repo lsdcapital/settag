@@ -350,7 +350,7 @@ def test_review_tree_inspects_without_running_work_and_keeps_candidates_read_onl
             await pilot.press("i", "v")
             tree = app.query_one(ReviewTree)
             track = tree.nodes[(0, "track")]
-            assert "Track [Live].wav" in track.label.plain
+            assert "Track [Live].wav" in str(track.label)
             assert track.is_expanded
             await pilot.press("enter")
             assert not track.is_expanded
@@ -372,7 +372,7 @@ def test_review_tree_inspects_without_running_work_and_keeps_candidates_read_onl
             original = app.entries[0].plan
             await pilot.press("space")
             assert app.write_selected == set()
-            assert "Excluded from write" in track.label.plain
+            assert "Excluded from write" in str(track.label)
             assert app.entries[0].plan is original
             await pilot.press("a")
             assert app.write_selected == {0}

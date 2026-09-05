@@ -182,8 +182,11 @@ class HygieneApp(App[TuiOutcome]):
     def _track_label(self, path: Path) -> Text:
         node = self._track_nodes[path]
         indices = {child.data for child in node.children if isinstance(child.data, int)}
+        # ui-count: checked child nodes in this track branch
         checked = len(indices & self.selected)
+        # ui-count: derive the branch checkbox from its child selections
         marker = "[x]" if checked == len(indices) else "[-]" if checked else "[ ]"
+        # ui-count: display checked versus total child nodes
         return Text(f"{marker} {path.name} · {checked}/{len(indices)} checked", style="bold")
 
     def _rebuild_tree(self, *, message: str | None = None) -> None:
@@ -244,6 +247,7 @@ class HygieneApp(App[TuiOutcome]):
             return
         selected_tracks = {self.rows[index].path for index in self.selected}
         base = (
+            # ui-count: summarize the current tree checkbox selection
             f"{len(self.selected)} fixes checked across {len(selected_tracks)} tracks"
             "  ·  Space toggles a fix or track"
         )
@@ -290,10 +294,12 @@ class HygieneApp(App[TuiOutcome]):
             if node is None:
                 return
             indices = [child.data for child in node.children if isinstance(child.data, int)]
+            # ui-count: checked child nodes in the focused branch
             checked = len(set(indices) & self.selected)
             self.query_one("#inspector", Static).update(
                 "\n".join(
                     (
+                        # ui-count: display the focused branch checkbox selection
                         f"{checked} of {len(indices)} fixes included in cleanup",
                         "Space includes or excludes all fixes for this track.",
                         "Enter or ←/→ collapses or expands its fixes.",
@@ -305,6 +311,7 @@ class HygieneApp(App[TuiOutcome]):
                 )
             )
             return
+        # ui-count: guard the inspector cursor against removed rows
         if index >= len(self.rows):
             return
         row = self.rows[index]

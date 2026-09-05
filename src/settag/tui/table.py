@@ -329,6 +329,7 @@ def visible_row_cells(
     visible: list[str | Text] = []
     for column, width in layout:
         value = cells[column.cell_index]
+        # ui-count: fit display text within the visible column width
         if column.key == "analysis" and len(value) > width:
             value = value.split(" · ", 1)[0]
         if column.key == "suggested_genre":
