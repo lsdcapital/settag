@@ -3,8 +3,8 @@
 THESIS: hygiene is a field-level inspection bench, never an automatic broom.
 OWN-WORLD: Booth Compass surfaces, one Ember cursor, dense metadata rows.
 STORY: see the suspicious value, understand the rule, choose, verify, clean.
-FIRST VIEWPORT: findings dominate; exact evidence stays one keystroke away.
-FORM: an Operate-mode extension of SetTag's incumbent track-table workspace.
+FIRST VIEWPORT: tracks group their proposed fixes; exact evidence stays one keystroke away.
+FORM: an Operate-mode extension of SetTag's incumbent track-review workspace.
 """
 
 from __future__ import annotations
@@ -14,11 +14,13 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
+from rich.text import Text
 from textual import events, on, work
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
-from textual.widgets import DataTable, Footer, Header, Static
+from textual.widgets import Footer, Header, Static, Tree
+from textual.widgets.tree import TreeNode
 
 from settag.hygiene import (
     HygieneBatch,
@@ -53,6 +55,35 @@ class HygieneReviewRow:
         return self.track is not None and self.finding is not None
 
 
+class HygieneTree(Tree[int | Path]):
+    """Track branches with independently selectable cleanup suggestions."""
+
+    BINDINGS = [
+        Binding("space", "app.toggle_finding", "Toggle"),
+        Binding("enter", "select_cursor", "Expand/Details"),
+        Binding("left", "collapse_or_parent", "Collapse", show=False),
+        Binding("right", "expand_or_child", "Expand", show=False),
+    ]
+
+    def action_collapse_or_parent(self) -> None:
+        node = self.cursor_node
+        if node is None:
+            return
+        if node.children and node.is_expanded:
+            node.collapse()
+        elif node.parent is not None and node.parent is not self.root:
+            self.move_cursor(node.parent)
+
+    def action_expand_or_child(self) -> None:
+        node = self.cursor_node
+        if node is None or not node.children:
+            return
+        if not node.is_expanded:
+            node.expand()
+        else:
+            self.move_cursor(node.children[0])
+
+
 class HygieneApp(App[TuiOutcome]):
     """Review suspicious text fields without loading an analysis model."""
 
@@ -82,6 +113,8 @@ class HygieneApp(App[TuiOutcome]):
         self.journal = journal
         self.rows: list[HygieneReviewRow] = []
         self.selected: set[int] = set()
+        self._finding_nodes: dict[int, TreeNode[int | Path]] = {}
+        self._track_nodes: dict[Path, TreeNode[int | Path]] = {}
         self.busy = batch is None
         self._pending: tuple[HygienePlan, ...] = ()
         self._pending_prepared: tuple[PreparedHygiene, ...] = ()
@@ -96,10 +129,10 @@ class HygieneApp(App[TuiOutcome]):
             with Horizontal(id="workspace"):
                 with Vertical(id="tracks-pane"):
                     yield Static(
-                        "Hygiene review · checked tags will be cleaned",
+                        "Tracks and proposed fixes",
                         classes="section-title",
                     )
-                    yield DataTable(id="hygiene-table", cursor_type="row")
+                    yield HygieneTree("Tracks", id="hygiene-tree")
                 with Vertical(id="inspector-pane"):
                     yield Static("Finding details", classes="section-title")
                     with VerticalScroll(id="inspector-scroll", can_focus=True):
@@ -108,14 +141,11 @@ class HygieneApp(App[TuiOutcome]):
         yield Footer()
 
     def on_mount(self) -> None:
-        table = self.query_one("#hygiene-table", DataTable)
-        table.add_column("", key="selected", width=1)
-        table.add_column("Track", key="track", width=26)
-        table.add_column("Tag", key="tag", width=18)
-        table.add_column("Current value", key="current", width=34)
-        table.add_column("Why flagged", key="reason", width=24)
+        tree = self.query_one(HygieneTree)
+        tree.show_root = False
+        tree.auto_expand = False
         self._update_layout(self.size.width)
-        self._rebuild_table()
+        self._rebuild_tree()
         if self.batch is None:
             self._load_hygiene()
 
@@ -142,10 +172,27 @@ class HygieneApp(App[TuiOutcome]):
             else set()
         )
 
-    def _rebuild_table(self, *, message: str | None = None) -> None:
-        table = self.query_one("#hygiene-table", DataTable)
-        table.clear()
+    def _finding_label(self, index: int) -> Text:
+        finding = self.rows[index].finding
+        assert finding is not None
+        marker = "[x]" if index in self.selected else "[ ]"
+        operation = "Update values" if finding.after else "Remove tag"
+        return Text(f"{marker} {finding.label} → {operation} · {finding.reason_text}")
+
+    def _track_label(self, path: Path) -> Text:
+        node = self._track_nodes[path]
+        indices = {child.data for child in node.children if isinstance(child.data, int)}
+        checked = len(indices & self.selected)
+        marker = "[x]" if checked == len(indices) else "[-]" if checked else "[ ]"
+        return Text(f"{marker} {path.name} · {checked}/{len(indices)} checked", style="bold")
+
+    def _rebuild_tree(self, *, message: str | None = None) -> None:
+        tree = self.query_one(HygieneTree)
+        tree.clear()
+        self._finding_nodes.clear()
+        self._track_nodes.clear()
         if self.batch is None:
+            tree.root.add_leaf("Scanning metadata…")
             self._update_context()
             self._update_status(message or "Preparing metadata scan…")
             self.query_one("#inspector", Static).update(
@@ -154,35 +201,29 @@ class HygieneApp(App[TuiOutcome]):
             return
         for index, row in enumerate(self.rows):
             if row.finding is not None:
-                table.add_row(
-                    "✓" if index in self.selected else "",
-                    row.path.name,
-                    row.finding.label,
-                    row.finding.current_text,
-                    row.finding.reason_text,
-                    key=str(index),
-                )
+                if row.path not in self._track_nodes:
+                    self._track_nodes[row.path] = tree.root.add(
+                        Text(row.path.name), data=row.path, expand=True
+                    )
+                parent = self._track_nodes[row.path]
+                self._finding_nodes[index] = parent.add_leaf(self._finding_label(index), data=index)
             else:
                 assert row.failure is not None
-                table.add_row(
-                    "!",
-                    row.path.name,
-                    "Inspection error",
-                    "Could not inspect",
-                    row.failure.description,
-                    key=str(index),
-                )
+                tree.root.add_leaf(Text(f"! {row.path.name} · Inspection error"), data=index)
+        for path, node in self._track_nodes.items():
+            node.set_label(self._track_label(path))
+        if not self.rows:
+            tree.root.add_leaf("No cleanup needed. No suspicious metadata found.")
+            self.query_one("#inspector", Static).update(
+                "No cleanup needed. No suspicious metadata found in the scanned files."
+            )
+        tree.root.expand()
         self._update_context()
         self._update_status(message)
-        if self.rows:
-            table.focus()
-            table.move_cursor(row=0)
-            self._update_inspector(0)
-        else:
-            self.query_one("#inspector", Static).update(
-                "All scanned files are clean. No suspicious comments, URLs, duplicate "
-                "values, empty values, or generated encoder markers were found."
-            )
+        tree.focus()
+        if tree.root.children[0].data is not None:
+            self._update_inspector(tree.root.children[0].data)
+        self.call_after_refresh(tree.move_cursor, tree.root.children[0])
 
     def _update_context(self) -> None:
         if self.batch is None:
@@ -191,10 +232,9 @@ class HygieneApp(App[TuiOutcome]):
             )
             return
         self.query_one("#context", Static).update(
-            f"{self.source}\n"
             f"{self.batch.affected_track_count} affected of {self.batch.track_count} scanned"
             f"  ·  {self.batch.finding_count} suggestions"
-            f"  ·  {self.batch.failure_count} errors"
+            f"  ·  {self.batch.failure_count} errors\n{self.source}"
         )
 
     def _update_status(self, message: str | None = None) -> None:
@@ -202,19 +242,16 @@ class HygieneApp(App[TuiOutcome]):
             if message is not None:
                 self.query_one("#status", Static).update(message)
             return
+        selected_tracks = {self.rows[index].path for index in self.selected}
         base = (
-            # ui-count: rows checked in this session's cleanup table
-            f"{len(self.selected)} checked"
-            "  ·  Space toggle  ·  A all/none  ·  I details  ·  W review cleanup"
+            f"{len(self.selected)} fixes checked across {len(selected_tracks)} tracks"
+            "  ·  Space toggles a fix or track"
         )
         self.query_one("#status", Static).update(f"{message}  ·  {base}" if message else base)
 
-    def _current_row(self) -> int | None:
-        table = self.query_one("#hygiene-table", DataTable)
-        # ui-count: rows currently rendered in this table
-        if not self.rows or table.cursor_row < 0 or table.cursor_row >= len(self.rows):
-            return None
-        return table.cursor_row
+    def _current_item(self) -> int | Path | None:
+        node = self.query_one(HygieneTree).cursor_node
+        return node.data if node is not None else None
 
     @work(thread=True, exclusive=True, group="hygiene-scan", exit_on_error=False)
     def _load_hygiene(self) -> None:
@@ -232,15 +269,44 @@ class HygieneApp(App[TuiOutcome]):
         self.busy = False
         self.sub_title = "Review suspicious metadata"
         self._rebuild_rows(select_all=True)
-        self._rebuild_table()
+        self._rebuild_tree()
 
-    @on(DataTable.RowHighlighted, "#hygiene-table")
-    def row_highlighted(self, event: DataTable.RowHighlighted) -> None:
-        if event.row_key.value is None:
+    @on(Tree.NodeHighlighted, "#hygiene-tree")
+    def node_highlighted(self, event: Tree.NodeHighlighted[int | Path]) -> None:
+        if event.node.data is not None:
+            self._update_inspector(event.node.data)
+            self.query_one("#inspector-scroll", VerticalScroll).scroll_home(animate=False)
+
+    @on(Tree.NodeSelected, "#hygiene-tree")
+    def node_selected(self, event: Tree.NodeSelected[int | Path]) -> None:
+        if isinstance(event.node.data, Path):
+            event.node.toggle()
+        elif event.node.data is not None and not self.has_class("details-open"):
+            self.action_toggle_details()
+
+    def _update_inspector(self, index: int | Path) -> None:
+        if isinstance(index, Path):
+            node = self._track_nodes.get(index)
+            if node is None:
+                return
+            indices = [child.data for child in node.children if isinstance(child.data, int)]
+            checked = len(set(indices) & self.selected)
+            self.query_one("#inspector", Static).update(
+                "\n".join(
+                    (
+                        f"{checked} of {len(indices)} fixes included in cleanup",
+                        "Space includes or excludes all fixes for this track.",
+                        "Enter or ←/→ collapses or expands its fixes.",
+                        "",
+                        *(self._finding_label(item).plain for item in indices),
+                        "",
+                        str(index),
+                    )
+                )
+            )
             return
-        self._update_inspector(int(str(event.row_key.value)))
-
-    def _update_inspector(self, index: int) -> None:
+        if index >= len(self.rows):
+            return
         row = self.rows[index]
         if row.failure is not None:
             self.query_one("#inspector", Static).update(
@@ -266,23 +332,17 @@ class HygieneApp(App[TuiOutcome]):
         self.query_one("#inspector", Static).update(
             "\n".join(
                 (
-                    track.path.name,
-                    str(track.path.parent),
-                    "",
+                    "Included in cleanup" if index in self.selected else "Excluded from cleanup",
                     f"Tag: {finding.label}",
-                    f"Container: {track.metadata_format}",
                     f"Reason: {finding.reason_text}",
+                    f"After cleanup: {after}",
                     "",
                     "Current value",
                     current,
                     "",
-                    "After cleanup",
-                    after,
-                    "",
-                    (
-                        "Only this checked field-level suggestion is staged. "
-                        "Other metadata is preserved."
-                    ),
+                    str(track.path),
+                    f"Container: {track.metadata_format}",
+                    "Other metadata is preserved.",
                 )
             )
         )
@@ -290,44 +350,57 @@ class HygieneApp(App[TuiOutcome]):
     def action_toggle_finding(self) -> None:
         if self.busy:
             return
-        index = self._current_row()
-        if index is None:
+        item = self._current_item()
+        if item is None:
             return
-        if not self.rows[index].is_selectable:
+        if isinstance(item, Path):
+            eligible = {
+                child.data
+                for child in self._track_nodes[item].children
+                if isinstance(child.data, int)
+            }
+        elif self.rows[item].is_selectable:
+            eligible = {item}
+        else:
             self.notify(
                 "This file could not be inspected and cannot be selected.", severity="warning"
             )
             return
-        if index in self.selected:
-            self.selected.remove(index)
+        if eligible.issubset(self.selected):
+            self.selected.difference_update(eligible)
         else:
-            self.selected.add(index)
-        self._refresh_row(index)
+            self.selected.update(eligible)
+        self._refresh_selection(eligible)
 
-    def _refresh_row(self, index: int) -> None:
-        table = self.query_one("#hygiene-table", DataTable)
-        table.update_cell(str(index), "selected", "✓" if index in self.selected else "")
+    def _refresh_selection(self, indices: set[int]) -> None:
+        for index in indices:
+            self._finding_nodes[index].set_label(self._finding_label(index))
+        for path in {self.rows[index].path for index in indices}:
+            self._track_nodes[path].set_label(self._track_label(path))
+        item = self._current_item()
+        if item is not None:
+            self._update_inspector(item)
         self._update_status()
 
     def action_toggle_all(self) -> None:
         if self.busy or not self.rows:
             return
-        eligible = {index for index, row in enumerate(self.rows) if row.is_selectable}
+        eligible = set(self._finding_nodes)
         if not eligible:
             return
         self.selected = set() if eligible.issubset(self.selected) else eligible
-        self._rebuild_table()
+        self._refresh_selection(eligible)
 
     def action_toggle_details(self) -> None:
         visible = not self.has_class("details-open")
         self.set_class(visible, "details-open")
         if visible:
-            index = self._current_row()
-            if index is not None:
-                self._update_inspector(index)
+            item = self._current_item()
+            if item is not None:
+                self._update_inspector(item)
             self.call_after_refresh(self.query_one("#inspector-scroll", VerticalScroll).focus)
         else:
-            self.query_one("#hygiene-table", DataTable).focus()
+            self.query_one(HygieneTree).focus()
 
     def _selected_plans(self) -> tuple[HygienePlan, ...]:
         grouped: dict[Path, list[HygieneFinding]] = defaultdict(list)
@@ -431,7 +504,7 @@ class HygieneApp(App[TuiOutcome]):
             self.notify(recorder.error, severity="warning", timeout=8)
         elif recorder.recorded:
             message += f" Undo with: settag undo {recorder.batch_id}"
-        self._rebuild_table(message=message)
+        self._rebuild_tree(message=message)
         self.notify(message, title="Hygiene complete", timeout=7)
 
     def _partly_failed(
@@ -445,7 +518,7 @@ class HygieneApp(App[TuiOutcome]):
         self.busy = False
         self._pending = ()
         self._pending_prepared = ()
-        self._rebuild_table()
+        self._rebuild_tree()
         if journal_error is not None:
             self.notify(journal_error, severity="warning", timeout=8)
         self.push_screen(ErrorScreen("Cleanup stopped", message))

@@ -12,6 +12,7 @@ from pathlib import Path
 from threading import Event
 from typing import TYPE_CHECKING
 
+from rich.text import Text
 from textual import events, on, work
 from textual.app import App, ComposeResult
 from textual.containers import Horizontal, Vertical, VerticalScroll
@@ -23,6 +24,7 @@ from textual.widgets import (
     Header,
     ProgressBar,
     Static,
+    Tree,
 )
 
 from settag.journal import (
@@ -42,6 +44,7 @@ from settag.tui.entries import (
     TASK_LABELS,
     AnalysisLoader,
     AppPhase,
+    GenreFilter,
     LibraryFilter,
     MetadataLoader,
     PlanDiscarder,
@@ -51,14 +54,18 @@ from settag.tui.entries import (
     latest_analyzed_at,
     suggested_label,
 )
+from settag.tui.review import NodeKey, ReviewTree
 from settag.tui.screens import (
     GenreEditScreen,
 )
 from settag.tui.table import (
+    GENRE_MATCH_STYLE,
+    GENRE_REVIEW_STYLE,
     ResponsiveTrackTable,
     RowContext,
     TrackTableColumn,
     _track_table_layout,
+    genre_check,
     visible_row_cells,
 )
 from settag.workflow import (
@@ -78,7 +85,16 @@ FILTER_LABELS: dict[LibraryFilter, str] = {
     "all": "All",
     "needs_analysis": "Needs analysis",
     "missing_genre": "Missing genre",
-    "current": "Up to date",
+    "current": "Analysis current",
+}
+
+
+GENRE_FILTER_ORDER: tuple[GenreFilter, ...] = ("all", "needs_review", "missing_genre", "matches")
+GENRE_FILTER_LABELS: dict[GenreFilter, str] = {
+    "all": "All",
+    "needs_review": "Needs review",
+    "missing_genre": "Missing genre",
+    "matches": "Matches",
 }
 
 
@@ -97,6 +113,7 @@ CHOOSE_ACTIONS = frozenset(
         "toggle_all",
         "toggle_details",
         "cycle_filter",
+        "cycle_genre_filter",
         "review",
         "analyze",
         "hygiene",
@@ -131,17 +148,9 @@ class SetTagAppCore(App[TuiOutcome]):
     """
 
     if TYPE_CHECKING:
-        # Implemented by settag.tui.write_flow.WriteFlow. Declared here, type-only,
-        # so type checkers can resolve the call from row_selected below.
-        def action_write(self) -> None: ...
-
         # Implemented by settag.tui.analysis_flow.AnalysisFlow. Declared here,
         # type-only, so type checkers can resolve the call from _genre_edited below.
         def _persist(self, index: int) -> None: ...
-
-        # Implemented by settag.tui.analysis_flow.AnalysisFlow. Declared here,
-        # type-only, so type checkers can resolve the call from row_selected below.
-        def action_analyze(self) -> None: ...
 
     def __init__(
         self,
@@ -179,6 +188,7 @@ class SetTagAppCore(App[TuiOutcome]):
         self.review_indices: set[int] = set()
         self.phase: AppPhase = "choose"
         self.library_filter: LibraryFilter = "all"
+        self.genre_filter: GenreFilter = "all"
         self.busy = False
         self._pending_analysis_indices: tuple[int, ...] = ()
         self._analysis_cancel_requested = Event()
@@ -193,6 +203,7 @@ class SetTagAppCore(App[TuiOutcome]):
         self._pending_undo_skipped = 0
         self._written_count = 0
         self._table_layout: tuple[tuple[TrackTableColumn, int], ...] = ()
+        self._inspector_state: tuple[AppPhase, int, str] | None = None
         self.sub_title = "Reading existing metadata"
 
     @property
@@ -208,6 +219,7 @@ class SetTagAppCore(App[TuiOutcome]):
             yield ProgressBar(total=100, show_eta=False, id="metadata-progress")
         with Vertical(id="main"):
             yield Static("", markup=False, id="context")
+            yield Static("", markup=False, id="library-filters")
             with Vertical(id="analysis-activity"):
                 yield Static(
                     "Preparing analysis",
@@ -223,11 +235,17 @@ class SetTagAppCore(App[TuiOutcome]):
             with Horizontal(id="workspace"):
                 with Vertical(id="tracks-pane"):
                     yield Static("Library", markup=False, classes="section-title")
+                    yield Static(
+                        "No tracks match these filters. Use F or G to change the view.",
+                        markup=False,
+                        id="library-empty",
+                    )
                     yield ResponsiveTrackTable(
                         cursor_type="row",
                         zebra_stripes=True,
                         id="tracks",
                     )
+                    yield ReviewTree()
                 with Vertical(id="inspector-pane"):
                     yield Static(
                         "Track details",
@@ -256,6 +274,8 @@ class SetTagAppCore(App[TuiOutcome]):
         self.call_after_refresh(self._sync_table_columns)
 
     def _sync_table_columns(self) -> None:
+        if self.phase != "choose":
+            return
         table = self.query_one("#tracks", DataTable)
         layout = _track_table_layout(
             table.size.width,
@@ -273,6 +293,7 @@ class SetTagAppCore(App[TuiOutcome]):
             self._rebuild_table(
                 preferred_index,
                 refresh_surrounding=False,
+                preserve_view=True,
             )
 
     def check_action(
@@ -392,7 +413,7 @@ class SetTagAppCore(App[TuiOutcome]):
             score_cutoff=self.score_cutoff,
         )
 
-    def _visible_cells(self, index: int) -> tuple[str, ...]:
+    def _visible_cells(self, index: int) -> tuple[str | Text, ...]:
         """Supply one row's app state to the renderer in tui.table."""
         selected = (
             index in self.analysis_selected
@@ -407,36 +428,54 @@ class SetTagAppCore(App[TuiOutcome]):
         )
 
     def _show_library(self) -> None:
+        preferred_index = self._current_index()
         self.phase = "choose"
+        self.query_one("#review-tree").display = False
+        self.query_one("#library-filters").display = True
+        self.query_one("#tracks").display = True
         self.sub_title = "Choose tracks to analyze"
         self.refresh_bindings()
         self.query_one("#tracks-pane .section-title", Static).update(
             "Library · choose tracks to analyze"
         )
-        self._rebuild_table()
+        self._rebuild_table(preferred_index)
+        self.call_after_refresh(self._sync_table_columns)
 
     def _show_review(self) -> None:
+        preferred_index = self._current_index()
         self.phase = "review"
+        self.query_one("#tracks").display = False
+        self.query_one("#library-filters").display = False
+        self.query_one("#library-empty").display = False
+        self.query_one("#review-tree").display = True
         self.sub_title = "Review analyzed tracks"
         self.refresh_bindings()
         self.query_one("#tracks-pane .section-title", Static).update(
-            "Review · checked tracks will be written"
+            "Review · tracks and proposed changes"
         )
-        self._rebuild_table()
+        self._rebuild_table(preferred_index)
 
     def _filtered_indices(self) -> list[int]:
         if self.phase == "review":
             return sorted(self.review_indices)
 
-        # ui-count: every row this view has loaded, before filtering
-        indices = range(len(self.entries))
-        if self.library_filter == "all":
-            return list(indices)
+        indices = list(range(len(self.entries)))
         if self.library_filter == "needs_analysis":
-            return [index for index in indices if self.entries[index].needs_analysis]
-        if self.library_filter == "missing_genre":
+            indices = [index for index in indices if self.entries[index].needs_analysis]
+        elif self.library_filter == "missing_genre":
+            indices = [index for index in indices if self.entries[index].is_missing_standard_genre]
+        elif self.library_filter == "current":
+            indices = [index for index in indices if self.entries[index].is_current_unplanned]
+        if self.genre_filter == "all":
+            return indices
+        if self.genre_filter == "missing_genre":
             return [index for index in indices if self.entries[index].is_missing_standard_genre]
-        return [index for index in indices if self.entries[index].is_current_unplanned]
+        relations = {"match"} if self.genre_filter == "matches" else {"different", "missing"}
+        return [
+            index
+            for index in indices
+            if genre_check(self.entries[index], self._row_context).relation in relations
+        ]
 
     def _rebuild_table(
         self,
@@ -456,8 +495,35 @@ class SetTagAppCore(App[TuiOutcome]):
         if preferred_index is None:
             preferred_index = self._current_index()
         self.visible_indices = self._filtered_indices()
+        if self.phase == "review":
+            tree = self.query_one(ReviewTree)
+            tree.sync(
+                self.entries,
+                self.visible_indices,
+                self.write_selected,
+                self._row_context,
+                preferred_index=preferred_index,
+                preserve_view=preserve_view,
+            )
+            if not preserve_view:
+                tree.focus()
+            if refresh_surrounding:
+                self._update_context()
+                self._update_status()
+                index = (
+                    preferred_index
+                    if preferred_index in self.visible_indices
+                    else next(iter(self.visible_indices), None)
+                )
+                if index is not None and not preserve_view:
+                    self._update_inspector(index)
+                elif index is None:
+                    self._inspector_state = None
+                    self.query_one("#inspector", Static).update("No tracks ready to review.")
+            return
         table = self.query_one("#tracks", DataTable)
         scroll_y = table.scroll_y
+        self.query_one("#library-empty").display = not self.visible_indices
         table.clear()
         for index in self.visible_indices:
             table.add_row(*self._visible_cells(index), key=str(index))
@@ -467,6 +533,7 @@ class SetTagAppCore(App[TuiOutcome]):
             self._update_status()
         if not self.visible_indices:
             if refresh_surrounding:
+                self._inspector_state = None
                 self.query_one("#inspector", Static).update("No tracks match this view.")
             return
 
@@ -486,6 +553,15 @@ class SetTagAppCore(App[TuiOutcome]):
             self._update_inspector(self.visible_indices[cursor_row])
 
     def _update_context(self) -> None:
+        if self.phase == "choose":
+            filters = Text(
+                f"F Library: {FILTER_LABELS[self.library_filter]}"
+                f"  ·  G Genre: {GENRE_FILTER_LABELS[self.genre_filter]}  ·  "
+            )
+            filters.append("✓ match", style=GENRE_MATCH_STYLE)
+            filters.append("  ·  ")
+            filters.append("Review", style=GENRE_REVIEW_STYLE)
+            self.query_one("#library-filters", Static).update(filters)
         task_text = ", ".join(TASK_LABELS[task] for task in self.analysis_tasks)
         if self.phase == "choose":
             # ui-count: rows in the library view, not a property of any batch
@@ -497,12 +573,10 @@ class SetTagAppCore(App[TuiOutcome]):
             ready_text = f"  ·  {ready} ready to review" if ready else ""
             text = (
                 # ui-count: every row this view has loaded
-                f"{self.source}  ·  {len(self.entries)} tracks"
+                f"{len(self.entries)} tracks"
                 f"  ·  {needs} need analysis"
                 f"{ready_text}"
                 f"  ·  {errors} metadata error{'s' if errors != 1 else ''}"
-                f"  ·  Tasks: {task_text}"
-                f"  ·  Filter: {FILTER_LABELS[self.library_filter]}"
             )
         else:
             # ui-count: analysis failures in this session's review set
@@ -511,27 +585,47 @@ class SetTagAppCore(App[TuiOutcome]):
             )
             text = (
                 # ui-count: the review selection for this session
-                f"{self.source}  ·  {len(self.review_indices)} reviewed"
+                f"{len(self.review_indices)} ready to review"
                 f"  ·  {failures} analysis error{'s' if failures != 1 else ''}"
-                f"  ·  Tasks: {task_text}"
-                "  ·  B returns to the library"
             )
-        self.query_one("#context", Static).update(text)
+        self.query_one("#context", Static).update(
+            f"{text}\nTasks: {task_text}  ·  {_display_path(self.source)}"
+        )
 
     @on(DataTable.RowHighlighted, "#tracks")
     def row_highlighted(self, event: DataTable.RowHighlighted) -> None:
         value = event.row_key.value
-        if value is not None:
+        if self.phase == "choose" and value is not None:
             self._update_inspector(int(value))
 
     @on(DataTable.RowSelected, "#tracks")
     def row_selected(self) -> None:
         if self.phase == "choose":
-            self.action_analyze()
+            self._open_details()
+
+    @on(Tree.NodeHighlighted, "#review-tree")
+    def review_node_highlighted(self, event: Tree.NodeHighlighted[NodeKey]) -> None:
+        if self.phase == "review" and event.node.data is not None:
+            self._update_inspector(event.node.data[0])
+
+    @on(Tree.NodeSelected, "#review-tree")
+    def review_node_selected(self, event: Tree.NodeSelected[NodeKey]) -> None:
+        if self.phase != "review" or event.node.data is None:
+            return
+        if event.node.children:
+            event.node.toggle()
         else:
-            self.action_write()
+            self._open_details()
+
+    def _open_details(self) -> None:
+        if not self.has_class("details-open"):
+            self.action_toggle_details()
+        else:
+            self.query_one("#inspector-scroll", VerticalScroll).focus()
 
     def _current_index(self) -> int | None:
+        if self.phase == "review":
+            return self.query_one(ReviewTree).current_index
         table = self.query_one("#tracks", DataTable)
         row = table.cursor_row
         # ui-count: rows currently visible under the active filter
@@ -551,11 +645,17 @@ class SetTagAppCore(App[TuiOutcome]):
         except NoMatches:
             # A queued row-highlight can arrive while the app screen is unmounting.
             return
-        inspector.update("\n".join(lines))
+        text = "\n".join(lines)
+        state = (self.phase, index, text)
+        if state == self._inspector_state:
+            return
+        self._inspector_state = state
+        inspector.update(text)
         inspector_scroll.scroll_home(animate=False)
 
     def _metadata_inspector(self, entry: TrackEntry, index: int) -> list[str]:
-        lines = [entry.path.name, str(entry.path.parent), ""]
+        identity = ["", entry.path.name, _display_path(entry.path.parent)]
+        lines: list[str] = []
         if entry.metadata_error is not None:
             return [
                 *lines,
@@ -563,6 +663,7 @@ class SetTagAppCore(App[TuiOutcome]):
                 f"  {entry.metadata_error.description}",
                 "",
                 "This track cannot be analyzed safely until its metadata is readable.",
+                *identity,
             ]
 
         assert entry.metadata is not None
@@ -592,10 +693,17 @@ class SetTagAppCore(App[TuiOutcome]):
         )
         lines.extend(
             [
-                "Current file metadata",
-                f"  Standard genre: {genre}",
-                f"  SetTag status: {cache_status or STATUS_LABELS[metadata.status]}",
-                f"  Last analyzed: {self._full_analyzed_at(entry)}",
+                f"Standard genre: {genre}",
+                *genre_check(entry, self._row_context).details,
+                "",
+                f"Analysis: {cache_status or STATUS_LABELS[metadata.status]}",
+                f"Last analyzed: {self._full_analyzed_at(entry)}",
+                "Analysis freshness does not indicate genre agreement.",
+                *(
+                    [f"Staged file genre: {', '.join(entry.plan.target_file_genre) or 'None'}"]
+                    if entry.plan is not None and entry.plan.target_file_genre is not None
+                    else []
+                ),
                 "",
                 f"{candidate_title} · {self._candidate_policy()}",
             ]
@@ -626,6 +734,7 @@ class SetTagAppCore(App[TuiOutcome]):
                 ),
                 *(["Press V to review this saved result."] if entry.plan is not None else []),
                 "The audio model has not been loaded.",
+                *identity,
             ]
         )
         return lines
@@ -643,7 +752,8 @@ class SetTagAppCore(App[TuiOutcome]):
         return "Never"
 
     def _review_inspector(self, entry: TrackEntry, index: int) -> list[str]:
-        lines = [entry.path.name, _display_path(entry.path.parent), ""]
+        identity = ["", entry.path.name, _display_path(entry.path.parent)]
+        lines: list[str] = []
         if entry.analysis_error is not None:
             return [
                 *lines,
@@ -651,9 +761,10 @@ class SetTagAppCore(App[TuiOutcome]):
                 f"  {entry.analysis_error.description}",
                 "",
                 "Return to the library with B to retry or choose another track.",
+                *identity,
             ]
         if entry.plan is None:
-            return [*lines, "No analysis result is available."]
+            return ["No analysis result is available.", *identity]
 
         item = entry.plan
         current = ", ".join(item.file_genre) or "None"
@@ -681,10 +792,13 @@ class SetTagAppCore(App[TuiOutcome]):
                 f"  Standard genre: {genre_line.strip()}",
                 *([rollup_line] if rollup_line else []),
                 "",
+                *genre_check(entry, self._row_context).details,
+                "",
                 f"Candidates · {self._candidate_policy()}",
             ]
         )
         lines.extend(self._task_candidate_sections(item.desired))
+        lines.extend(identity)
         return lines
 
     def _task_candidate_sections(
@@ -734,6 +848,17 @@ class SetTagAppCore(App[TuiOutcome]):
     def _refresh_row(self, index: int, *, update_inspector: bool = True) -> None:
         if index not in self.visible_indices:
             return
+        if self.phase == "review":
+            self.query_one(ReviewTree).update_track(
+                index,
+                self.entries[index],
+                index in self.write_selected,
+                self._row_context,
+            )
+            if update_inspector:
+                self._update_inspector(index)
+            self._update_status()
+            return
         row = self.visible_indices.index(index)
         table = self.query_one("#tracks", DataTable)
         for column, value in enumerate(self._visible_cells(index)):
@@ -777,7 +902,7 @@ class SetTagAppCore(App[TuiOutcome]):
                     f"{progress}"
                     f"  ·  {selected} completed track"
                     f"{'s' if selected != 1 else ''} ready to write"
-                    "  ·  Enter/W write completed"
+                    "  ·  W review completed writes"
                     "  ·  Esc stop after current"
                 )
             self.query_one("#status", Static).update(f"{message}  ·  {base}" if message else base)
@@ -791,10 +916,8 @@ class SetTagAppCore(App[TuiOutcome]):
                 f"  ·  V review {len(self.review_indices)} ready" if self.review_indices else ""
             )
             base = (
-                f"{selected} selected in this view"
-                f"  ·  Filter: {FILTER_LABELS[self.library_filter]}"
+                f"R analyze selected  ·  Enter details  ·  {selected} selected in this view"
                 f"{review_hint}"
-                "  ·  Space toggle  ·  Enter/R analyze selected  ·  H hygiene"
             )
         else:
             # ui-count: rows checked for writing in the current view
@@ -804,9 +927,9 @@ class SetTagAppCore(App[TuiOutcome]):
                 self.entries[index].has_standard_genre_change for index in self.write_selected
             )
             base = (
-                f"{selected} will be written"
+                f"W review write  ·  {selected} will be written"
                 f"  ·  {genre_edits} standard genre edits"
-                "  ·  Space toggle  ·  Enter/W review write  ·  H hygiene"
+                "  ·  Space toggles track"
             )
         self.query_one("#status", Static).update(f"{message}  ·  {base}" if message else base)
 
@@ -855,19 +978,23 @@ class SetTagAppCore(App[TuiOutcome]):
             selection.difference_update(eligible)
         else:
             selection.update(eligible)
-        self._rebuild_table()
+        self._rebuild_table(preserve_view=True)
 
     def action_toggle_details(self) -> None:
         visible = not self.has_class("details-open")
         self.set_class(visible, "details-open")
-        table = self.query_one("#tracks", DataTable)
+        track_view = (
+            self.query_one(ReviewTree)
+            if self.phase == "review"
+            else self.query_one("#tracks", DataTable)
+        )
         inspector_scroll = self.query_one("#inspector-scroll", VerticalScroll)
         index = self._current_index()
         if visible:
             if index is not None:
                 self._update_inspector(index)
         else:
-            table.focus()
+            track_view.focus()
         self.call_after_refresh(self._sync_table_columns)
         if visible:
             self.call_after_refresh(inspector_scroll.focus)
@@ -881,6 +1008,13 @@ class SetTagAppCore(App[TuiOutcome]):
         position = FILTER_ORDER.index(self.library_filter)
         # ui-count: the fixed set of library filter options this view cycles through
         self.library_filter = FILTER_ORDER[(position + 1) % len(FILTER_ORDER)]
+        self._rebuild_table()
+
+    def action_cycle_genre_filter(self) -> None:
+        if self.busy or self.phase != "choose":
+            return
+        position = GENRE_FILTER_ORDER.index(self.genre_filter)
+        self.genre_filter = GENRE_FILTER_ORDER[(position + 1) % len(GENRE_FILTER_ORDER)]
         self._rebuild_table()
 
     def action_review(self) -> None:

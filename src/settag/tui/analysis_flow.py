@@ -281,7 +281,7 @@ class AnalysisFlow(SetTagAppCore):
         if self.phase == "choose" and self.review_indices and not self._analysis_navigation_changed:
             self._show_review()
         else:
-            self._rebuild_table()
+            self._rebuild_table(preserve_view=True)
 
         if cancelled and remaining > 0:
             if completed:

@@ -2,9 +2,10 @@ import asyncio
 import wave
 from pathlib import Path
 
+import pytest
 from mutagen.id3 import COMM, ID3
 from mutagen.wave import WAVE
-from textual.widgets import Button, DataTable, Static
+from textual.widgets import Button, Static, Tree
 
 from settag.hygiene import inspect_hygiene_paths
 from settag.journal import WriteJournal
@@ -47,15 +48,13 @@ def test_hygiene_app_reviews_field_level_findings_and_toggles_details(tmp_path: 
     async def exercise() -> None:
         async with app.run_test(size=(120, 36)) as pilot:
             await pilot.pause()
-            table = app.query_one("#hygiene-table", DataTable)
-            assert table.row_count == 1
-            assert table.get_row_at(0) == [
-                "✓",
-                "track.wav",
-                "Comment (download)",
-                "electronicfresh.com",
-                "contains a web address",
-            ]
+            tree = app.query_one("#hygiene-tree", Tree)
+            track = tree.root.children[0]
+            assert track.label.plain == "[x] track.wav · 1/1 checked"
+            assert track.children[0].label.plain == (
+                "[x] Comment (download) → Remove tag · contains a web address"
+            )
+            await pilot.press("down")
             assert app.selected == {0}
             await pilot.press("space")
             assert app.selected == set()
@@ -66,7 +65,72 @@ def test_hygiene_app_reviews_field_level_findings_and_toggles_details(tmp_path: 
             inspector = str(app.query_one("#inspector", Static).render())
             assert "Current value" in inspector
             assert "electronicfresh.com" in inspector
-            assert "After cleanup\nRemove this tag" in inspector
+            assert "After cleanup: Remove this tag" in inspector
+
+    asyncio.run(exercise())
+
+
+@pytest.mark.parametrize("size", [(120, 36), (80, 24)])
+def test_hygiene_tree_preserves_selection_and_position_when_collapsed(
+    tmp_path: Path, size: tuple[int, int]
+) -> None:
+    first = tmp_path / "first.wav"
+    second = tmp_path / "second.wav"
+    _two_finding_wav(first)
+    _hygiene_wav(second)
+    app = HygieneApp(
+        source=tmp_path,
+        paths=(first, second),
+        batch=inspect_hygiene_paths((first, second)),
+        journal=WriteJournal(tmp_path / "journal.sqlite3"),
+    )
+
+    async def exercise() -> None:
+        async with app.run_test(size=size) as pilot:
+            await pilot.pause()
+            tree = app.query_one(Tree)
+            track = tree.root.children[0]
+            other = tree.root.children[1]
+            assert len(track.children) == 2
+            assert len(other.children) == 1
+            await pilot.press("right", "space")
+            assert app.selected == {1, 2}
+            assert track.label.plain.startswith("[-]")
+            assert "1/2 checked" in track.label.plain
+            assert "Excluded from cleanup" in str(app.query_one("#inspector", Static).render())
+
+            # Collapsing a branch does not exclude its hidden, selected child.
+            await pilot.press("left", "enter")
+            assert not track.is_expanded
+            assert tree.cursor_node is track
+            plans = app._selected_plans()
+            assert [(plan.path, len(plan.findings)) for plan in plans] == [(first, 1), (second, 1)]
+
+            # A partially selected parent includes its remaining fixes, then clears them.
+            await pilot.press("space")
+            assert app.selected == {0, 1, 2}
+            await pilot.press("space")
+            assert app.selected == {2}
+            assert not track.is_expanded
+
+            await pilot.press("down")
+            assert tree.cursor_node is other
+            await pilot.press("a")
+            assert app.selected == {0, 1, 2}
+            assert tree.cursor_node is other
+            assert not track.is_expanded
+            await pilot.press("a")
+            assert app.selected == set()
+            assert tree.cursor_node is other
+
+            # Left/right and Enter navigate and disclose without altering selection.
+            await pilot.press("up", "right", "right")
+            assert track.is_expanded
+            assert tree.cursor_node is track.children[0]
+            await pilot.press("enter")
+            assert app.has_class("details-open")
+            assert "Excluded from cleanup" in str(app.query_one("#inspector", Static).render())
+            assert app.selected == set()
 
     asyncio.run(exercise())
 
@@ -103,7 +167,7 @@ def test_hygiene_app_confirms_writes_verifies_and_journals(tmp_path: Path) -> No
                 if not app.busy:
                     break
             assert app.busy is False
-            assert app.query_one("#hygiene-table", DataTable).row_count == 0
+            assert "No cleanup needed" in app.query_one(Tree).root.children[0].label.plain
             status = str(app.query_one("#status", Static).render())
             assert "Cleaned and verified 1 file." in status
             assert "Undo with: settag undo" in status
@@ -137,7 +201,7 @@ def test_hygiene_app_scans_inside_the_interactive_loading_state(tmp_path: Path) 
             assert app.batch is not None
             assert app.batch.finding_count == 1
             assert app.sub_title == "Review suspicious metadata"
-            assert app.query_one("#hygiene-table", DataTable).row_count == 1
+            assert len(app.query_one(Tree).root.children[0].children) == 1
 
     asyncio.run(exercise())
 
@@ -156,13 +220,8 @@ def test_hygiene_app_shows_scan_failures_as_nonselectable_rows(tmp_path: Path) -
     async def exercise() -> None:
         async with app.run_test(size=(100, 30)) as pilot:
             await pilot.pause()
-            table = app.query_one("#hygiene-table", DataTable)
-            assert table.get_row_at(0)[0:4] == [
-                "!",
-                "broken.wav",
-                "Inspection error",
-                "Could not inspect",
-            ]
+            tree = app.query_one(Tree)
+            assert tree.root.children[0].label.plain == "! broken.wav · Inspection error"
             assert app.selected == set()
             inspector = str(app.query_one("#inspector", Static).render())
             assert "Inspection error" in inspector
@@ -189,8 +248,10 @@ def test_hygiene_app_does_not_reselect_an_opted_out_finding_after_write(
         async with app.run_test(size=(120, 36)) as pilot:
             await pilot.pause()
             assert app.selected == {0, 1}
-            await pilot.press("space")
+            await pilot.press("down", "space")
             assert app.selected == {1}
+            await pilot.press("left", "enter")
+            assert not app.query_one(Tree).root.children[0].is_expanded
             await pilot.press("w")
             for _ in range(30):
                 await pilot.pause(0.05)
@@ -202,8 +263,8 @@ def test_hygiene_app_does_not_reselect_an_opted_out_finding_after_write(
                 await pilot.pause(0.05)
                 if not app.busy:
                     break
-            assert app.query_one("#hygiene-table", DataTable).row_count == 1
+            assert len(app.query_one(Tree).root.children[0].children) == 1
             assert app.selected == set()
-            assert app.query_one("#hygiene-table", DataTable).get_row_at(0)[0] == ""
+            assert app.query_one(Tree).root.children[0].children[0].label.plain.startswith("[ ]")
 
     asyncio.run(exercise())

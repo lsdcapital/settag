@@ -74,6 +74,20 @@ Footer > .footer--key {
     background: #16201e;
 }
 
+#library-filters {
+    height: 1;
+    padding: 0 2;
+    color: #c3cecb;
+    background: #16201e;
+}
+
+#library-empty {
+    display: none;
+    height: auto;
+    padding: 1;
+    color: #c3cecb;
+}
+
 #analysis-activity-title {
     height: 1;
     text-style: bold;
@@ -140,6 +154,39 @@ DataTable > .datatable--header {
 }
 
 DataTable > .datatable--cursor {
+    background: #d0794f;
+    color: #1f0e05;
+    text-style: bold;
+}
+
+#review-tree {
+    display: none;
+}
+
+#hygiene-tree,
+#review-tree {
+    height: 1fr;
+    background: #111716;
+    background-tint: transparent;
+    color: #c3cecb;
+    scrollbar-color: #3a4744;
+    scrollbar-color-hover: #8ea09b;
+    scrollbar-color-active: #d0794f;
+}
+
+#hygiene-tree > .tree--guides,
+#review-tree > .tree--guides {
+    color: #3a4744;
+}
+
+#hygiene-tree > .tree--cursor,
+#review-tree > .tree--cursor {
+    background: #16201e;
+    color: #eef2f1;
+}
+
+#hygiene-tree:focus > .tree--cursor,
+#review-tree:focus > .tree--cursor {
     background: #d0794f;
     color: #1f0e05;
     text-style: bold;

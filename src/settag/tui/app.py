@@ -21,17 +21,18 @@ class SetTagApp(AnalysisFlow, WriteFlow, UndoFlow):
     TITLE = "SetTag"
     ENABLE_COMMAND_PALETTE = False
     BINDINGS = [
+        Binding("w", "write", "Write"),
+        Binding("r", "analyze", "Analyze"),
         Binding("space", "toggle_track", "Toggle"),
         Binding("a", "toggle_all", "All/None"),
         Binding("i", "toggle_details", "Details"),
-        Binding("f", "cycle_filter", "Filter"),
-        Binding("r", "analyze", "Analyze"),
+        Binding("f", "cycle_filter", "Library filter"),
+        Binding("g", "cycle_genre_filter", "Genre filter"),
         Binding("escape", "cancel_analysis", "Cancel"),
         Binding("v", "review", "Review"),
         Binding("b", "library", "Library"),
         Binding("e", "edit_genre", "Genre"),
         Binding("s", "save", "Save plan"),
-        Binding("w", "write", "Write"),
         Binding("h", "hygiene", "Hygiene"),
         Binding("u", "undo", "Undo"),
         Binding("q", "quit", "Quit"),

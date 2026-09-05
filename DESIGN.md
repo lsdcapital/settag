@@ -60,7 +60,8 @@ settag/tui/     app       the concrete App: bindings and stylesheet, composed
                 undo_flow       U: journal list, preflight, restore, complete
                 hygiene   independent metadata-hygiene review
                 screens   modal dialogs
-                table     column layout and row rendering
+                table     library column layout and row rendering
+                review    stable review tree and read-only change/evidence nodes
                 entries   the per-track state a row displays
                 style     the stylesheet
 ```
@@ -122,8 +123,12 @@ scan tags → detect → select field-level findings → preflight → confirm �
 
 Findings are deterministic suggestions: a web address in a comment-like field,
 a generated encoder marker, an empty text value, or an exact duplicate. The
-review table shows the native field's user-facing label, current value, and the
-reason it was flagged. Every finding is independently checked. A normal comment
+review tree groups fixes under expanded track branches. Track labels show
+checked/total counts; child labels show the native field's user-facing label,
+proposed operation, and reason. Details show exact before/after values and the
+current inclusion state. Space toggles a fix or all fixes for a track; collapsing
+a branch preserves its selections, and bulk selection preserves navigation.
+Every finding is independently checked. A normal comment
 with no matching rule is absent from review and cannot be changed by the plan.
 
 `H` switches from the analysis app into hygiene after background analysis has
@@ -142,7 +147,7 @@ The app has two explicit phases:
 2. **Review:** inspect new ranked evidence, choose which staged changes to
    write, and optionally stage a conventional genre.
 
-The choose phase classifies each track as `Never analyzed`, `Up to date`,
+The choose phase classifies each track as `Never analyzed`, `Analysis current`,
 `Reanalyze (model/config changed)`, or `Incomplete metadata`. Tracks needing
 analysis are preselected. Up-to-date tracks stay visible and unselected. The
 library can be filtered to all tracks, tracks needing analysis, tracks missing
@@ -159,9 +164,21 @@ in-flight track has no plan and cannot enter a write. Track-level concurrency
 is deliberately avoided so background operation does not multiply model load.
 
 The dense table combines analysis validity and date into one `Analysis`
-column: `Never`, `Up to date · date`, `Reanalyze · date`,
+column: `Never`, `Current · date`, `Reanalyze · date`,
 `Incomplete · date`, or `New · date`. The details panel retains the full
-status wording and timestamp.
+status wording and timestamp. Freshness describes model/configuration validity,
+not agreement with the conventional genre. The adjacent `File genre` and
+`Suggested genre` columns show stored tags beside the mapped genre-only
+suggestion. Matches carry a muted checkmark; different or missing genres with
+usable suggestions use amber, meaning review rather than error. The inspector
+retains exact comparisons, including multiple tags that contain a match.
+Stale/incomplete results cannot claim agreement. Genre relation is structured
+state shared by the colors and filters, not parsed from display wording.
+`G` cycles All, Needs review, Missing genre, and Matches independently of `F`.
+Both filters intersect and remain visible above the table. Hidden selections
+are preserved and cannot enter analysis through the current filtered view.
+A staged target is displayed only in Review/details until it is written.
+Genre comparison takes priority over dates and write-plan summaries at narrow widths.
 
 The review phase has three distinct layers of state:
 
@@ -185,23 +202,26 @@ results in review. A mismatched plan appears as `Reanalyze · date`. Returning
 to the library does not preselect ready plans, though the user may select one
 for deliberate reanalysis.
 
-The app keeps the track table primary at full terminal width. The inspector is
-secondary, hidden by default, and toggled with `I` without changing the cursor
-or selection. In review, the table's `Write plan` column names a user-level
-state such as `Refresh`, `Evidence`, or `Genre edit`, never a count of internal
-fields. Raw model scores are omitted from the primary table because they are
-ranking evidence, not calibrated confidence; the optional inspector retains
-them for users diagnosing candidate order or review cutoffs. The inspector
-leads with one compact write-plan block, then shows the candidates admitted by
-the current review policy on one line per task with the total stored score
-count. It does not expose internal field counts. The footer changes with the
-current phase:
+The Library table stays primary at full terminal width for comparing tracks.
+Review uses an expanded track → proposed changes tree: standard genre before/after,
+a user-facing analysis update or refresh, and a collapsed read-only candidates
+branch containing the configured tasks' ranked scores. Only track rows carry
+write checkboxes; Space on a child toggles its owning track. Stored analysis
+remains one coherent write, and candidate scores are never independent write
+choices. Nodes retain identity, expansion, cursor, and scroll when results arrive.
+
+The inspector is secondary, hidden by default, and toggled with `I`. Review
+details lead with inclusion and planned changes, followed by candidate evidence
+and file identity. Raw scores are ranking evidence, not calibrated confidence.
+Enter opens Library details or expands/inspects a Review node; only R starts
+analysis and W opens write review. Confirmation dialogs still accept Enter.
+The footer changes with the current phase:
 
 ```text
-Choose: Space toggle · I details · A all/none · F filter · V review (when ready) · Enter/R analyze · Q quit
+Choose: Space toggle · I details · A all/none · F filter · V review (when ready) · Enter details · R analyze · Q quit
 Analyzing in Library: I details · F filter · V review completed · Esc stop after current
-Analyzing in Review: Space toggle · A all/none · I details · E genre · S save · Enter/W write completed · Esc stop after current
-Review: Space toggle · A all/none · I details · E genre · S save · Enter/W write
+Analyzing in Review: Space toggle · A all/none · I details · E genre · S save · W write completed · Esc stop after current
+Review: Space toggle · A all/none · I details · E genre · S save · Enter expand/details · W write
 ```
 
 SetTag follows SetPath's Booth Compass palette so both DJ tools read as one

@@ -37,10 +37,11 @@ PlanDiscarder = Callable[[Sequence[Path]], None]
 AppPhase = Literal["choose", "review"]
 
 LibraryFilter = Literal["all", "needs_analysis", "missing_genre", "current"]
+GenreFilter = Literal["all", "needs_review", "missing_genre", "matches"]
 
 STATUS_LABELS = {
     "not_analyzed": "Never analyzed",
-    "current": "Up to date",
+    "current": "Current (model and settings match)",
     "stale": "Reanalyze (model/config changed)",
     "invalid": "Incomplete metadata",
     "sample": f"Sample (shorter than the {MIN_GENRE_SECONDS}s the genre model reads)",

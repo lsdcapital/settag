@@ -158,12 +158,14 @@ open, the library looks like this:
 ```text
   ✓  Track                       File genre  Analysis
   ✓  Eli & Dani - What Do...     None        Never
-     Robin Schulz - Sugar.mp3    House       Up to date · 2026-07-23
+     Robin Schulz - Sugar.mp3    House       Current · 2026-07-23
 
- Current file metadata
-   Standard genre: None
-   SetTag status: Never analyzed
-   Last analyzed: Never
+ Standard genre: None
+ Genre check: Not analyzed
+ Run genre analysis to obtain a suggestion.
+
+ Analysis: Never analyzed
+ Last analyzed: Never
 
  Selected for analysis.
  The audio model has not been loaded.
@@ -176,6 +178,27 @@ families are shown in the library context line. Adjust the selection, then
 press `R` to load MAEST, EffNet, or both and analyze only the selected tracks
 visible in the current filter. Selections in other filtered views are not
 included.
+
+The library separates **analysis freshness** from **genre agreement**:
+
+- **Analysis: Current** means saved results match the model and settings.
+- **File genre** is the tag currently stored in the file; staged edits appear in Review.
+- **Suggested genre** shows the mapped file-genre suggestion. A muted `✓` marks
+  an existing match; amber highlights a different or missing genre worth reviewing.
+
+For a model result of `Progressive House`, the file-genre suggestion is `House`.
+Both an existing `Progressive House` and `House` show a muted `✓ House`.
+An existing `Techno` or an empty genre shows `House` in amber. Amber means
+"worth reviewing," not "incorrect." Details explain exact matches, mapped
+matches, and staged edits. Stale results show **Reanalyze**, and results below
+the review cutoff show **No suggestion**.
+
+Press `G` to cycle the genre filter: **All**, **Needs review**, **Missing genre**,
+and **Matches**. Needs review includes differing or missing genres with a usable
+suggestion. Missing genre also includes files that have no suggestion yet.
+The `F` library filter and `G` genre filter combine; both active choices stay
+visible above the table. Filtering preserves selections, and analysis only
+uses selected tracks visible through both filters.
 
 Analysis runs serially in a background worker. The selected batch is fixed when
 the job starts, but the interface remains available for navigation, filtering,
@@ -190,9 +213,11 @@ The library keys are:
 | `Space` | Select or unselect the current track for analysis |
 | `A` | Toggle all eligible tracks in the current view on or off |
 | `I` | Show or hide details for the highlighted track |
-| `F` | Cycle All, Needs analysis, Missing genre, and Up to date views |
+| `F` | Cycle All, Needs analysis, Missing genre, and Analysis current views |
+| `G` | Cycle All, Needs review, Missing genre, and Matches genre filters |
 | `V` | Open saved results that are ready to review, when available |
-| `Enter` / `R` | Analyze the selected tracks |
+| `Enter` | Open details for the highlighted track |
+| `R` | Analyze the selected tracks |
 | `Esc` | Stop after the track currently being analyzed |
 | `U` | Undo a previous write |
 | `H` | Switch to the separate metadata-hygiene review |
@@ -212,19 +237,19 @@ Press `V` as soon as the first track completes to open review. If you stay in
 the library, the app switches to review when the full batch finishes:
 
 ```text
-  ✓  Track                       File genre    Analysis          Suggested          Write plan
-  ✓  Eli & Dani - What Do...     None → House  New · 2026-07-23  Progressive House  Evidence + Genre
-
- Standard file genre
-   None → House (staged)
-   Suggested roll-up: Progressive House → House
-
- Review candidates
-   Score cutoff ≥ 0.10 · maximum 5
-    1. Electronic---Progressive House  0.664
-    2. Electronic---Techno             0.269
-   18 additional ranked scores stored for importing apps.
+▼ [x] Eli & Dani - What Do.wav · Included in write
+├── Standard genre: None → House
+├── SetTag analysis: update stored results
+└── ▶ Model candidates · read-only
 ```
+
+Track branches start expanded so proposed changes are immediately visible.
+Expand Model candidates to inspect the ranked scores for each configured task.
+The review cutoff and top limit control which candidates are displayed; the
+complete stored analysis remains one coherent write. Child rows describe the
+track's changes and evidence; they are not independent write selections.
+Space on any child includes or excludes its owning track. Collapsing branches,
+changing selection, and receiving background results preserve review context.
 
 The review keys are:
 
@@ -235,7 +260,9 @@ The review keys are:
 | `I` | Show or hide review candidates and staged changes |
 | `E` | Set this track's standard genre, clear it, or use the suggestion |
 | `S` | Save the included tracks as a reusable JSONL plan |
-| `Enter` / `W` | Preflight, confirm once, write, and verify completed tracks |
+| `Enter` | Expand/collapse a branch, or open details for a change |
+| `←` / `→` | Collapse/expand branches or move between parent and child |
+| `W` | Preflight, confirm once, write, and verify completed tracks |
 | `B` | Return to the metadata library to choose another analysis batch |
 | `U` | Undo a previous write |
 | `H` | Switch to the separate metadata-hygiene review |
@@ -347,9 +374,13 @@ contains a web address. An ordinary DJ note remains untouched. Encoder markers
 such as `Lavf62.12.102`, empty values, and exact duplicate values are also
 suggested. These rules create review suggestions, never automatic writes.
 
-Every finding is checked independently. `Space` includes or excludes one
-field-level suggestion, `A` toggles all findings, `I` shows the exact before and
-after values, and `W` runs preflight and opens one confirmation. Only checked
+Tracks appear as expandable branches with their proposed fixes underneath.
+Each track shows its checked/total count; fixes show the field, proposed
+operation, and reason. `Space` includes or excludes a fix, or all fixes under
+the focused track. `Enter` expands or collapses a track and opens details for a
+fix; `←`/`→` navigate branches. Collapsing a track preserves its selections.
+`A` toggles all findings, `I` shows the exact before and after values, and `W`
+runs preflight and opens one confirmation. Only checked
 suggestions are written. Titles, artists, albums, artwork, genres, SetTag
 evidence, and unselected comments remain unchanged.
 

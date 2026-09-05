@@ -7,11 +7,14 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import dataclass
+from typing import Literal
 
+from rich.text import Text
 from textual import events
 from textual.message import Message
 from textual.widgets import DataTable
 
+from settag.plans import standard_genre_from_model_label
 from settag.policy import Prediction, select_predictions
 from settag.tags import OwnedValues, task_evidence_from_owned
 from settag.tasks import AnalysisTask
@@ -45,18 +48,18 @@ TRACK_TABLE_COLUMNS = (
     TrackTableColumn("selected", "", 0, 1, 1),
     TrackTableColumn("track", "Track", 1, 8, 1_000),
     TrackTableColumn("file_genre", "File genre", 2, 10, 18),
+    TrackTableColumn("suggested_genre", "Suggested genre", 4, 16, 20),
     TrackTableColumn("analysis", "Analysis", 3, 12, 24),
-    TrackTableColumn("suggested", "Suggested", 4, 10, 20),
     TrackTableColumn("write_plan", "Write plan", 5, 16, 16),
 )
 
 TRACK_TABLE_COLUMN_BY_KEY = {column.key: column for column in TRACK_TABLE_COLUMNS}
 
 TRACK_TABLE_COLUMN_PRIORITY = (
-    "analysis",
     "file_genre",
+    "suggested_genre",
+    "analysis",
     "write_plan",
-    "suggested",
 )
 
 
@@ -73,7 +76,7 @@ def _track_table_layout(
         "selected": TRACK_TABLE_COLUMN_BY_KEY["selected"].min_width,
         "track": max(
             TRACK_TABLE_COLUMN_BY_KEY["track"].min_width,
-            available // 3,
+            available // 4,
         ),
     }
 
@@ -99,7 +102,7 @@ def _track_table_layout(
         total_width += candidate_width
 
     remaining = max(0, available - total_width)
-    for key in ("analysis", "file_genre", "suggested"):
+    for key in ("suggested_genre", "file_genre", "analysis"):
         if key not in widths:
             continue
         column = TRACK_TABLE_COLUMN_BY_KEY[key]
@@ -186,12 +189,105 @@ def entry_analysis(entry: TrackEntry, context: RowContext) -> str:
             return "Never"
         else:
             state = {
-                "current": "Up to date",
+                "current": "Current",
                 "stale": "Reanalyze",
                 "invalid": "Incomplete",
             }[entry.metadata.status]
 
     return f"{state} · {analyzed_at}" if analyzed_at != "—" else state
+
+
+GENRE_MATCH_STYLE = "#8ea09b"
+GENRE_REVIEW_STYLE = "#e0b36b"
+
+
+@dataclass(frozen=True)
+class GenreCheck:
+    """Compare the observed file genre with genre evidence, independently of freshness."""
+
+    summary: str
+    explanation: str
+    model_genre: str | None = None
+    suggested_genre: str | None = None
+    relation: Literal["unknown", "match", "different", "missing"] = "unknown"
+
+    @property
+    def suggestion_text(self) -> str:
+        if self.suggested_genre is None:
+            return self.summary
+        prefix = "✓ " if self.relation == "match" else ""
+        return f"{prefix}{self.suggested_genre}"
+
+    @property
+    def suggestion_style(self) -> str:
+        return (
+            GENRE_REVIEW_STYLE if self.relation in {"different", "missing"} else GENRE_MATCH_STYLE
+        )
+
+    @property
+    def details(self) -> tuple[str, ...]:
+        lines = [f"Genre check: {self.summary}"]
+        if self.model_genre is not None:
+            lines.append(f"Model genre: {self.model_genre}")
+        if self.suggested_genre is not None:
+            lines.append(f"Suggested file genre: {self.suggested_genre}")
+        lines.append(self.explanation)
+        return tuple(lines)
+
+
+def genre_check(entry: TrackEntry, context: RowContext) -> GenreCheck:
+    if "genre" not in context.tasks:
+        return GenreCheck("Not assessed", "Genre is not part of this analysis run.")
+    metadata = entry.metadata
+    plan = entry.plan
+    if entry.metadata_error is not None or entry.analysis_error is not None:
+        return GenreCheck("Unavailable", "Resolve the track error before comparing its genre.")
+    if plan is not None:
+        current = plan.file_genre
+        evidence = task_evidence_from_owned(plan.desired).get("genre", plan.evidence)
+    elif metadata is not None:
+        current = metadata.genre_state.standard
+        if metadata.cache_status == "stale" or metadata.status in {"stale", "invalid"}:
+            return GenreCheck(
+                "Reanalyze", "Stored analysis needs refreshing before genre comparison."
+            )
+        if metadata.is_sample:
+            return GenreCheck("Not assessed", "This sample is too short for genre analysis.")
+        if metadata.status == "not_analyzed":
+            return GenreCheck("Not analyzed", "Run genre analysis to obtain a suggestion.")
+        evidence = task_evidence_from_owned(metadata.owned).get(
+            "genre", metadata.stored_predictions
+        )
+    else:
+        return GenreCheck("Unavailable", "No readable metadata is available.")
+    chosen = context.select_for_review(evidence)
+    if not chosen:
+        return GenreCheck("No suggestion", "No genre candidate met the review cutoff.")
+    model = suggested_label(chosen)
+    suggestion = standard_genre_from_model_label(chosen[0].label)
+    if model is None or suggestion is None:
+        return GenreCheck("No suggestion", "No usable genre label is available.")
+
+    values = {value.strip().casefold() for value in current if value.strip()}
+    relation: Literal["match", "different", "missing"] = "match"
+    if values == {model.casefold()}:
+        summary = "Matches model"
+        explanation = "The file already has the model's detailed genre; no replacement is needed."
+    elif values == {suggestion.casefold()}:
+        summary = "Matches suggestion"
+        explanation = f"{model} maps to {suggestion} for the file tag; the existing genre matches."
+    elif model.casefold() in values or suggestion.casefold() in values:
+        summary = "Includes suggestion"
+        explanation = "One of the file's genres matches; additional genres are also present."
+    elif not values:
+        relation = "missing"
+        summary = f"Missing → {suggestion}"
+        explanation = "The file has no genre. The suggestion is a choice to review."
+    else:
+        relation = "different"
+        summary = f"Differs → {suggestion}"
+        explanation = "The file genre differs from the suggestion. This does not mean it is wrong."
+    return GenreCheck(summary, explanation, model, suggestion, relation)
 
 
 def row_cells(
@@ -203,15 +299,9 @@ def row_cells(
     """Every cell for one track, in fixed column order."""
     plan = entry.plan
     metadata = entry.metadata
-    predictions = primary_review_predictions(entry, context)
 
     if plan is not None:
-        before = ", ".join(plan.file_genre) or "None"
-        if plan.target_file_genre is not None:
-            after = ", ".join(plan.target_file_genre) or "None"
-            file_genre = f"{before} → {after}"
-        else:
-            file_genre = before
+        file_genre = ", ".join(plan.file_genre) or "None"
     elif metadata is not None:
         file_genre = ", ".join(metadata.genre_state.standard) or "None"
     else:
@@ -222,7 +312,7 @@ def row_cells(
         entry.path.name,
         file_genre,
         entry_analysis(entry, context),
-        suggested_label(predictions) or "—",
+        genre_check(entry, context).suggestion_text,
         plan.write_plan_label if plan is not None else "—",
     )
 
@@ -233,7 +323,16 @@ def visible_row_cells(
     selected: bool,
     context: RowContext,
     layout: Sequence[tuple[TrackTableColumn, int]],
-) -> tuple[str, ...]:
-    """The cells for the columns that currently fit."""
+) -> tuple[str | Text, ...]:
+    """The cells for the columns that currently fit, with genre review cues."""
     cells = row_cells(entry, selected=selected, context=context)
-    return tuple(cells[column.cell_index] for column, _width in layout)
+    visible: list[str | Text] = []
+    for column, width in layout:
+        value = cells[column.cell_index]
+        if column.key == "analysis" and len(value) > width:
+            value = value.split(" · ", 1)[0]
+        if column.key == "suggested_genre":
+            visible.append(Text(value, style=genre_check(entry, context).suggestion_style))
+        else:
+            visible.append(value)
+    return tuple(visible)

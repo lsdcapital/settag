@@ -24,6 +24,7 @@ from settag.tui import (
     SetTagApp,
     UndoScreen,
 )
+from settag.tui.review import ReviewTree
 from settag.workflow import (
     AnalysisBatch,
     MetadataBatch,
@@ -202,8 +203,8 @@ def test_tui_reads_metadata_before_loading_model_and_analyzes_only_selection(
             assert app.phase == "choose"
             assert app.analysis_selected == {0, 1}
             assert table.get_row_at(0)[0] == "✓"
-            assert table.get_row_at(0)[3] == "Never"
-            assert table.get_row_at(2)[3] == "Up to date · 2026-07-23"
+            assert table.get_row_at(0)[4] == "Never"
+            assert table.get_row_at(2)[4] == "Current · 2026-07-23"
             assert inspector_pane.display is False
             assert "The audio model has not been loaded." in str(inspector.render())
             choose_actions = {
@@ -230,7 +231,7 @@ def test_tui_reads_metadata_before_loading_model_and_analyzes_only_selection(
             assert table.row_count == 1
             assert app.analysis_selected == {0, 1}
             assert table.get_row_at(0)[0] == "✓"
-            await pilot.press("enter")
+            await pilot.press("r")
             for _ in range(30):
                 await pilot.pause(0.05)
                 if app.phase == "review":
@@ -240,8 +241,10 @@ def test_tui_reads_metadata_before_loading_model_and_analyzes_only_selection(
             assert app.phase == "review"
             assert app.review_indices == {0}
             assert app.write_selected == {0}
-            assert table.get_row_at(0)[3].startswith("New · ")
-            assert table.get_row_at(0)[0] == "✓"
+            tree = app.query_one(ReviewTree)
+            assert tree.display
+            assert not table.display
+            assert tree.nodes[(0, "track")].label.plain == "[x] a-fresh.wav · Included in write"
             review_actions = {
                 active.binding.action for active in app.screen.active_bindings.values()
             }
@@ -322,7 +325,125 @@ def test_tui_analyzes_and_reviews_all_configured_tasks(tmp_path: Path) -> None:
     asyncio.run(exercise())
 
 
-def test_tui_details_scroll_and_return_focus_to_track_table(tmp_path: Path) -> None:
+@pytest.mark.parametrize("size", [(120, 36), (80, 24)])
+def test_review_tree_inspects_without_running_work_and_keeps_candidates_read_only(
+    tmp_path: Path, size: tuple[int, int]
+) -> None:
+    path = tmp_path / "Track [Live].wav"
+    _silent_wav(path)
+    plan = _task_analysis_batch((path,)).planned[0]
+    metadata = replace(_metadata_track(path), cached_plan=plan, cache_status="ready")
+    app = SetTagApp(
+        source=tmp_path,
+        initial_metadata=MetadataBatch(tracks=(metadata,), failures=()),
+        analysis_loader=lambda *_args: pytest.fail("Enter must not start analysis"),
+        analysis_tasks=("genre", "mood-theme", "instrument"),
+    )
+
+    async def exercise() -> None:
+        async with app.run_test(size=size) as pilot:
+            await pilot.pause()
+            await pilot.press("enter")
+            assert app.phase == "choose"
+            assert app.has_class("details-open")
+            assert not app.analysis_running
+            await pilot.press("i", "v")
+            tree = app.query_one(ReviewTree)
+            track = tree.nodes[(0, "track")]
+            assert "Track [Live].wav" in track.label.plain
+            assert track.is_expanded
+            await pilot.press("enter")
+            assert not track.is_expanded
+            assert not isinstance(app.screen, ConfirmWriteScreen)
+            await pilot.press("right", "right")
+            assert tree.cursor_node is tree.nodes[(0, "genre")]
+            await pilot.press("enter")
+            assert app.has_class("details-open")
+            assert not isinstance(app.screen, ConfirmWriteScreen)
+            await pilot.press("i", "down", "down", "enter", "right")
+            assert tree.cursor_node is tree.nodes[(0, "candidate:genre:0")]
+            for task in ("genre", "mood-theme", "instrument"):
+                label = tree.nodes[(0, f"candidate:{task}:0")].label.plain
+                assert "[x]" not in label
+                assert "[ ]" not in label
+            assert "energetic" in tree.nodes[(0, "candidate:mood-theme:0")].label.plain
+            assert "synthesizer" in tree.nodes[(0, "candidate:instrument:0")].label.plain
+
+            original = app.entries[0].plan
+            await pilot.press("space")
+            assert app.write_selected == set()
+            assert "Excluded from write" in track.label.plain
+            assert app.entries[0].plan is original
+            await pilot.press("a")
+            assert app.write_selected == {0}
+            assert tree.cursor_node is tree.nodes[(0, "candidate:genre:0")]
+            assert tree.nodes[(0, "candidates")].is_expanded
+            assert WAVE(path).tags is None
+
+    asyncio.run(exercise())
+
+
+def test_review_tree_keeps_focus_expansion_and_scroll_when_results_arrive(tmp_path: Path) -> None:
+    paths = tuple(tmp_path / f"track-{index}.wav" for index in range(3))
+    for path in paths:
+        _silent_wav(path)
+    plans = _task_analysis_batch(paths).planned
+    metadata = tuple(
+        replace(_metadata_track(path), cached_plan=plans[index], cache_status="ready")
+        if index != 1
+        else _metadata_track(path)
+        for index, path in enumerate(paths)
+    )
+    app = SetTagApp(
+        source=tmp_path,
+        initial_metadata=MetadataBatch(tracks=metadata, failures=()),
+        analysis_loader=lambda *_args: pytest.fail("No worker needed for a result-arrival test"),
+        analysis_tasks=("genre", "mood-theme", "instrument"),
+    )
+
+    async def exercise() -> None:
+        async with app.run_test(size=(80, 24)) as pilot:
+            await pilot.pause()
+            await pilot.press("v", "enter", "down")
+            tree = app.query_one(ReviewTree)
+            assert tree.cursor_node is tree.nodes[(2, "track")]
+            tree.nodes[(2, "candidates")].expand()
+            await pilot.pause()
+            focused = tree.nodes[(2, "candidate:instrument:1")]
+            tree.move_cursor(focused)
+            await pilot.press("i")
+            scroll = app.query_one("#inspector-scroll", VerticalScroll)
+            scroll.scroll_end(animate=False)
+            await pilot.pause()
+            tree_y, inspector_y = tree.scroll_y, scroll.scroll_y
+            assert inspector_y > 0
+
+            app.entries[1].plan = plans[1]
+            app.review_indices.add(1)
+            app.write_selected.add(1)
+            app._refresh_after_analysis(1)
+            await pilot.pause()
+            assert [node.data for node in tree.root.children] == [
+                (0, "track"),
+                (1, "track"),
+                (2, "track"),
+            ]
+            assert tree.cursor_node is focused
+            assert tree.scroll_y == tree_y
+            assert app.focused is scroll
+            assert scroll.scroll_y == inspector_y
+            assert not tree.nodes[(0, "track")].is_expanded
+            assert tree.nodes[(2, "candidates")].is_expanded
+            app._analysis_finished(3, 3, False)
+            await pilot.pause()
+            assert tree.cursor_node is focused
+            assert app.focused is scroll
+            assert scroll.scroll_y == inspector_y
+
+    asyncio.run(exercise())
+
+
+def test_tui_details_scroll_and_return_focus_to_review_tree(tmp_path: Path) -> None:
     first = tmp_path / "first.wav"
     second = tmp_path / "second.wav"
     for path in (first, second):
@@ -347,7 +468,7 @@ def test_tui_details_scroll_and_return_focus_to_track_table(tmp_path: Path) -> N
                     break
 
             assert app.phase == "review"
-            table = app.query_one("#tracks", DataTable)
+            tree = app.query_one(ReviewTree)
             inspector_pane = app.query_one("#inspector-pane")
             inspector_scroll = app.query_one("#inspector-scroll", VerticalScroll)
 
@@ -372,16 +493,16 @@ def test_tui_details_scroll_and_return_focus_to_track_table(tmp_path: Path) -> N
             inspector_scroll.scroll_end(animate=False, immediate=True)
             assert inspector_scroll.scroll_y == inspector_scroll.max_scroll_y
             await pilot.press("tab")
-            assert app.focused is table
-            await pilot.press("down")
+            assert app.focused is tree
+            await pilot.press("shift+down")
             await pilot.pause()
-            assert table.cursor_row == 1
+            assert tree.cursor_node is tree.nodes[(1, "track")]
             assert inspector_scroll.scroll_y == 0
 
             await pilot.press("i")
             await pilot.pause()
             assert inspector_pane.display is False
-            assert app.focused is table
+            assert app.focused is tree
 
     asyncio.run(exercise())
 
@@ -419,6 +540,72 @@ def test_a_toggles_all_visible_tracks_and_n_is_unbound(tmp_path: Path) -> None:
             assert app.analysis_selected == set()
             await pilot.press("a")
             assert app.analysis_selected == {0, 1}
+
+    asyncio.run(exercise())
+
+
+def test_genre_filters_combine_with_library_filters_and_keep_analysis_scoped(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    genres = [("House",), ("Progressive House",), ("Techno",), (), (), ()]
+    metadata = tuple(
+        replace(
+            _metadata_track(
+                tmp_path / f"track-{index}.wav",
+                standard_genre=genre,
+                status="stale" if index == 4 else "not_analyzed" if index == 5 else "current",
+            ),
+            stored_predictions=(Prediction("Electronic---Progressive House", 0.72),)
+            if index != 5
+            else (),
+        )
+        for index, genre in enumerate(genres)
+    )
+    app = SetTagApp(
+        source=tmp_path,
+        initial_metadata=MetadataBatch(metadata, ()),
+        analysis_loader=lambda *_: pytest.fail("Only scheduling is under test"),
+    )
+    scheduled: list[tuple[int, ...]] = []
+    monkeypatch.setattr(app, "_analyze_selected", scheduled.append)
+
+    async def exercise() -> None:
+        async with app.run_test(size=(120, 36)) as pilot:
+            await pilot.pause()
+            assert app.analysis_selected == {4, 5}
+            await pilot.press("g")
+            assert app.genre_filter == "needs_review"
+            assert app.visible_indices == [2, 3]
+            await pilot.press("a")
+            assert app.analysis_selected == {2, 3, 4, 5}
+            await pilot.press("g")
+            assert app.genre_filter == "missing_genre"
+            assert app.visible_indices == [3, 4, 5]
+            await pilot.press("g")
+            assert app.genre_filter == "matches"
+            assert app.visible_indices == [0, 1]
+            await pilot.press("f")
+            assert app.library_filter == "needs_analysis"
+            assert app.visible_indices == []
+            assert app.query_one("#library-empty").display
+            filters = str(app.query_one("#library-filters", Static).render())
+            assert "Library: Needs analysis" in filters
+            assert "Genre: Matches" in filters
+
+            await pilot.press("g")
+            assert app.visible_indices == [4, 5]
+            await pilot.press("g", "r")
+            assert app.visible_indices == []
+            assert scheduled == []
+            assert app.analysis_selected == {2, 3, 4, 5}
+
+            await pilot.press("f", "f", "f")
+            assert app.library_filter == "all"
+            assert app.genre_filter == "needs_review"
+            assert app.visible_indices == [2, 3]
+            await pilot.press("r")
+            assert scheduled == [(2, 3)]
+            app._pending_analysis_indices = ()
 
     asyncio.run(exercise())
 
@@ -635,8 +822,8 @@ def test_completed_tracks_can_be_reviewed_and_written_during_analysis(
                 assert app.has_class("details-open")
                 await pilot.press("v")
                 assert app.phase == "review"
-                table = app.query_one("#tracks", DataTable)
-                assert table.row_count == 1
+                tree = app.query_one(ReviewTree)
+                assert len(tree.root.children) == 1
 
                 active_actions = {
                     active.binding.action for active in app.screen.active_bindings.values()
@@ -644,7 +831,7 @@ def test_completed_tracks_can_be_reviewed_and_written_during_analysis(
                 assert "write" in active_actions
                 assert "cancel_analysis" in active_actions
 
-                await pilot.press("enter")
+                await pilot.press("w")
                 for _ in range(20):
                     await pilot.pause(0.05)
                     if isinstance(app.screen, ConfirmWriteScreen):
@@ -697,7 +884,7 @@ def test_tui_score_cutoff_filters_suggestion_not_stored_evidence(
             table = app.query_one("#tracks", DataTable)
             inspector = app.query_one("#inspector", Static)
 
-            assert table.get_row_at(0)[4] == "—"
+            assert str(table.get_row_at(0)[3]) == "No suggestion"
             details = str(inspector.render())
             assert "Stored candidates · cutoff ≥ 0.80 · top 5" in details
             assert "Genre · 1 score" in details
@@ -928,7 +1115,7 @@ def test_tui_write_confirmation_keeps_ledger_and_actions_visible_in_narrow_termi
                 await pilot.pause(0.05)
                 if app.phase == "review":
                     break
-            await pilot.press("enter")
+            await pilot.press("w")
             await pilot.pause(0.2)
 
             assert isinstance(app.screen, ConfirmWriteScreen)
@@ -1051,7 +1238,7 @@ def test_tui_track_columns_fit_terminal_and_expand_with_available_width(
                 "selected",
                 "track",
                 "file_genre",
-                "analysis",
+                "suggested_genre",
             ]
             assert table.get_row_at(0)[1] == path.name
             assert table.max_scroll_x == 0
@@ -1063,8 +1250,8 @@ def test_tui_track_columns_fit_terminal_and_expand_with_available_width(
                 "selected",
                 "track",
                 "file_genre",
+                "suggested_genre",
                 "analysis",
-                "suggested",
                 "write_plan",
             ]
             assert table.max_scroll_x == 0
@@ -1078,7 +1265,7 @@ def test_tui_track_columns_fit_terminal_and_expand_with_available_width(
             await pilot.pause()
             detail_keys = [column.key.value for column in table.ordered_columns]
             assert len(detail_keys) < len(wide_keys)
-            assert {"selected", "track", "analysis"} <= set(detail_keys)
+            assert {"selected", "track", "file_genre"} <= set(detail_keys)
             assert table.max_scroll_x == 0
 
     asyncio.run(exercise())
@@ -1117,7 +1304,7 @@ def test_tui_restores_cached_plan_in_library_and_opens_review_on_request(
             assert app.review_indices == {0}
             assert app.write_selected == {0}
             assert app.analysis_selected == set()
-            assert table.get_row_at(0)[3].startswith("Ready · ")
+            assert table.get_row_at(0)[4].startswith("Ready · ")
             assert "Restored 1 ready-to-review track" in str(status.render())
             assert "Press V to review" in str(status.render())
             assert "Local result ready to review" in str(inspector.render())
@@ -1177,7 +1364,7 @@ def test_tui_requires_confirmation_then_writes_and_verifies(tmp_path: Path) -> N
             plan = app.entries[0].plan
             assert plan is not None
             assert plan.target_file_genre == ("House",)
-            await pilot.press("enter")
+            await pilot.press("w")
             await pilot.pause(0.2)
             assert isinstance(app.screen, ConfirmWriteScreen)
             confirm = app.screen.query_one("#confirm", Button)
@@ -1205,7 +1392,7 @@ def test_tui_requires_confirmation_then_writes_and_verifies(tmp_path: Path) -> N
             assert app.entries[0].metadata is not None
             assert app.entries[0].metadata.status == "current"
             assert app.entries[0].metadata.genre_state.standard == ("House",)
-            assert table.get_row_at(0)[3].startswith("Up to date · ")
+            assert table.get_row_at(0)[4].startswith("Current · ")
             assert "Done. 1 file written and verified." in str(status.render())
 
     asyncio.run(exercise())
@@ -1242,7 +1429,7 @@ def test_tui_write_is_journaled_and_can_be_undone_in_app(tmp_path: Path) -> None
                 await pilot.pause(0.05)
                 if app.phase == "review":
                     break
-            await pilot.press("enter")
+            await pilot.press("w")
             await pilot.pause(0.2)
             assert isinstance(app.screen, ConfirmWriteScreen)
             await pilot.press("enter")
@@ -1514,7 +1701,7 @@ def test_tui_partial_undo_leaves_the_batch_open(tmp_path: Path) -> None:
                 await pilot.pause(0.05)
                 if app.phase == "review":
                     break
-            await pilot.press("enter")
+            await pilot.press("w")
             await pilot.pause(0.2)
             assert isinstance(app.screen, ConfirmWriteScreen)
             await pilot.press("enter")
