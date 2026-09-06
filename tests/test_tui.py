@@ -299,7 +299,7 @@ def test_tui_reads_metadata_before_loading_model_and_analyzes_only_selection(
             tree = app.query_one(ReviewTree)
             assert tree.display
             assert not table.display
-            assert tree.nodes[(0, "track")].label.plain == "[x] a-fresh.wav · Included in write"
+            assert tree.nodes[(0, "track")].label.plain == "[x] a-fresh.wav"
             review_actions = {
                 active.binding.action for active in app.screen.active_bindings.values()
             }
@@ -387,7 +387,7 @@ def test_review_tree_inspects_without_running_work_and_keeps_candidates_read_onl
 ) -> None:
     path = tmp_path / "Track [Live].wav"
     _silent_wav(path)
-    plan = _task_analysis_batch((path,)).planned[0]
+    plan = replace(_task_analysis_batch((path,)).planned[0], target_file_genre=("House",))
     metadata = replace(_metadata_track(path), cached_plan=plan, cache_status="ready")
     app = SetTagApp(
         source=tmp_path,
@@ -412,11 +412,15 @@ def test_review_tree_inspects_without_running_work_and_keeps_candidates_read_onl
             assert not track.is_expanded
             assert not isinstance(app.screen, ConfirmWriteScreen)
             await pilot.press("right", "right")
-            assert tree.cursor_node is tree.nodes[(0, "recommendation")]
+            assert tree.cursor_node is tree.nodes[(0, "genre")]
+            assert not tree.nodes[(0, "details")].is_expanded
+            assert tree.nodes[(0, "genre")].label.plain == "Genre: None → House"
             await pilot.press("enter")
             assert app.has_class("details-open")
             assert not isinstance(app.screen, ConfirmWriteScreen)
             await pilot.press("i")
+            tree.nodes[(0, "details")].expand()
+            await pilot.pause()
             tree.move_cursor(tree.nodes[(0, "candidates")])
             await pilot.press("enter")
             tree.move_cursor(tree.nodes[(0, "candidate:genre:0")])
@@ -433,12 +437,78 @@ def test_review_tree_inspects_without_running_work_and_keeps_candidates_read_onl
             await pilot.press("space")
             assert app.write_selected == set()
             assert "Excluded from write" in str(track.label)
+            assert tree.nodes[(0, "genre")].label.plain == "If included · Genre: None → House"
             assert app.entries[0].plan is original
             await pilot.press("a")
             assert app.write_selected == {0}
             assert tree.cursor_node is tree.nodes[(0, "candidate:genre:0")]
             assert tree.nodes[(0, "candidates")].is_expanded
             assert WAVE(path).tags is None
+
+    asyncio.run(exercise())
+
+
+@pytest.mark.parametrize(
+    "bookkeeping",
+    [(), ("Enrichment status: update",), ("Analysis time: update", "SetTag version: update")],
+)
+def test_review_omits_unchanged_tracks_and_genres_and_removes_reverted_edits(
+    tmp_path: Path,
+    bookkeeping: tuple[str, ...],
+) -> None:
+    paths = tuple(tmp_path / f"track-{index}.wav" for index in range(3))
+    for path in paths:
+        _silent_wav(path)
+    analyzed = _task_analysis_batch(paths).planned
+    plans = (
+        replace(analyzed[0], owned_changes=bookkeeping),
+        analyzed[1],  # Evidence-only update: no unchanged genre row.
+        replace(analyzed[2], owned_changes=(), target_file_genre=("House",)),
+    )
+    app = SetTagApp(
+        source=tmp_path,
+        initial_metadata=MetadataBatch(
+            tracks=tuple(
+                replace(_metadata_track(path), cached_plan=plan, cache_status="ready")
+                for path, plan in zip(paths, plans, strict=True)
+            ),
+            failures=(),
+        ),
+        analysis_loader=lambda *_args: pytest.fail("Review must not run analysis"),
+    )
+
+    async def exercise() -> None:
+        async with app.run_test(size=(80, 24)) as pilot:
+            await pilot.pause()
+            await pilot.press("v")
+            tree = app.query_one(ReviewTree)
+            assert app.visible_indices == [1, 2]
+            assert app.write_selected == {1, 2}
+            assert app.entries[0].plan == plans[0]
+            app.write_selected.add(0)
+            assert app._selected_items() == plans[1:]
+            app.write_selected.discard(0)
+            assert (0, "track") not in tree.nodes
+            assert (1, "genre") not in tree.nodes
+            assert "Evidence update" in str(tree.nodes[(1, "details")].label)
+            assert str(tree.nodes[(2, "genre")].label) == "Genre: None → House"
+            assert str(tree.nodes[(2, "details")].label) == "Details"
+
+            tree.move_cursor(tree.nodes[(2, "track")])
+            app._genre_edited(2, "")
+            await pilot.pause()
+            assert app.visible_indices == [1]
+            assert app.write_selected == {1}
+            assert tree.current_index == 1
+
+            app.entries[1].plan = replace(plans[1], owned_changes=bookkeeping)
+            app.write_selected.clear()
+            app._refresh_row(1)
+            await pilot.pause()
+            assert app.visible_indices == []
+            assert tree.current_index is None
+            assert tree.root.children[0].label.plain == "Nothing to change."
+            assert "Nothing to change." in str(app.query_one("#inspector", Static).render())
 
     asyncio.run(exercise())
 
@@ -467,6 +537,7 @@ def test_review_tree_keeps_focus_expansion_and_scroll_when_results_arrive(tmp_pa
             await pilot.press("v", "enter", "down")
             tree = app.query_one(ReviewTree)
             assert tree.cursor_node is tree.nodes[(2, "track")]
+            tree.nodes[(2, "details")].expand()
             tree.nodes[(2, "candidates")].expand()
             await pilot.pause()
             focused = tree.nodes[(2, "candidate:instrument:1")]
@@ -1907,6 +1978,8 @@ def test_opening_info_keeps_arrow_navigation_in_main_view(tmp_path, size, phase,
             if phase == "review":
                 await pilot.press("v")
                 view = app.query_one(ReviewTree)
+                view.nodes[(0, "details")].expand()
+                await pilot.pause()
                 view.move_cursor(view.nodes[(0, "recommendation")])
             else:
                 view = app.query_one("#tracks", DataTable)

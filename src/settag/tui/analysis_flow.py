@@ -232,8 +232,10 @@ class AnalysisFlow(SetTagAppCore):
             entry.plan_cached = False
             entry.analysis_error = None
             self.review_indices.add(index)
-            if plan.readable_changes:
+            if plan.needs_write_review:
                 self.write_selected.add(index)
+            else:
+                self.write_selected.discard(index)
             if persist_error is not None:
                 self._report_persist_failure(persist_error)
             if plan.enrichment_status == "current":

@@ -243,22 +243,15 @@ Press `V` as soon as the first track completes to open review. If you stay in
 the library, the app switches to review when the full batch finishes:
 
 ```text
-▼ [x] Brigado Crew - Sunrise (Paride Saraceni Remix).mp3 · Included in write
-├── Recommendation: Keep Melodic House & Techno
-├── Based on: Beatport verified matches
-├── Current file tag: Melodic House & Techno
-├── ▼ Beatport · verified track match
-│   ├── Catalog genre: Melodic House & Techno
-│   └── Supports keeping your existing genre.
-├── ▶ Audio models · predictions
-└── ▼ Changes to save
-    ├── Save Beatport catalog evidence and source links
-    ├── Save enrichment status and catalog check date
-    └── Genre stays unchanged
+▼ [x] Brigado Crew - Sunrise (Paride Saraceni Remix).mp3
+└── ▶ Details · Evidence update
 ```
 
-Track branches start expanded so proposed changes are immediately visible.
-Expand Audio models to inspect the ranked scores for each configured task.
+Review shows only tracks with meaningful pending changes, plus analysis failures.
+Genre edits show current → after write; unchanged genres are omitted. Expand
+Details for sources and exact changes, then Audio models for ranked scores.
+Lookup status and check dates are saved locally without changing audio files
+or creating review items.
 The review cutoff and top limit control which candidates are displayed; the
 complete stored analysis remains one coherent write. Child rows describe the
 track's changes and evidence; they are not independent write selections.
@@ -339,6 +332,12 @@ Override it for a run with `--state-db PATH`, or globally with
 ```sh
 settag "/path/to/music" --state-db "/path/to/settag-state.sqlite3"
 ```
+
+The same database keeps durable enrichment history separately from pending
+write plans. Matches, misses, failures, and lookup dates survive plan deletion,
+file writes, and renames. Matching uses both audio identity and catalog query
+identity. Copying a file to a computer without this database may require a new
+lookup. Both interactive and plain `run`/`enrich` commands use this local history.
 
 A cached result is ready only while the source size and modification time,
 analysis model, evidence format, and observed standard genre still match.
@@ -579,7 +578,7 @@ Entries older than 90 days are pruned.
 
 ## Saved plans
 
-A plan is one JSONL record per track on the `settag.plan/v5` schema. It carries
+A plan is one JSONL record per track on the `settag.plan/v6` schema. It carries
 the bounded evidence separately from SetTag's current review selection, the
 observed file genre separately from an optional staged target, the audio
 digest preflight checks against, and the human-readable change lines `preview`
@@ -598,9 +597,11 @@ human-readable renderer; users do not need `jq`.
 Every apply performs preflight both before and after confirmation. A source
 change or an analysis-error record rejects the whole plan before writing.
 
-Plans on the pre-release `settag.plan/v4` schema still apply. They predate the
+Existing `settag.plan/v5` plans still apply with their original explicit writes.
+The separate `enrichment` snapshot in v6 is local context, outside the file-tag
+bundle. Plans on the pre-release `settag.plan/v4` schema still apply. They predate the
 audio digest, so preflight falls back to comparing the whole file for them: a
-tag write by another tool blocks a v4 plan where a v5 plan would proceed. Any
+tag write by another tool blocks a v4 plan where a newer plan would proceed. Any
 other schema is rejected with an explicit error.
 
 ## Scores and models
@@ -748,11 +749,12 @@ audio stays local. Successful catalog pages are cached for seven days under
 failures are shown in review while useful results from other sources are retained.
 SetPath does not yet use the additional catalog evidence in ranking.
 
-The combined freshness contract is `settag.enrichment/v2`, stored in
-`SETTAG_ENRICHMENT`. **Current** requires valid audio evidence and a completed catalog
+The combined freshness contract is `settag.enrichment/v2`, stored in the local
+metadata database. New enrichment runs do not create, update, or remove the
+legacy `SETTAG_ENRICHMENT` file tag. Scans import compatible legacy tags into the
+database; subsequent local observations take precedence. **Current** requires valid audio evidence and a completed catalog
 check less than seven days old for the current artist, title, duration, ISRC and
 Beatport ID. Editing that identity invalidates both cached matches and cached misses;
 older checks without an identity fingerprint are checked again. **Partial** indicates a source failure; **Needs
 enrichment** includes missing/older contracts and expired checks. Upgrading the
-contract reuses compatible audio results. The app version remains **0.2.1** while
-this change is tested.
+contract reuses compatible audio results.

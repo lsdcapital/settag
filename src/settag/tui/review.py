@@ -10,7 +10,7 @@ from textual.binding import Binding
 from textual.widgets import Tree
 from textual.widgets.tree import TreeNode
 
-from settag.review_evidence import describe_evidence
+from settag.review_evidence import describe_evidence, genre_outcome
 from settag.tags import read_task_provenance, task_evidence_from_owned
 from settag.tui.entries import TASK_LABELS, TrackEntry, suggested_label
 from settag.tui.table import RowContext
@@ -39,10 +39,10 @@ def review_track(index: int, entry: TrackEntry, selected: bool, context: RowCont
     if plan is None:
         return ReviewNode((index, "track"), f"{entry.path.name} · No enrichment result")
 
-    inclusion = "Included in write" if selected else "Excluded from write"
+    inclusion = "" if selected else " · Excluded from write"
     marker = "[x]" if selected else "[ ]"
     if not entry.has_changes:
-        marker, inclusion = "—", "No changes to write"
+        marker, inclusion = "—", " · Nothing to save"
     review = describe_evidence(plan)
     by_task = task_evidence_from_owned(plan.desired)
     provenance = read_task_provenance(plan.desired)
@@ -71,48 +71,61 @@ def review_track(index: int, entry: TrackEntry, selected: bool, context: RowCont
                 ReviewNode((index, f"candidate:{task}"), f"{TASK_LABELS[task]}: {state}")
             )
 
+    details = (
+        ReviewNode((index, "recommendation"), f"Recommendation: {review.recommendation}"),
+        ReviewNode((index, "recommendation-source"), f"Based on: {review.recommendation_source}"),
+        ReviewNode(
+            (index, "beatport"),
+            review.catalog_title,
+            tuple(
+                ReviewNode((index, f"source:{number}"), detail)
+                for number, detail in enumerate(review.catalog_details)
+            ),
+            expanded=True,
+        ),
+        ReviewNode(
+            (index, "candidates"),
+            "Audio models · predictions",
+            (
+                *(
+                    ReviewNode((index, f"model-note:{number}"), detail)
+                    for number, detail in enumerate(review.model_details)
+                ),
+                *candidates,
+            ),
+        ),
+        ReviewNode(
+            (index, "changes"),
+            "Changes to save" if selected else "Changes if included",
+            tuple(
+                ReviewNode((index, f"change:{number}"), detail)
+                for number, detail in enumerate(review.changes)
+            ),
+            expanded=True,
+        ),
+        *(
+            ReviewNode((index, f"notice:{number}"), detail)
+            for number, detail in enumerate(review.notices)
+        ),
+    )
+    metadata = f" · {plan.evidence_write_label}" if plan.owned_changes else ""
+    notice = " · notices" if review.notices else ""
+    genre = (
+        (
+            ReviewNode(
+                (index, "genre"),
+                genre_outcome(plan) if selected else f"If included · {genre_outcome(plan)}",
+            ),
+        )
+        if entry.has_standard_genre_change
+        else ()
+    )
     return ReviewNode(
         (index, "track"),
-        f"{marker} {entry.path.name} · {inclusion}",
+        f"{marker} {entry.path.name}{inclusion}",
         (
-            ReviewNode((index, "recommendation"), f"Recommendation: {review.recommendation}"),
-            ReviewNode(
-                (index, "recommendation-source"), f"Based on: {review.recommendation_source}"
-            ),
-            ReviewNode((index, "genre"), f"Current file tag: {review.current_genre}"),
-            ReviewNode(
-                (index, "beatport"),
-                review.catalog_title,
-                tuple(
-                    ReviewNode((index, f"source:{number}"), detail)
-                    for number, detail in enumerate(review.catalog_details)
-                ),
-                expanded=True,
-            ),
-            ReviewNode(
-                (index, "candidates"),
-                "Audio models · predictions",
-                (
-                    *(
-                        ReviewNode((index, f"model-note:{number}"), detail)
-                        for number, detail in enumerate(review.model_details)
-                    ),
-                    *candidates,
-                ),
-            ),
-            ReviewNode(
-                (index, "changes"),
-                "Changes to save" if selected else "Changes if included",
-                tuple(
-                    ReviewNode((index, f"change:{number}"), detail)
-                    for number, detail in enumerate(review.changes)
-                ),
-                expanded=True,
-            ),
-            *(
-                ReviewNode((index, f"notice:{number}"), detail)
-                for number, detail in enumerate(review.notices)
-            ),
+            *genre,
+            ReviewNode((index, "details"), f"Details{metadata}{notice}", details),
         ),
         expanded=True,
     )
@@ -158,7 +171,7 @@ class ReviewTree(Tree[NodeKey]):
         self._sync_nodes(self.root, specs, nodes)
         self.nodes = nodes
         if not specs:
-            self.root.add_leaf("No tracks ready to review.")
+            self.root.add_leaf("Nothing to change.")
         self.root.expand()
         target = self.nodes.get(previous) if previous is not None else None
         if target is None and preferred_index is not None:

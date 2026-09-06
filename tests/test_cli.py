@@ -909,6 +909,7 @@ def test_compact_plan_is_human_readable_and_applies_after_one_confirmation(
         "file_genre",
         "target_file_genre",
         "genre_edit_source",
+        "enrichment",
         "evidence",
         "selected",
         "tasks",

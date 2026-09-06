@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
+from dataclasses import replace
 from pathlib import Path
 
 from textual import work
 
+from settag.freshness import EnrichmentState
 from settag.journal import BatchRecorder
 from settag.plans import PlannedWrite
 from settag.tui.core import SetTagAppCore
@@ -214,6 +216,13 @@ class WriteFlow(SetTagAppCore):
                 status="current",
             )
             entry = self.entries[index]
+            if entry.metadata is not None and item.enrichment is not None:
+                entry.metadata = replace(
+                    entry.metadata,
+                    enrichment=EnrichmentState(
+                        item.enrichment, item.desired.get("SETTAG_BEATPORT")
+                    ),
+                )
             entry.plan = None
             entry.plan_cached = False
             entry.analysis_error = None
@@ -254,7 +263,7 @@ class WriteFlow(SetTagAppCore):
         items: list[PlannedWrite] = []
         for index in sorted(self.write_selected):
             item = self.entries[index].plan
-            if item is not None and item.readable_changes:
+            if item is not None and item.needs_write_review:
                 items.append(item)
         return tuple(items)
 

@@ -171,6 +171,7 @@ def _run_default(args: argparse.Namespace) -> int:
                 expected_config_sha256=config_sha256,
                 expected_config=current_config,
                 on_progress=on_progress,
+                state_store=store,
             )
             cached = store.load(
                 [track.path for track in metadata.tracks],
@@ -184,6 +185,22 @@ def _run_default(args: argparse.Namespace) -> int:
                 if entry is None:
                     merged.append(track)
                     continue
+
+                if (
+                    track.enrichment is None
+                    and entry.status == "ready"
+                    and track.catalog_identity_sha256 is not None
+                ):
+                    # Loading an old working plan may just have imported its
+                    # history. Reflect that before dropping an obsolete plan.
+                    track = replace(
+                        track,
+                        enrichment=store.load_enrichment(
+                            track.path,
+                            owned=track.owned,
+                            identity_sha256=track.catalog_identity_sha256,
+                        ),
+                    )
 
                 if (
                     track.status == "current"
@@ -251,6 +268,7 @@ def _run_default(args: argparse.Namespace) -> int:
                     expected_model_ids=expected_model_ids,
                     expected_config=current_config,
                     cached_audio=cached_audio,
+                    state_store=store,
                     top=args.top,
                     threshold=args.threshold,
                 ),
@@ -282,6 +300,7 @@ def _run_default(args: argparse.Namespace) -> int:
     try:
         batch = EnrichmentLoader(
             load_analysis_in_process,
+            state_store=WorkbenchStore(args.state_db),
             expected_model_ids={task: MODEL_SPECS_BY_TASK[task].id for task in tasks},
             expected_config=config_record(
                 top=args.top, threshold=args.threshold, tasks=tasks, genre_sample=sample

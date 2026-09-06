@@ -7,7 +7,13 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal, Protocol, runtime_checkable
 
-from settag.freshness import EnrichmentStatus, catalog_current, enrichment_record, enrichment_status
+from settag.freshness import (
+    EnrichmentState,
+    EnrichmentStatus,
+    catalog_current,
+    enrichment_record,
+    enrichment_status,
+)
 from settag.hashing import sha256_audio, sha256_file, sha256_json
 from settag.journal import WriteRecord
 from settag.plans import (
@@ -31,6 +37,7 @@ from settag.records import (
     source_record,
     utc_now,
 )
+from settag.state import WorkbenchStore
 from settag.tags import (
     GenreState,
     OwnedValues,
@@ -170,10 +177,15 @@ class MetadataTrack:
     cache_reason: str | None = None
     duration_seconds: float | None = None
     catalog_identity_sha256: str | None = None
+    enrichment: EnrichmentState | None = None
+
+    @property
+    def evidence_view(self) -> OwnedValues:
+        return self.enrichment.evidence_view(self.owned) if self.enrichment else self.owned
 
     @property
     def catalog_current(self) -> bool:
-        return catalog_current(self.owned, identity_sha256=self.catalog_identity_sha256)
+        return catalog_current(self.evidence_view, identity_sha256=self.catalog_identity_sha256)
 
     @property
     def is_sample(self) -> bool:
@@ -188,7 +200,7 @@ class MetadataTrack:
 
     @property
     def enrichment_status(self) -> EnrichmentStatus:
-        status = enrichment_status(self.owned, audio_current=self.status == "current")
+        status = enrichment_status(self.evidence_view, audio_current=self.status == "current")
         return "needs_enrichment" if status == "current" and not self.catalog_current else status
 
     @property
@@ -566,6 +578,7 @@ def inspect_paths(
     expected_config: Mapping[str, object] | None = None,
     expected_model_ids: Mapping[AnalysisTask, str],
     on_progress: ProgressCallback | None = None,
+    state_store: WorkbenchStore | None = None,
 ) -> MetadataBatch:
     expected_models = checked_expected_models(expected_model_ids)
     tracks: list[MetadataTrack] = []
@@ -579,6 +592,7 @@ def inspect_paths(
                     expected_model_ids=expected_models,
                     expected_config_sha256=expected_config_sha256,
                     expected_config=expected_config,
+                    state_store=state_store,
                 )
             )
         except Exception as error:
@@ -601,9 +615,12 @@ def inspect_track(
     expected_config_sha256: str,
     expected_config: Mapping[str, object] | None = None,
     expected_model_ids: Mapping[AnalysisTask, str],
+    state_store: WorkbenchStore | None = None,
 ) -> MetadataTrack:
     expected_models = checked_expected_models(expected_model_ids)
     genre_state, owned, duration, identity_hash = read_track_metadata(path)
+    state = state_store if state_store is not None else WorkbenchStore()
+    enrichment = state.load_enrichment(path, owned=owned, identity_sha256=identity_hash)
     if "genre" in expected_models and duration is not None and duration < MIN_GENRE_SECONDS:
         # Checked before anything else: what the tags say does not matter when the
         # audio is too short for the model to read.
@@ -616,6 +633,7 @@ def inspect_track(
             analyzed_at=None,
             duration_seconds=duration,
             catalog_identity_sha256=identity_hash,
+            enrichment=enrichment,
         )
 
     has_settag_metadata = any(values is not None for values in owned.values())
@@ -629,6 +647,7 @@ def inspect_track(
             analyzed_at=None,
             duration_seconds=duration,
             catalog_identity_sha256=identity_hash,
+            enrichment=enrichment,
         )
 
     stored_by_task = task_evidence_from_owned(owned)
@@ -682,6 +701,7 @@ def inspect_track(
         analyzed_at=analyzed_at,
         duration_seconds=duration,
         catalog_identity_sha256=identity_hash,
+        enrichment=enrichment,
     )
 
 
@@ -737,7 +757,7 @@ def _source_audio_changed(item: PlannedWrite) -> bool:
     source. A v4 plan predates the digest and falls back to the whole-file
     comparison it was written with, which is stricter but never wrong.
     """
-    record = enrichment_record(item.desired)
+    record = enrichment_record(item.evidence_view)
     catalog = record.get("catalog") if record else None
     if (
         isinstance(catalog, dict)

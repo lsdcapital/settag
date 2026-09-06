@@ -7,16 +7,17 @@ import sys
 from collections import Counter
 from collections.abc import Mapping, Sequence
 from contextlib import closing
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Literal
 
-from settag.freshness import current_catalog_evidence, enrichment_record
+from settag.freshness import EnrichmentState, current_catalog_evidence, enrichment_record
 from settag.hashing import sha256_audio, sha256_file
 from settag.plans import (
     PlanError,
     PlannedWrite,
+    friendly_change,
     planned_write_from_record,
     planned_write_record,
 )
@@ -24,7 +25,7 @@ from settag.records import ProvenanceStatus, orphaned_tasks, read_task_provenanc
 from settag.tags import owned_tag_store, read_task_provenance, track_identity_sha256
 from settag.tasks import AnalysisTask, checked_expected_models
 
-STATE_SCHEMA_VERSION = 2
+STATE_SCHEMA_VERSION = 3
 CacheStatus = Literal["ready", "stale"]
 
 # How a cached plan describes provenance that no longer matches this build. The comparison
@@ -68,8 +69,113 @@ DEFAULT_STATE_DB = default_state_db()
 
 
 class WorkbenchStore:
-    def __init__(self, path: Path = DEFAULT_STATE_DB) -> None:
-        self.path = path.expanduser().resolve()
+    def __init__(self, path: Path | None = None) -> None:
+        self.path = (path if path is not None else default_state_db()).expanduser().resolve()
+
+    def _enrichment_audio(self, connection: sqlite3.Connection, path: Path) -> str:
+        """Reuse the digest while the file's size and modification time agree."""
+        path = path.resolve()
+        before = path.stat()
+        row = connection.execute(
+            "SELECT size, mtime_ns, audio_sha256 FROM enrichment_files WHERE path = ?",
+            (str(path),),
+        ).fetchone()
+        if row and (row["size"], row["mtime_ns"]) == (before.st_size, before.st_mtime_ns):
+            return str(row["audio_sha256"])
+        digest = sha256_audio(path)
+        after = path.stat()
+        if (before.st_size, before.st_mtime_ns) != (after.st_size, after.st_mtime_ns):
+            raise WorkbenchError(f"File changed while reading enrichment identity: {path}")
+        connection.execute(
+            "INSERT OR REPLACE INTO enrichment_files VALUES (?, ?, ?, ?)",
+            (str(path), after.st_size, after.st_mtime_ns, digest),
+        )
+        return digest
+
+    def load_enrichment(
+        self,
+        path: Path,
+        *,
+        owned: Mapping[str, list[str] | None],
+        identity_sha256: str,
+    ) -> EnrichmentState | None:
+        """Read durable history, importing a matching legacy file tag once.
+
+        Lookup identity includes the artist/title/ISRC query inputs; audio identity
+        survives renames and tag writes. A newer local failure or miss must never
+        fall back to an older matched tag.
+        """
+        legacy = enrichment_record(owned)
+        catalog = legacy.get("catalog") if legacy else None
+        if not isinstance(catalog, dict) or catalog.get("identity_sha256") != identity_sha256:
+            legacy = None
+        with closing(self._connect()) as connection, connection:
+            if (
+                legacy is None
+                and connection.execute("SELECT 1 FROM enrichment_history LIMIT 1").fetchone()
+                is None
+            ):
+                return None
+            audio = self._enrichment_audio(connection, path)
+            row = connection.execute(
+                "SELECT record_json, evidence_json FROM enrichment_history "
+                "WHERE audio_sha256 = ? AND identity_sha256 = ?",
+                (audio, identity_sha256),
+            ).fetchone()
+            if row is not None:
+                try:
+                    record = enrichment_record({"SETTAG_ENRICHMENT": [row["record_json"]]})
+                    evidence = json.loads(row["evidence_json"])
+                    if record is not None and (
+                        evidence is None
+                        or (
+                            isinstance(evidence, list) and all(isinstance(v, str) for v in evidence)
+                        )
+                    ):
+                        return EnrichmentState(record, evidence)
+                except (ValueError, TypeError):
+                    pass
+                return None
+            if legacy is None:
+                return None
+            state = EnrichmentState(legacy, owned.get("SETTAG_BEATPORT"))
+            self._put_enrichment(connection, audio, identity_sha256, state)
+            return state
+
+    @staticmethod
+    def _put_enrichment(
+        connection: sqlite3.Connection, audio: str, identity: str, state: EnrichmentState
+    ) -> None:
+        connection.execute(
+            "INSERT OR REPLACE INTO enrichment_history VALUES (?, ?, ?, ?)",
+            (audio, identity, json.dumps(state.record), json.dumps(state.evidence)),
+        )
+
+    def save_enrichment(self, path: Path, identity_sha256: str, state: EnrichmentState) -> None:
+        """Persist an observation independently of whether file tags are ever written."""
+        with closing(self._connect()) as connection, connection:
+            audio = self._enrichment_audio(connection, path)
+            self._put_enrichment(connection, audio, identity_sha256, state)
+
+    def _import_plan_enrichment(self, plan: PlannedWrite) -> None:
+        """Rescue history from old working plans before an obsolete plan is dropped."""
+        if plan.enrichment is None:
+            return
+        identity = track_identity_sha256(owned_tag_store(plan.path))
+        catalog = plan.enrichment.get("catalog")
+        if not isinstance(catalog, dict) or catalog.get("identity_sha256") != identity:
+            return
+        with closing(self._connect()) as connection, connection:
+            audio = self._enrichment_audio(connection, plan.path)
+            connection.execute(
+                "INSERT OR IGNORE INTO enrichment_history VALUES (?, ?, ?, ?)",
+                (
+                    audio,
+                    identity,
+                    json.dumps(plan.enrichment),
+                    json.dumps(plan.desired.get("SETTAG_BEATPORT")),
+                ),
+            )
 
     def save(self, plan: PlannedWrite) -> None:
         record = planned_write_record(plan)
@@ -312,6 +418,9 @@ class WorkbenchStore:
                         expected_config_sha256=expected_config_sha256,
                         expected_config=expected_config,
                     )
+        for entry in entries.values():
+            if entry.status == "ready":
+                self._import_plan_enrichment(entry.plan)
         self.delete(unreadable)
         return entries
 
@@ -350,6 +459,17 @@ class WorkbenchStore:
             connection.execute(
                 "CREATE INDEX IF NOT EXISTS workbench_plans_audio ON workbench_plans(audio_sha256)"
             )
+            connection.execute(
+                "CREATE TABLE IF NOT EXISTS enrichment_history ("
+                "audio_sha256 TEXT NOT NULL, identity_sha256 TEXT NOT NULL, "
+                "record_json TEXT NOT NULL, evidence_json TEXT NOT NULL, "
+                "PRIMARY KEY (audio_sha256, identity_sha256))"
+            )
+            connection.execute(
+                "CREATE TABLE IF NOT EXISTS enrichment_files ("
+                "path TEXT PRIMARY KEY, size INTEGER NOT NULL, mtime_ns INTEGER NOT NULL, "
+                "audio_sha256 TEXT NOT NULL)"
+            )
             if version < STATE_SCHEMA_VERSION:
                 connection.execute(f"PRAGMA user_version = {STATE_SCHEMA_VERSION}")
             connection.commit()
@@ -370,6 +490,21 @@ class WorkbenchStore:
             raise WorkbenchError(f"Invalid cached analysis for {path}: {error}") from error
         if plan.path.expanduser().resolve() != path.expanduser().resolve():
             raise WorkbenchError(f"Cached analysis path does not match its database key: {path}")
+        # Migrate pre-v6 working plans without turning their embedded lookup
+        # history into a new file tag. Explicit user-supplied legacy plan files
+        # retain their original, preflight-verified write semantics.
+        legacy = enrichment_record(plan.desired) if plan.enrichment is None else None
+        if legacy is not None and path.is_file():
+            store = owned_tag_store(path)
+            desired = {**plan.desired, "SETTAG_ENRICHMENT": store.read_value("SETTAG_ENRICHMENT")}
+            plan = replace(
+                plan,
+                desired=desired,
+                enrichment=legacy,
+                owned_changes=tuple(
+                    friendly_change(change) for change in store.plan(desired).changes
+                ),
+            )
         return plan
 
 
@@ -399,7 +534,7 @@ def _classify(
     ) and _audio_differs(plan):
         return WorkbenchEntry(plan, "stale", "source file changed")
 
-    record = enrichment_record(plan.desired)
+    record = enrichment_record(plan.evidence_view)
     catalog = record.get("catalog") if record else None
     if (
         (stat.st_size != plan.source_size or stat.st_mtime_ns != plan.source_mtime_ns)
@@ -415,7 +550,11 @@ def _classify(
         return WorkbenchEntry(plan, "stale", "analysis labels have no provenance")
 
     provenance = read_task_provenance(plan.desired)
-    if current_catalog_evidence(plan.desired) and record and record.get("audio") == "unavailable":
+    if (
+        current_catalog_evidence(plan.evidence_view)
+        and record
+        and record.get("audio") == "unavailable"
+    ):
         # Partial enrichment preserves old audio without claiming it is current.
         return WorkbenchEntry(plan, "ready")
     if plan.desired.get("SETTAG_BEATPORT") and not provenance:

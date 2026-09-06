@@ -9,12 +9,12 @@ import pytest
 from test_beatport import SOURCE, detail_page, search_page
 from test_enrichment import RELEASE, Provider, audio_file
 
-from settag import __version__
 from settag.beatport import LookupStopped, PublicPageProvider
 from settag.enrichment import EnrichmentLoader
 from settag.freshness import (
     CATALOG_TTL_SECONDS,
     ENRICHMENT_SCHEMA,
+    EnrichmentState,
     catalog_current,
     enrichment_status,
     record_values,
@@ -74,7 +74,6 @@ def test_partial_is_not_a_catalog_miss_or_current():
     assert enrichment_status(record("unavailable"), audio_current=True, now=NOW) == "partial"
     assert enrichment_status(record(audio=False), audio_current=True, now=NOW) == "partial"
     assert enrichment_status(record(), audio_current=False, now=NOW) == "needs_enrichment"
-    assert __version__ == "0.2.1"
     assert ENRICHMENT_SCHEMA == "settag.enrichment/v2"
 
 
@@ -137,13 +136,15 @@ def test_old_audio_is_reused_then_combined_result_expires(tmp_path):
     repeated = loader((path,), lambda *_a: None, lambda: False).planned[0]
     assert not repeated.owned_changes
 
-    expired = dict(item.desired)
-    serialized = expired["SETTAG_ENRICHMENT"]
-    assert serialized
-    manifest = json.loads(serialized[0])
+    assert item.desired["SETTAG_ENRICHMENT"] is None
+    assert item.enrichment is not None
+    manifest = {**item.enrichment, "catalog": dict(item.enrichment["catalog"])}
     manifest["catalog"]["checked_at"] = time.time() - CATALOG_TTL_SECONDS - 1
-    expired["SETTAG_ENRICHMENT"] = [json.dumps(manifest)]
-    apply_metadata_tags(path, expired)
+    loader.state_store.save_enrichment(
+        path,
+        manifest["catalog"]["identity_sha256"],
+        EnrichmentState(manifest, item.desired["SETTAG_BEATPORT"]),
+    )
     assert scan(path, config).enrichment_status == "needs_enrichment"
     loader.provider = provider
     refreshed = loader((path,), lambda *_a: None, lambda: False).planned[0]

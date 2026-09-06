@@ -90,6 +90,10 @@ class TrackEntry:
         return self.plan is not None and bool(self.plan.readable_changes)
 
     @property
+    def needs_write_review(self) -> bool:
+        return self.plan is not None and self.plan.needs_write_review
+
+    @property
     def has_standard_genre_change(self) -> bool:
         return self.plan is not None and self.plan.standard_genre_change is not None
 

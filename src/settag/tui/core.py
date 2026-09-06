@@ -384,7 +384,7 @@ class SetTagAppCore(App[TuiOutcome]):
             index for index, entry in enumerate(self.entries) if entry.plan is not None
         }
         self.write_selected = {
-            index for index in self.review_indices if self.entries[index].has_changes
+            index for index in self.review_indices if self.entries[index].needs_write_review
         }
         self.query_one("#loading").display = False
         self.query_one("#main").display = True
@@ -452,13 +452,18 @@ class SetTagAppCore(App[TuiOutcome]):
         self.sub_title = "Review enriched tracks"
         self.refresh_bindings()
         self.query_one("#tracks-pane .section-title", Static).update(
-            "Review · tracks and proposed changes"
+            "Review · current → after write"
         )
         self._rebuild_table(preferred_index)
 
     def _filtered_indices(self) -> list[int]:
         if self.phase == "review":
-            return sorted(self.review_indices)
+            return [
+                index
+                for index in sorted(self.review_indices)
+                if self.entries[index].needs_write_review
+                or self.entries[index].analysis_error is not None
+            ]
 
         # ui-count: enumerate the view entries for filtering
         indices = list(range(len(self.entries)))
@@ -521,7 +526,7 @@ class SetTagAppCore(App[TuiOutcome]):
                     self._update_inspector(index)
                 elif index is None:
                     self._inspector_state = None
-                    self.query_one("#inspector", Static).update("No tracks ready to review.")
+                    self.query_one("#inspector", Static).update("Nothing to change.")
             return
         table = self.query_one("#tracks", DataTable)
         scroll_y = table.scroll_y
@@ -585,17 +590,23 @@ class SetTagAppCore(App[TuiOutcome]):
             failures = sum(
                 self.entries[index].analysis_error is not None for index in self.review_indices
             )
-            plans = [self.entries[index].plan for index in self.review_indices]
+            plans = [self.entries[index].plan for index in self.visible_indices]
             # ui-count: review entries with a usable result in this session
             ready = sum(plan is not None for plan in plans)
             # ui-count: partial results in the currently accumulated review set
             partial = sum(
                 plan is not None and plan.enrichment_status != "current" for plan in plans
             )
-            text = f"{ready} ready to review  ·  {partial} partial  ·  {failures} failed"
+            text = f"{ready} ready to review"
+            if partial:
+                text += f"  ·  {partial} partial"
+            if failures:
+                text += f"  ·  {failures} failed"
 
         self.query_one("#context", Static).update(
             f"{text}\nTasks: {task_text}  ·  {_display_path(self.source)}"
+            if self.phase == "choose"
+            else text
         )
 
     @on(DataTable.RowHighlighted, "#tracks")
@@ -677,7 +688,7 @@ class SetTagAppCore(App[TuiOutcome]):
         if entry.plan is not None:
             review = describe_evidence(entry.plan)
         else:
-            display_owned = dict(metadata.owned)
+            display_owned = dict(metadata.evidence_view)
             # Identity validation applies to display as well as lookup reuse.
             record = enrichment_record(display_owned)
             if (
@@ -839,6 +850,12 @@ class SetTagAppCore(App[TuiOutcome]):
         if index not in self.visible_indices:
             return
         if self.phase == "review":
+            if (
+                not self.entries[index].needs_write_review
+                and self.entries[index].analysis_error is None
+            ):
+                self._rebuild_table()
+                return
             self.query_one(ReviewTree).update_track(
                 index,
                 self.entries[index],
@@ -942,7 +959,7 @@ class SetTagAppCore(App[TuiOutcome]):
             selection = self.analysis_selected
         else:
             entry = self.entries[index]
-            if entry.plan is None or not entry.plan.readable_changes:
+            if not entry.needs_write_review:
                 return
             selection = self.write_selected
 
@@ -961,7 +978,9 @@ class SetTagAppCore(App[TuiOutcome]):
             eligible = {index for index in self.visible_indices if self.entries[index].can_analyze}
             selection = self.analysis_selected
         else:
-            eligible = {index for index in self.visible_indices if self.entries[index].has_changes}
+            eligible = {
+                index for index in self.visible_indices if self.entries[index].needs_write_review
+            }
             selection = self.write_selected
 
         if eligible and eligible.issubset(selection):
@@ -1057,8 +1076,10 @@ class SetTagAppCore(App[TuiOutcome]):
         genres = tuple(value.strip() for value in result.split(",") if value.strip())
         updated = stage_file_genre(item, genres)
         self.entries[index].plan = updated
-        if updated.readable_changes:
+        if updated.needs_write_review:
             self.write_selected.add(index)
+        else:
+            self.write_selected.discard(index)
         self._persist(index)
         self._refresh_row(index)
         staged = ", ".join(genres) or "None"

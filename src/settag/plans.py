@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any, Literal, cast
 
 from settag.freshness import (
+    EnrichmentState,
     EnrichmentStatus,
     catalog_evidence,
     current_catalog_evidence,
@@ -24,15 +25,20 @@ from settag.tags import (
 )
 from settag.tasks import TASK_ORDER
 
-PLAN_SCHEMA = "settag.plan/v5"
+PLAN_SCHEMA = "settag.plan/v6"
 PLAN_ERROR_SCHEMA = "settag.plan-error/v1"
 
 # v5 added ``source.audio_sha256``. A v4 record is still read, with that digest
 # left unknown, because the workbench cache is stored in this format and
 # rejecting it would throw away every analysis a user had already paid for.
 # Anything that needs the digest recomputes it from the file.
-READABLE_PLAN_SCHEMAS = frozenset({"settag.plan/v4", PLAN_SCHEMA})
+READABLE_PLAN_SCHEMAS = frozenset({"settag.plan/v4", "settag.plan/v5", PLAN_SCHEMA})
 REFRESH_ONLY_CHANGE_PREFIXES = ("Analysis time:", "Task provenance:")
+BOOKKEEPING_CHANGE_PREFIXES = (
+    *REFRESH_ONLY_CHANGE_PREFIXES,
+    "Enrichment status:",
+    "SetTag version:",
+)
 
 
 GenreEditSource = Literal["manual", "beatport", "model"]
@@ -62,10 +68,19 @@ class PlannedWrite:
     source_owned_sha256: str | None = None
     notices: tuple[str, ...] = ()
     genre_edit_source: GenreEditSource | None = None
+    enrichment: dict[str, Any] | None = None
+
+    @property
+    def evidence_view(self) -> OwnedValues:
+        if self.enrichment is None:
+            return self.desired
+        return EnrichmentState(self.enrichment, self.desired.get("SETTAG_BEATPORT")).evidence_view(
+            self.desired
+        )
 
     @property
     def enrichment_status(self) -> EnrichmentStatus:
-        return enrichment_status(self.desired, audio_current=True)
+        return enrichment_status(self.evidence_view, audio_current=True)
 
     @property
     def source_details(self) -> tuple[str, ...]:
@@ -73,7 +88,7 @@ class PlannedWrite:
         data = catalog_evidence(self.desired)
         if data:
             agreed = ", ".join(evidence_genres(data)) or "None"
-            qualifier = "" if current_catalog_evidence(self.desired) else "Stored "
+            qualifier = "" if current_catalog_evidence(self.evidence_view) else "Stored "
             lines.append(f"{qualifier}Beatport genres: {agreed}")
             if data["alternative_genres"]:
                 lines.append(f"Additional release labels: {', '.join(data['alternative_genres'])}")
@@ -92,6 +107,18 @@ class PlannedWrite:
     @property
     def owned_change_count(self) -> int:
         return len(self.owned_changes)
+
+    @property
+    def needs_write_review(self) -> bool:
+        """Bookkeeping alone does not warrant an interactive file write.
+
+        Keep the complete plan for local reuse. When evidence or the conventional
+        genre changes, its bookkeeping still travels with that reviewed write.
+        Unknown change types stay reviewable.
+        """
+        return self.standard_genre_change is not None or any(
+            not change.startswith(BOOKKEEPING_CHANGE_PREFIXES) for change in self.owned_changes
+        )
 
     @property
     def evidence_score_count(self) -> int:
@@ -185,7 +212,7 @@ def catalog_suggestion(owned: OwnedValues) -> str | None:
 
 
 def suggested_file_genre(item: PlannedWrite) -> str | None:
-    return genre_suggestion(item.desired, item.selected, item.file_genre)
+    return genre_suggestion(item.evidence_view, item.selected, item.file_genre)
 
 
 def genre_suggestion(
@@ -214,10 +241,10 @@ def stage_default_file_genre(item: PlannedWrite) -> PlannedWrite:
         item.target_file_genre is not None and item.genre_edit_source is None
     ):
         return item
-    genres = catalog_genres(item.desired, item.file_genre)
+    genres = catalog_genres(item.evidence_view, item.file_genre)
     if genres:
         return stage_file_genre(item, genres, source="beatport")
-    suggestion = genre_suggestion(item.desired, item.selected)
+    suggestion = genre_suggestion(item.evidence_view, item.selected)
     if not item.file_genre and suggestion:
         return stage_file_genre(item, (suggestion,), source="model")
     return stage_file_genre(item, None, source=None)
@@ -235,6 +262,7 @@ def planned_write_record(item: PlannedWrite) -> dict[str, object]:
         "path": str(item.path),
         "notices": list(item.notices),
         "genre_edit_source": item.genre_edit_source,
+        "enrichment": item.enrichment,
         "source": {
             "sha256": item.source_sha256,
             "audio_sha256": item.source_audio_sha256,
@@ -436,6 +464,11 @@ def _planned_write(
         source_audio_sha256=source_audio_sha256,
         source_owned_sha256=source_owned_sha256,
         notices=tuple(_string_list(record.get("notices", []), f"{location}.notices")),
+        enrichment=(
+            _mapping(record["enrichment"], f"{location}.enrichment")
+            if record.get("enrichment") is not None
+            else None
+        ),
     )
     expected_standard_change = planned.standard_genre_change
     expected_description = (

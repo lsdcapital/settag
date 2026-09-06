@@ -14,7 +14,7 @@ from settag.config import default_config_path
 from settag.journal import DEFAULT_JOURNAL_DB
 from settag.model_store import DEFAULT_MODEL_DIR
 from settag.policy import MIDDLE_PATCHES, SPACED_PATCHES, AudioSample, parse_audio_sample
-from settag.state import DEFAULT_STATE_DB
+from settag.state import DEFAULT_STATE_DB, default_state_db
 from settag.tasks import AnalysisTask, parse_tasks
 
 COMMANDS = frozenset(
@@ -63,8 +63,8 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument(
         "--state-db",
         type=Path,
-        default=DEFAULT_STATE_DB,
-        help=f"Local TUI workbench database (default: {DEFAULT_STATE_DB}).",
+        default=default_state_db(),
+        help=f"Local metadata and workbench database (default: {DEFAULT_STATE_DB}).",
     )
     _add_journal_db(run)
 

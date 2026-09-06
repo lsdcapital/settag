@@ -18,11 +18,12 @@ from settag.beatport import (
     identity_conflicts,
     normalized,
 )
-from settag.freshness import catalog_current, enrichment_record, record_values
+from settag.freshness import EnrichmentState, catalog_current, enrichment_record, record_values
 from settag.hashing import sha256_file, sha256_json
 from settag.plans import PlannedWrite, friendly_change, stage_default_file_genre
 from settag.policy import select_predictions
 from settag.records import ProvenanceStatus, read_task_provenance_status
+from settag.state import WorkbenchStore
 from settag.tags import (
     OWNED_DESCRIPTIONS,
     owned_tag_store,
@@ -162,6 +163,7 @@ class EnrichmentLoader:
         top: int = 5,
         threshold: float = 0.1,
         cached_audio: Callable[[Path], PlannedWrite | None] | None = None,
+        state_store: WorkbenchStore | None = None,
     ) -> None:
         self.audio_loader = audio_loader
         self.provider = provider or PublicPageProvider(default_cache_dir(), max_requests=300)
@@ -171,6 +173,7 @@ class EnrichmentLoader:
         self.threshold = threshold
         self.stopped_reason = ""
         self.cached_audio = cached_audio
+        self.state_store = state_store if state_store is not None else WorkbenchStore()
 
     def begin_batch(self) -> None:
         self.stopped_reason = ""
@@ -197,6 +200,13 @@ class EnrichmentLoader:
 
     def _track(self, path: Path, should_cancel: CancelCallback) -> PlannedWrite | None:
         notes: list[str] = []
+        source_sha256 = sha256_file(path)
+        store = owned_tag_store(path)
+        file_owned = {key: store.read_value(key) for key in OWNED_DESCRIPTIONS}
+        identity_hash = track_identity_sha256(store)
+        history = self.state_store.load_enrichment(
+            path, owned=file_owned, identity_sha256=identity_hash
+        )
         item = self._current_audio(path)
         if item is None:
             try:
@@ -210,26 +220,22 @@ class EnrichmentLoader:
         audio_complete = item is not None
         if should_cancel():
             return self._finish(
-                item, audio_complete, {"status": "unavailable", "reason": "Cancelled"}, notes
+                item,
+                audio_complete,
+                {"status": "unavailable", "reason": "Cancelled"},
+                notes,
+                history=history,
             )
         catalog: PlannedWrite | None = None
         catalog_info: dict[str, object]
-        store = owned_tag_store(path) if item is None else None
-        current = (
-            item.desired
-            if item is not None
-            else {
-                key: store.read_value(key) if store is not None else None
-                for key in OWNED_DESCRIPTIONS
-            }
-        )
-        identity_hash = track_identity_sha256(owned_tag_store(path))
+        current = item.evidence_view if item is not None else file_owned
+        if history is not None:
+            current = history.evidence_view(current)
         if catalog_current(current, identity_sha256=identity_hash):
             record = enrichment_record(current)
             assert record is not None
             catalog_info = record["catalog"]
             if item is None:
-                assert store is not None
                 stat = path.stat()
                 item = PlannedWrite(
                     path=path.resolve(),
@@ -242,7 +248,11 @@ class EnrichmentLoader:
                     desired=current,
                     metadata_format=store.format_name,
                     owned_changes=(),
-                    source_owned_sha256=sha256_json(current),
+                    source_owned_sha256=sha256_json(file_owned),
+                )
+            else:
+                item = replace(
+                    item, desired={**item.desired, "SETTAG_BEATPORT": current["SETTAG_BEATPORT"]}
                 )
         elif self.stopped_reason:
             catalog_info = {"status": "unavailable", "reason": self.stopped_reason}
@@ -264,7 +274,11 @@ class EnrichmentLoader:
             except EnrichmentCancelled:
                 notes.append("Enrichment cancelled before catalog lookup completed.")
                 return self._finish(
-                    item, audio_complete, {"status": "unavailable", "reason": "Cancelled"}, notes
+                    item,
+                    audio_complete,
+                    {"status": "unavailable", "reason": "Cancelled"},
+                    notes,
+                    history=history,
                 )
             except LookupStopped as error:
                 self.stopped_reason = str(error)
@@ -284,30 +298,55 @@ class EnrichmentLoader:
                     desired={**item.desired, "SETTAG_BEATPORT": catalog.desired["SETTAG_BEATPORT"]},
                 )
         if item is None:
+            if sha256_file(path) != source_sha256:
+                raise ValueError("File changed during enrichment; run again")
+            self.state_store.save_enrichment(
+                path,
+                identity_hash,
+                EnrichmentState(
+                    json.loads(record_values(audio_complete=False, catalog=catalog_info)[0]),
+                    current.get("SETTAG_BEATPORT"),
+                ),
+            )
             raise ValueError("; ".join(notes) or "No enrichment source returned a result")
-        return self._finish(item, audio_complete, catalog_info, notes)
+        return self._finish(item, audio_complete, catalog_info, notes, history=history)
 
-    @staticmethod
     def _finish(
+        self,
         item: PlannedWrite | None,
         audio_complete: bool,
         catalog_info: dict[str, object],
         notes: list[str],
+        *,
+        history: EnrichmentState | None = None,
     ) -> PlannedWrite | None:
         if item is None:
             return None
+        store = owned_tag_store(item.path)
+        if sha256_file(item.path) != item.source_sha256:
+            raise ValueError("File changed during enrichment; run again")
+        record = json.loads(record_values(audio_complete=audio_complete, catalog=catalog_info)[0])
         desired = {
             **item.desired,
-            "SETTAG_ENRICHMENT": record_values(
-                audio_complete=audio_complete,
-                catalog=catalog_info,
-            ),
+            # Preserve the exact legacy value, including absence. New lookup
+            # history belongs to SQLite and is never added to the write bundle.
+            "SETTAG_ENRICHMENT": store.read_value("SETTAG_ENRICHMENT"),
         }
-        changes = owned_tag_store(item.path).plan(desired)
+        self.state_store.save_enrichment(
+            item.path,
+            track_identity_sha256(store),
+            EnrichmentState(
+                record,
+                desired.get("SETTAG_BEATPORT")
+                or (history.evidence if history is not None else None),
+            ),
+        )
+        changes = store.plan(desired)
         return stage_default_file_genre(
             replace(
                 item,
                 desired=desired,
+                enrichment=record,
                 notices=tuple(notes),
                 owned_changes=tuple(friendly_change(c) for c in changes.changes),
             )
@@ -321,6 +360,7 @@ class EnrichmentLoader:
             expected_model_ids=self.expected_model_ids,
             expected_config_sha256=str(self.expected_config["sha256"]),
             expected_config=self.expected_config,
+            state_store=self.state_store,
         )
         cached = self.cached_audio(path) if self.cached_audio is not None else None
         if cached is not None and cached.source_sha256 == sha256_file(path):

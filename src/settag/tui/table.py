@@ -252,7 +252,13 @@ def genre_check(entry: TrackEntry, context: RowContext) -> GenreCheck:
     plan = entry.plan
     if entry.metadata_error is not None or entry.analysis_error is not None:
         return GenreCheck("Unavailable", "Resolve the track error before comparing its genre.")
-    owned = plan.desired if plan is not None else metadata.owned if metadata is not None else {}
+    owned = (
+        plan.evidence_view
+        if plan is not None
+        else metadata.evidence_view
+        if metadata is not None
+        else {}
+    )
     catalog = current_catalog_evidence(owned)
     if plan is None and metadata is not None and not metadata.catalog_current:
         catalog = None

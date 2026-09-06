@@ -209,9 +209,19 @@ to the library does not preselect ready plans, though the user may select one
 for deliberate reanalysis.
 
 The Library table stays primary at full terminal width for comparing tracks.
-Review uses an expanded track → proposed changes tree: standard genre before/after,
-a user-facing analysis update or refresh, and a collapsed read-only candidates
-branch containing the configured tasks' ranked scores. Only track rows carry
+Review shows tracks with pending changes, plus analysis failures that need
+attention. Unchanged genre rows and tracks with nothing to save are omitted.
+Enrichment status/check dates are durable local metadata and never create new
+file-tag changes. Plans changing only analysis timestamps, task provenance, or
+writer version are omitted and excluded from interactive write/save selection.
+Those remaining file fields accompany reviewed evidence or conventional genre
+changes. Explicit legacy CLI plans retain their complete write semantics.
+Genre edits show current → after write; excluded edits are labeled "If included"
+and remain available to reselect. Unstaged suggestions never appear as the end
+state. A collapsed Details branch summarizes evidence updates and
+contains recommendations, catalog sources, ranked scores, and exact write
+changes. Notices are flagged on Details and shown when expanded; analysis
+failures stay visible at track level. Only track rows carry
 write checkboxes; Space on a child toggles its owning track. Stored analysis
 remains one coherent write, and candidate scores are never independent write
 choices. Nodes retain identity, expansion, cursor, and scroll when results arrive.
@@ -252,7 +262,7 @@ library entries, while any unwritten tracks remain in review.
 
 The workbench and embedded tags have different ownership:
 
-- SQLite is SetTag's private, restartable working state.
+- SQLite holds SetTag's pending working plans and durable enrichment history.
 - Audio tags are the portable published result consumed by other tools.
 - JSONL plans are explicit export/apply artifacts.
 
@@ -263,13 +273,30 @@ The default SQLite path follows the platform application-data convention:
 - Windows: `%LOCALAPPDATA%\settag\state.sqlite3`
 
 `SETTAG_STATE_DB` changes the default and `run --state-db PATH` overrides one
-invocation. Plain CLI commands are stateless and never open the workbench.
+invocation. Plain `run`/`enrich` and metadata inspection also use local enrichment
+history; explicit plan preview/apply retains its file-based contract.
 
-Records reuse the validated `settag.plan/v5` representation. An upsert is
+Working records reuse the validated `settag.plan/v6` representation. An upsert is
 committed after every successful track analysis and after each staged standard
 genre edit. A verified write deletes its corresponding entry. Persistence
 failure leaves the in-memory review intact; cleanup failure after a verified
 audio write is reported without reclassifying the audio write as failed.
+
+Database schema 3 adds `enrichment_history`, keyed by audio SHA-256 and catalog
+lookup identity, independently of `workbench_plans`. It retains the status,
+observation time, and corresponding catalog evidence even if a plan is never
+saved or is deleted after a write. `enrichment_files` caches audio digests against
+path, size, and mtime; renames and changed files are hashed again. An unchanged
+file's metadata scan reuses its digest. Lookup identity edits cannot reuse an
+old match or miss, and expired checks are refreshed.
+
+Scans import valid legacy `SETTAG_ENRICHMENT` tags whose lookup identity matches
+the file. Existing local observations always take precedence over the legacy
+tag. Restored legacy working plans move their status into the separate snapshot
+and preserve the file's actual legacy tag value. New writes preserve that tag
+exactly, including its absence. Freshness and recommendations use explicit
+read-only evidence views; tag writes and source-metadata fingerprints use only
+the actual file-tag bundle.
 
 On metadata load, cached plans are validated against source size and mtime,
 model identifier, evidence-configuration hash, and the currently observed
@@ -499,11 +526,12 @@ succeeded.
 
 ## Compact plan record
 
-Current compact plans use `settag.plan/v5`:
+Current compact plans use `settag.plan/v6`:
 
 ```json
 {
-  "schema": "settag.plan/v5",
+  "schema": "settag.plan/v6",
+  "enrichment": null,
   "path": "/absolute/path/track.mp3",
   "source": {
     "sha256": "…",
@@ -586,9 +614,11 @@ selection under the plan's policy. `tasks` repeats the evidence per task
 together with that task's provenance entry, and `metadata.fields` is the
 complete SetTag-owned bundle exactly as it will be written, so an applying
 build reconstructs the write from the record rather than from a live model.
+The separate `enrichment` object carries local lookup context for review and
+identity validation; it is never part of `metadata.fields` to be written.
 
-`analyze --plan` writes v5 with a null target. The Textual app may save an
-explicit target. `READABLE_PLAN_SCHEMAS` in `plans.py` accepts v5 and the
+`analyze --plan` writes v6 with a null target. The Textual app may save an
+explicit target. `READABLE_PLAN_SCHEMAS` in `plans.py` also accepts v5 and the
 pre-release v4 that preceded the audio digest; no released build wrote anything
 older. Any other schema in a *plan file* is rejected with an explicit error,
 because it is user-supplied input that must not be silently ignored. The same

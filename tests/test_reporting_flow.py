@@ -4,12 +4,13 @@ import asyncio
 from dataclasses import replace
 
 import pytest
+from mutagen.id3 import TIT2
 from test_enrichment import RELEASE, Provider, audio_file
 from test_freshness import model_result, scan
 from textual.widgets import Static
 
 from settag.enrichment import EnrichmentLoader
-from settag.tags import apply_metadata_tags
+from settag.tags import apply_metadata_tags, owned_tag_store
 from settag.tui import SetTagApp
 from settag.tui.review import ReviewTree
 from settag.workflow import MetadataBatch
@@ -66,6 +67,9 @@ def test_library_explains_catalog_and_model_for_pending_and_saved_results(tmp_pa
 
 def test_background_completion_reports_partial_catalog_results(tmp_path):
     paths = [audio_file(tmp_path / name, seconds=35) for name in ("a.wav", "b.wav")]
+    second = owned_tag_store(paths[1])
+    second.audio.tags.add(TIT2(encoding=3, text=["Another track"]))
+    second.audio.save()
     metadata = []
     for path in paths:
         audio, config = model_result(path)
@@ -102,9 +106,14 @@ def test_background_completion_reports_partial_catalog_results(tmp_path):
             assert "1 current  ·  1 partial  ·  0 failed" in str(
                 app.query_one("#status", Static).render()
             )
-            assert "1 partial" in str(app.query_one("#context", Static).render())
+            assert str(app.query_one("#context", Static).render()) == "1 ready to review"
             tree = app.query_one(ReviewTree)
-            assert "unavailable" in str(tree.nodes[(1, "beatport")].label)
-            assert "Audio model" in str(tree.nodes[(1, "recommendation-source")].label)
+            assert (1, "track") not in tree.nodes
+            assert app.write_selected == {0}
+            assert tuple(item.path for item in app._selected_items()) == (paths[0],)
+            assert app.entries[1].plan is not None
+            details = "\n".join(app._metadata_inspector(app.entries[1], 1))
+            assert "unavailable" in details
+            assert "Audio model" in details
 
     asyncio.run(exercise())

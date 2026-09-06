@@ -30,6 +30,10 @@ class StoredEvidence:
     standard_genre_change: None = None
     genre_edit_source: None = None
 
+    @property
+    def evidence_view(self) -> OwnedValues:
+        return self.desired
+
 
 @dataclass(frozen=True)
 class EvidenceReview:
@@ -43,13 +47,23 @@ class EvidenceReview:
     notices: tuple[str, ...]
 
 
+def genre_outcome(plan: PlannedWrite, *, included: bool = True) -> str:
+    """Show the actual end state of this batch, never an unstaged suggestion."""
+    current = ", ".join(plan.file_genre) or "None"
+    target = plan.target_file_genre if included else None
+    end = current if target is None else ", ".join(target) or "None"
+    suffix = " (unchanged)" if end == current else ""
+    return f"Genre: {current} → {end}{suffix}"
+
+
 def describe_evidence(plan: PlannedWrite | StoredEvidence) -> EvidenceReview:
+    evidence = plan.evidence_view
     current = ", ".join(plan.file_genre) or "None"
     raw = plan.desired.get("SETTAG_BEATPORT")
     catalog = catalog_evidence(plan.desired)
-    active = current_catalog_evidence(plan.desired)
-    fresh = catalog_current(plan.desired)
-    record = enrichment_record(plan.desired)
+    active = current_catalog_evidence(evidence)
+    fresh = catalog_current(evidence)
+    record = enrichment_record(evidence)
     check = record.get("catalog", {}) if record else {}
     if not isinstance(check, dict):
         check = {}
@@ -94,7 +108,7 @@ def describe_evidence(plan: PlannedWrite | StoredEvidence) -> EvidenceReview:
         title = "Beatport · not checked"
         details.append("No catalog evidence is available.")
 
-    suggestion = genre_suggestion(plan.desired, plan.selected, plan.file_genre)
+    suggestion = genre_suggestion(evidence, plan.selected, plan.file_genre)
     if plan.standard_genre_change is not None:
         target = ", ".join(plan.target_file_genre or ())
         field = "genres" if len(plan.target_file_genre or ()) > 1 else "genre"
@@ -183,5 +197,5 @@ def describe_evidence(plan: PlannedWrite | StoredEvidence) -> EvidenceReview:
         tuple(details),
         tuple(model_details),
         tuple(changes),
-        tuple(dict.fromkeys((*plan.notices, *enrichment_notes(plan.desired)))),
+        tuple(dict.fromkeys((*plan.notices, *enrichment_notes(evidence)))),
     )

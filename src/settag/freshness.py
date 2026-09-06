@@ -6,11 +6,28 @@ import json
 import math
 import time
 from collections.abc import Mapping
+from dataclasses import dataclass
 from typing import Any, Literal
 
 ENRICHMENT_SCHEMA = "settag.enrichment/v2"
 CATALOG_TTL_SECONDS = 7 * 24 * 3600
 EnrichmentStatus = Literal["current", "needs_enrichment", "partial"]
+
+
+@dataclass(frozen=True)
+class EnrichmentState:
+    """Local lookup history and the evidence observed with it."""
+
+    record: dict[str, Any]
+    evidence: list[str] | None = None
+
+    def evidence_view(self, owned: Mapping[str, list[str] | None]) -> dict[str, list[str] | None]:
+        """Read-only policy/display input; never pass this view to a tag writer."""
+        return {
+            **owned,
+            "SETTAG_ENRICHMENT": [json.dumps(self.record)],
+            "SETTAG_BEATPORT": self.evidence,
+        }
 
 
 def enrichment_record(owned: Mapping[str, list[str] | None]) -> dict[str, Any] | None:

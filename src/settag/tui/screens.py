@@ -66,7 +66,7 @@ class GenreEditScreen(ModalScreen[str | None]):
                 model_child = suggested_label(self.item.selected)
                 source = (
                     " (from verified Beatport matches)"
-                    if catalog_genres(self.item.desired)
+                    if catalog_genres(self.item.evidence_view)
                     else f" (from model label {model_child})"
                     if model_child and model_child != suggestion
                     else ""
