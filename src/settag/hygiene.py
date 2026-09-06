@@ -112,6 +112,10 @@ class HygieneDuplicateGroup:
     audio_sha256: str
     paths: tuple[Path, ...]
 
+    @property
+    def file_count(self) -> int:
+        return len(self.paths)
+
 
 @dataclass(frozen=True)
 class HygieneBatch:
@@ -127,6 +131,10 @@ class HygieneBatch:
     @property
     def failure_count(self) -> int:
         return len(self.failures)
+
+    @property
+    def duplicate_group_count(self) -> int:
+        return len(self.duplicate_groups)
 
     @property
     def finding_count(self) -> int:

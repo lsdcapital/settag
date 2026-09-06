@@ -99,7 +99,7 @@ def _print_hygiene_batch(source: Path, batch: HygieneBatch) -> None:
         print(f"  Cleanup suggestions:  {batch.finding_count}", file=sys.stderr)
         print(f"  Metadata clean:       {batch.clean_track_count}", file=sys.stderr)
     if batch.scan != "metadata":
-        print(f"  Duplicate groups:     {len(batch.duplicate_groups)}", file=sys.stderr)
+        print(f"  Duplicate groups:     {batch.duplicate_group_count}", file=sys.stderr)
     print(f"  Errors:               {batch.failure_count}", file=sys.stderr)
 
     for track in batch.tracks:
@@ -114,7 +114,7 @@ def _print_hygiene_batch(source: Path, batch: HygieneBatch) -> None:
 
     for group in batch.duplicate_groups:
         print(file=sys.stderr)
-        print(f"Duplicate audio · {len(group.paths)} files (review only)", file=sys.stderr)
+        print(f"Duplicate audio · {group.file_count} files (review only)", file=sys.stderr)
         for path in group.paths:
             print(f"  {path}", file=sys.stderr)
 

@@ -289,7 +289,7 @@ class HygieneApp(App[TuiOutcome]):
                 self._finding_nodes[index] = parent.add_leaf(self._finding_label(index), data=index)
             elif row.duplicate is not None:
                 tree.root.add_leaf(
-                    Text(f"Duplicate audio · {len(row.duplicate.paths)} files · {row.path.name}"),
+                    Text(f"Duplicate audio · {row.duplicate.file_count} files · {row.path.name}"),
                     data=index,
                 )
             else:
@@ -321,7 +321,7 @@ class HygieneApp(App[TuiOutcome]):
             if self.scan != "duplicates":
                 summary += f" · {self.batch.finding_count} cleanup suggestions"
             if self.scan != "metadata":
-                summary += f" · {len(self.batch.duplicate_groups)} duplicate groups"
+                summary += f" · {self.batch.duplicate_group_count} duplicate groups"
             summary += f" · {self.batch.failure_count} errors"
         self.query_one("#context", Static).update(f"{summary}\n{self.source}")
 
@@ -415,7 +415,7 @@ class HygieneApp(App[TuiOutcome]):
             self.query_one("#inspector", Static).update(
                 "\n".join(
                     (
-                        f"Duplicate audio · {len(row.duplicate.paths)} files",
+                        f"Duplicate audio · {row.duplicate.file_count} files",
                         "Matching audio payloads, ignoring tags and filenames.",
                         "Review only. Cleanup does not delete or move these files.",
                         "Different encodings of the same recording may not match.",
