@@ -6,6 +6,7 @@ import wave
 from io import StringIO
 from pathlib import Path
 from types import SimpleNamespace
+from urllib.error import URLError
 
 import pytest
 from mutagen.id3 import COMM, ID3, TCON, TXXX
@@ -18,6 +19,7 @@ from settag.cli import (
     main,
 )
 from settag.cli.args import build_parser
+from settag.cli.commands import _normalize_argv
 from settag.journal import JournalError, WriteJournal
 from settag.plans import (
     PLAN_SCHEMA,
@@ -1439,6 +1441,32 @@ def test_embedding_export_is_explicit_and_does_not_write_tags(tmp_path: Path, mo
     assert output.read_bytes() == previous
 
 
+def test_an_unopenable_output_leaves_no_empty_embeddings_file(tmp_path: Path, monkeypatch) -> None:
+    path = tmp_path / "track.wav"
+    _silent_wav(path)
+    embeddings = tmp_path / "embeddings.jsonl"
+    monkeypatch.setattr(
+        "settag.cli.commands.EssentiaTaskAnalyzer",
+        lambda _directory, _tasks, **_options: FakeInstrumentAnalyzer(),
+    )
+
+    result = main(
+        [
+            "analyze",
+            str(path),
+            "--tasks",
+            "instrument",
+            "--embeddings",
+            str(embeddings),
+            "--output",
+            str(tmp_path / "missing-dir" / "out.jsonl"),
+        ]
+    )
+
+    assert result == 2
+    assert not embeddings.exists()
+
+
 def test_genre_only_embedding_export_is_rejected_before_loading(tmp_path: Path) -> None:
     assert main(["analyze", str(tmp_path), "--embeddings", str(tmp_path / "out.jsonl")]) == 2
 
@@ -1455,3 +1483,36 @@ def test_hygiene_cli_scan_modes(tmp_path: Path, capsys, scan: str) -> None:
     assert ("Metadata clean:" in output) == (scan != "duplicates")
     if scan != "metadata":
         assert "Duplicate groups:     1" in output
+
+
+@pytest.mark.parametrize(
+    ("argv", "expected"),
+    [
+        (["/music"], ["run", "/music"]),
+        (["--no-tui", "/music"], ["run", "--no-tui", "/music"]),
+        (["--tasks", "genre", "/music"], ["run", "--tasks", "genre", "/music"]),
+        (["analyze", "/music"], ["analyze", "/music"]),
+        (["--version"], ["--version"]),
+        (["--help"], ["--help"]),
+    ],
+)
+def test_the_path_shortcut_allows_options_before_the_path(
+    argv: list[str], expected: list[str]
+) -> None:
+    assert _normalize_argv(argv) == expected
+
+
+def test_a_failed_model_download_is_one_line_not_a_traceback(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    def offline(*_args: object, **_kwargs: object) -> None:
+        raise URLError("nodename nor servname provided")
+
+    monkeypatch.setattr("settag.cli.commands.download_task_models", offline)
+
+    result = main(["models", "download", "--model-dir", str(tmp_path)])
+    captured = capsys.readouterr()
+
+    assert result == 2
+    assert "settag: models download failed:" in captured.err
+    assert "Traceback" not in captured.err

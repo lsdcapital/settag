@@ -34,16 +34,18 @@ Findings from the September 2026 code review, in priority order.
 
 ## Analysis, Beatport, CLI
 
-- [ ] 19. A per-track `LookupStopped` disables Beatport for the rest of the batch. Split service-level from per-track errors.
+- [x] 19. A per-track `LookupStopped` disables Beatport for the rest of the batch. Split service-level from per-track errors.
 - [ ] 20. Beatport scraping is always on; add an opt-out (`--offline` / config).
-- [ ] 21. Read-phase network errors (`ConnectionResetError`, `IncompleteRead`, `RemoteDisconnected`) escape Beatport retry/stop handling.
-- [ ] 22. `settag --no-tui ~/Music` (flag before path) fails with "command required".
-- [ ] 23. Scanner picks up macOS `._*` AppleDouble files; unreadable directories are skipped silently.
-- [ ] 24. `models download` / `models status` print raw tracebacks on network or checksum errors.
+  Question: opt-out flag vs opt-in default, given the site's "nothing leaves the machine" copy.
+- [x] 21. Read-phase network errors (`ConnectionResetError`, `IncompleteRead`, `RemoteDisconnected`) escape Beatport retry/stop handling.
+- [x] 22. `settag --no-tui ~/Music` (flag before path) fails with "command required".
+- [x] 23. Scanner picks up macOS `._*` AppleDouble files; unreadable directories are skipped silently.
+- [x] 24. `models download` / `models status` print raw tracebacks on network or checksum errors.
 - [ ] 25. First-analysis stderr capture discards native crash output.
-- [ ] 26. Worker response pickling failure loses the error message.
+- [x] 26. Worker response pickling failure loses the error message.
 - [ ] 27. Model files are SHA-hashed ~3× per analyzer build and again on every retry.
 - [ ] 28. `analyze --embeddings` leaves an empty file behind if opening `--output` fails; Beatport cache is never pruned.
+  Embeddings leftover fixed. Beatport cache pruning still open.
 
 ## Architecture
 

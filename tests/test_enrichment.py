@@ -13,7 +13,7 @@ from mutagen.id3 import ID3, TCON, TIT2, TPE1
 from mutagen.wave import WAVE
 from textual.widgets import Static
 
-from settag.beatport import Candidate, LookupStopped, TrackIdentity
+from settag.beatport import Candidate, LookupStopped, TrackIdentity, TrackLookupFailed
 from settag.cli import main
 from settag.cli.args import build_parser
 from settag.enrichment import EnrichmentLoader, enrichment_plan, genre_evidence, track_identity
@@ -80,7 +80,7 @@ def test_multi_release_consensus_and_conflict():
 
 
 def test_failed_detail_never_becomes_consensus():
-    with pytest.raises(LookupStopped):
+    with pytest.raises(TrackLookupFailed):
         genre_evidence(
             TRACK, Provider((RELEASE, replace(RELEASE, track_id="456", detail_page=False)), [])
         )
@@ -128,6 +128,34 @@ def test_unified_loader_retains_audio_on_blocked_lookup(tmp_path):
     assert batch.planned[0].desired["SETTAG_BEATPORT"] is None
     assert "HTTP 429" in batch.planned[0].notices[0]
     assert batch.planned[0].file_genre == ("Progressive House",)
+
+
+def test_one_tracks_lookup_failure_does_not_stop_beatport_for_the_batch(tmp_path):
+    bad = audio_file(tmp_path / "a.wav")
+    good = audio_file(tmp_path / "b.wav")
+    plans = {}
+    for path in (bad, good):
+        plan, _ = enrichment_plan(path, Provider())
+        assert plan is not None
+        plans[path] = replace(plan, desired={**plan.desired, "SETTAG_BEATPORT": None})
+
+    class OneBadTrack(Provider):
+        def candidates(self, track):
+            if self.requests == 0:
+                self.requests += 1
+                raise TrackLookupFailed("Invalid local Beatport ID")
+            return super().candidates(track)
+
+    loader = EnrichmentLoader(
+        lambda paths, *_args: AnalysisBatch(tuple(plans[p] for p in paths), ()),
+        provider=OneBadTrack(),
+    )
+    first = loader((bad,), lambda *_args: None, lambda: False)
+    second = loader((good,), lambda *_args: None, lambda: False)
+
+    assert "Invalid local Beatport ID" in first.planned[0].notices[0]
+    assert not loader.stopped_reason
+    assert second.planned[0].desired["SETTAG_BEATPORT"] is not None
 
 
 def test_unified_loader_retains_catalog_if_model_unavailable(tmp_path):

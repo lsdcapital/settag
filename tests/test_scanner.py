@@ -44,3 +44,19 @@ def test_scan_skips_an_abandoned_write_candidate(tmp_path: Path) -> None:
     (tmp_path / f"track{WRITE_TEMPORARY_MARKER}.mp3").touch()
 
     assert scan_audio(tmp_path) == [track.resolve()]
+
+
+def test_scan_skips_macos_appledouble_files(tmp_path: Path) -> None:
+    (tmp_path / "track.mp3").write_bytes(b"audio")
+    (tmp_path / "._track.mp3").write_bytes(b"finder metadata")
+
+    assert scan_audio(tmp_path) == [(tmp_path / "track.mp3").resolve()]
+
+
+def test_scan_lists_a_file_reached_through_two_symlinks_once(tmp_path: Path) -> None:
+    real = tmp_path / "real.flac"
+    real.write_bytes(b"audio")
+    (tmp_path / "link-a.flac").symlink_to(real)
+    (tmp_path / "link-b.flac").symlink_to(real)
+
+    assert scan_audio(tmp_path) == [real.resolve()]

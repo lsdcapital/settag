@@ -113,6 +113,18 @@ def _analysis_worker_main(
                 connection.send(response)
             except (BrokenPipeError, EOFError, OSError):
                 return
+            except Exception as error:
+                # An unpicklable result would otherwise kill the worker, leaving the parent
+                # only an exit code while the traceback goes to a terminal the UI owns.
+                try:
+                    connection.send(
+                        _AnalysisError(
+                            type(error).__name__,
+                            f"Analyzer worker could not return its result: {error}",
+                        )
+                    )
+                except Exception:
+                    return
     finally:
         connection.close()
 

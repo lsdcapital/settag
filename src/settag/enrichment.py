@@ -15,6 +15,7 @@ from settag.beatport import (
     LookupStopped,
     PublicPageProvider,
     TrackIdentity,
+    TrackLookupFailed,
     identity_conflicts,
     normalized,
 )
@@ -79,7 +80,7 @@ def genre_evidence(
         ]
         if len(exact) != 1 or not exact[0].genres:
             # A missing/conflicting detail cannot silently turn a split result into consensus.
-            raise LookupStopped("A matching release could not be verified on its detail page")
+            raise TrackLookupFailed("A matching release could not be verified on its detail page")
         verified.append(exact[0])
     verified.sort(key=lambda c: c.track_id)
     genre_sets = [{normalized(g) for g in c.genres} for c in verified]

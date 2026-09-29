@@ -15,6 +15,7 @@ import unicodedata
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from html.parser import HTMLParser
+from http.client import HTTPException
 from pathlib import Path
 from typing import Any, Protocol
 from urllib.error import HTTPError, URLError
@@ -28,6 +29,14 @@ MAX_PAGE_BYTES = 8 * 1024 * 1024
 
 class LookupStopped(RuntimeError):
     """Access, response format, or request budget prevents reliable lookup."""
+
+
+class TrackLookupFailed(RuntimeError):
+    """One track's lookup cannot be trusted; the service itself is still usable.
+
+    Deliberately not a ``LookupStopped``: that stops Beatport for the rest of the batch,
+    and a bad tag or an odd record on one track must not cost every other track its lookup.
+    """
 
 
 @dataclass(frozen=True)
@@ -188,7 +197,7 @@ def _candidate(value: dict[str, Any], *, detail: bool = False) -> Candidate:
     track_id = str(value.get("track_id", ""))
     title = value.get("track_name")
     if not track_id.isdigit() or not isinstance(title, str) or not title.strip():
-        raise LookupStopped("Unrecognized Beatport track identity format")
+        raise TrackLookupFailed("Unrecognized Beatport track identity format")
     length = value.get("length" if search else "track_length_ms")
     duration = (
         float(length) / 1000
@@ -252,10 +261,15 @@ def parse_page(body: str, *, track_id: str = "") -> tuple[Candidate, ...]:
         ):
             rows = data["data"]
             if rows and all(isinstance(r, dict) and "track_id" in r for r in rows):
-                recognized = True
+                # One malformed search row is skipped; only a page where no row is
+                # usable means the format itself has changed.
                 for row in rows:
-                    candidate = _candidate(row)
+                    try:
+                        candidate = _candidate(row)
+                    except TrackLookupFailed:
+                        continue
                     candidates[candidate.track_id] = candidate
+                    recognized = True
             elif rows == []:
                 recognized = True
     if not recognized:
@@ -323,7 +337,14 @@ class PublicPageProvider:
             self._sleep(1.0 if attempt == 0 else 2.0**attempt)
             self.requests += 1
             try:
-                body = self._fetch(url).decode("utf-8")
+                try:
+                    body = self._fetch(url).decode("utf-8")
+                except (ConnectionError, HTTPException) as error:
+                    # Raised while reading the response, after urlopen returned, so they
+                    # arrive unwrapped by URLError.
+                    raise LookupStopped(
+                        f"Beatport transport failed: {type(error).__name__}"
+                    ) from error
                 try:
                     result = parse_page(body, track_id=track_id)
                 except LookupStopped:
@@ -359,7 +380,7 @@ class PublicPageProvider:
     def candidates(self, track: TrackIdentity) -> Sequence[Candidate]:
         if track.beatport_id:
             if not track.beatport_id.isdigit():
-                raise LookupStopped("Invalid local Beatport ID")
+                raise TrackLookupFailed("Invalid local Beatport ID")
             return self._page(
                 f"https://www.beatport.com/track/track/{track.beatport_id}",
                 track_id=track.beatport_id,

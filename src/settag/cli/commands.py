@@ -6,7 +6,7 @@ import argparse
 import json
 import sys
 from collections.abc import Sequence
-from contextlib import ExitStack
+from contextlib import ExitStack, suppress
 from dataclasses import replace
 from pathlib import Path
 from typing import Any, TextIO
@@ -101,8 +101,16 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 
 def _normalize_argv(argv: Sequence[str] | None) -> list[str]:
+    """Expand the ``settag PATH [options]`` shortcut to ``settag run PATH [options]``.
+
+    Options may come before the path (``settag --no-tui ~/Music``), so the shortcut
+    applies whenever no command appears anywhere, not only when the first word is not
+    an option. With no path at all (``settag --version``) the arguments are untouched.
+    """
     values = list(sys.argv[1:] if argv is None else argv)
-    if values and not values[0].startswith("-") and values[0] not in COMMANDS:
+    if any(value in COMMANDS for value in values):
+        return values
+    if any(not value.startswith("-") for value in values):
         return ["run", *values]
     return values
 
@@ -326,6 +334,16 @@ def _run_default(args: argparse.Namespace) -> int:
 
 def _run_models(args: argparse.Namespace) -> int:
     model_dir = args.model_dir.expanduser().resolve()
+    # Offline, a checksum mismatch, or an unreadable model directory are expected
+    # outcomes here, not bugs; report them in one line instead of a traceback.
+    try:
+        return _models_command(args, model_dir)
+    except (OSError, RuntimeError, ValueError) as error:
+        print(f"settag: models {args.models_command} failed: {error}", file=sys.stderr)
+        return 2
+
+
+def _models_command(args: argparse.Namespace, model_dir: Path) -> int:
     if args.models_command == "download":
         manifest = download_task_models(model_dir, args.tasks, force=args.force)
         print(json.dumps(manifest, indent=2, sort_keys=True))
@@ -399,6 +417,7 @@ def _run_analyze(args: argparse.Namespace) -> int:
     failures = 0
     planned_count = 0
     with ExitStack() as stack:
+        embeddings_output = None
         try:
             embeddings_output = (
                 stack.enter_context(
@@ -418,6 +437,12 @@ def _run_analyze(args: argparse.Namespace) -> int:
                 else None
             )
         except OSError as error:
+            # --embeddings is opened exclusively; leaving it behind empty would make the
+            # retry fail with "File exists" even though nothing was written to it.
+            if embeddings_output is not None:
+                embeddings_output.close()
+                with suppress(OSError):
+                    Path(embeddings_output.name).unlink()
             print(f"Cannot open output: {error}", file=sys.stderr)
             return 2
 

@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from dataclasses import replace
 from email.message import Message
+from http.client import IncompleteRead, RemoteDisconnected
 from pathlib import Path
 from urllib.error import HTTPError
 
@@ -13,6 +14,7 @@ from settag.beatport import (
     LookupStopped,
     PublicPageProvider,
     TrackIdentity,
+    TrackLookupFailed,
     decide,
     identity_conflicts,
     parse_page,
@@ -262,5 +264,36 @@ def test_request_budget_counts_retries(tmp_path: Path) -> None:
 
     provider = PublicPageProvider(tmp_path, max_requests=1, fetch=fetch, sleep=lambda _: None)
     with pytest.raises(LookupStopped, match="budget"):
+        provider.candidates(SOURCE)
+    assert provider.requests == 1
+
+
+def test_one_malformed_search_row_is_skipped_not_fatal() -> None:
+    body = json.loads(search_page().split(">", 1)[1].rsplit("<", 1)[0])
+    rows = body["props"]["pageProps"]["dehydratedState"]["queries"][0]["state"]["data"]["data"]
+    rows.append({"track_id": "not-a-number", "track_name": "Odd"})
+
+    candidates = parse_page(page({"data": rows}))
+
+    assert [candidate.track_id for candidate in candidates] == ["123"]
+
+
+def test_an_invalid_local_beatport_id_fails_only_that_track(tmp_path: Path) -> None:
+    provider = PublicPageProvider(tmp_path, fetch=lambda _url: b"", sleep=lambda _: None)
+
+    with pytest.raises(TrackLookupFailed, match="Invalid local Beatport ID"):
+        provider.candidates(replace(SOURCE, beatport_id="abc"))
+    assert not isinstance(TrackLookupFailed("x"), LookupStopped)
+
+
+@pytest.mark.parametrize(
+    "error", [ConnectionResetError(54, "reset"), IncompleteRead(b""), RemoteDisconnected("gone")]
+)
+def test_connection_errors_while_reading_stop_the_lookup(tmp_path: Path, error: Exception) -> None:
+    def fetch(url: str) -> bytes:
+        raise error
+
+    provider = PublicPageProvider(tmp_path, fetch=fetch, sleep=lambda _: None)
+    with pytest.raises(LookupStopped, match="transport failed"):
         provider.candidates(SOURCE)
     assert provider.requests == 1
