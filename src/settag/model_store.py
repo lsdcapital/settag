@@ -26,14 +26,34 @@ class MissingModelsError(RuntimeError):
     pass
 
 
+# Model files are hundreds of megabytes, and one analyzer build checks each of them
+# several times over (required, then per-task manifests), again on every retry when
+# a file is missing. A verified digest is remembered for as long as the file keeps
+# its size and mtime, which any download or edit changes.
+_verified: dict[tuple[str, int, int], str] = {}
+
+
+def _file_matches(path: Path, expected: str) -> bool:
+    try:
+        stat = path.stat()
+    except OSError:
+        return False
+    if not path.is_file():
+        return False
+    key = (str(path), stat.st_size, stat.st_mtime_ns)
+    digest = _verified.get(key)
+    if digest is None:
+        digest = sha256_file(path)
+        _verified[key] = digest
+    return digest == expected
+
+
 def missing_files(
     model_dir: Path,
     spec: ModelSpec,
 ) -> list[ModelFile]:
     return [
-        item
-        for item in spec.files
-        if not (path := model_dir / item.filename).is_file() or sha256_file(path) != item.sha256
+        item for item in spec.files if not _file_matches(model_dir / item.filename, item.sha256)
     ]
 
 

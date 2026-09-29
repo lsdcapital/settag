@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import os
+import time
 from dataclasses import replace
 from email.message import Message
 from http.client import IncompleteRead, RemoteDisconnected
@@ -10,6 +12,7 @@ from urllib.error import HTTPError
 import pytest
 
 from settag.beatport import (
+    CACHE_SECONDS,
     Candidate,
     LookupStopped,
     PublicPageProvider,
@@ -297,3 +300,17 @@ def test_connection_errors_while_reading_stop_the_lookup(tmp_path: Path, error: 
     with pytest.raises(LookupStopped, match="transport failed"):
         provider.candidates(SOURCE)
     assert provider.requests == 1
+
+
+def test_expired_cache_entries_are_pruned(tmp_path: Path) -> None:
+    fresh = tmp_path / "fresh.json"
+    expired = tmp_path / "expired.json"
+    for entry in (fresh, expired):
+        entry.write_text("{}")
+    old = time.time() - CACHE_SECONDS - 60
+    os.utime(expired, (old, old))
+
+    PublicPageProvider(tmp_path, fetch=lambda _url: b"", sleep=lambda _: None)
+
+    assert fresh.exists()
+    assert not expired.exists()

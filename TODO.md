@@ -42,10 +42,10 @@ Findings from the September 2026 code review, in priority order.
 - [x] 23. Scanner picks up macOS `._*` AppleDouble files; unreadable directories are skipped silently.
 - [x] 24. `models download` / `models status` print raw tracebacks on network or checksum errors.
 - [ ] 25. First-analysis stderr capture discards native crash output.
+  Deferred: surviving a native abort needs output on disk that the parent reads back; low value in the TUI, where worker stderr goes to a terminal Textual owns.
 - [x] 26. Worker response pickling failure loses the error message.
-- [ ] 27. Model files are SHA-hashed ~3× per analyzer build and again on every retry.
-- [ ] 28. `analyze --embeddings` leaves an empty file behind if opening `--output` fails; Beatport cache is never pruned.
-  Embeddings leftover fixed. Beatport cache pruning still open.
+- [x] 27. Model files are SHA-hashed ~3× per analyzer build and again on every retry.
+- [x] 28. `analyze --embeddings` leaves an empty file behind if opening `--output` fails; Beatport cache is never pruned.
 
 ## Architecture
 

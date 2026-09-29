@@ -297,6 +297,26 @@ class PublicPageProvider:
         self.oldest_observation: float | None = None
         self._fetch = fetch or self._http
         self._sleep = sleep
+        self._prune_cache()
+
+    def _prune_cache(self) -> None:
+        """Delete entries too old to be used, since pages can be megabytes each.
+
+        `_page` ignores anything past CACHE_SECONDS, offline included, so nothing
+        removed here could have been read again. Best effort: a cache that cannot be
+        trimmed is a disk-space problem, never a reason to fail a lookup.
+        """
+        cutoff = time.time() - CACHE_SECONDS
+        try:
+            entries = list(self.cache_dir.glob("*.json"))
+        except OSError:
+            return
+        for entry in entries:
+            try:
+                if entry.stat().st_mtime < cutoff:
+                    entry.unlink()
+            except OSError:
+                continue
 
     @staticmethod
     def _http(url: str) -> bytes:

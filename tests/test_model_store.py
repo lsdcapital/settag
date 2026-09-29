@@ -3,6 +3,7 @@ from io import BytesIO
 from pathlib import Path
 from typing import cast
 
+from settag import model_store
 from settag.catalog import MODEL_SPECS_BY_TASK, ModelFile, ModelSpec
 from settag.model_store import (
     default_model_dir,
@@ -111,3 +112,41 @@ def test_wrong_digest_is_reported_as_missing(tmp_path: Path) -> None:
     )
 
     assert missing_files(tmp_path, spec) == [spec.files[0]]
+
+
+def test_an_unchanged_model_file_is_hashed_once(tmp_path: Path, monkeypatch) -> None:
+    path = tmp_path / "model.pb"
+    path.write_bytes(b"model")
+    spec = ModelSpec(
+        id="example/model/v1",
+        license="test license",
+        vocabulary="example-taxonomy",
+        embedding_output="embedding",
+        classifier_input="input",
+        classifier_output="output",
+        sample_rate=16_000,
+        files=(
+            ModelFile(
+                role="embedding",
+                filename=path.name,
+                url="https://models.example/model.pb",
+                sha256=hashlib.sha256(b"model").hexdigest(),
+            ),
+        ),
+    )
+    hashed: list[Path] = []
+    real = model_store.sha256_file
+
+    def counting(target: Path) -> str:
+        hashed.append(target)
+        return real(target)
+
+    monkeypatch.setattr(model_store, "sha256_file", counting)
+
+    assert missing_files(tmp_path, spec) == []
+    assert missing_files(tmp_path, spec) == []
+    assert hashed == [path]
+
+    path.write_bytes(b"changed model!")
+    assert missing_files(tmp_path, spec) == [spec.files[0]]
+    assert hashed == [path, path]
