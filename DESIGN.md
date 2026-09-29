@@ -253,7 +253,8 @@ staged as `before → after`; larger batches show the remaining track count and
 one batch total. Narrow or short terminals preview one track so the reassurance
 and actions remain visible. `Enter` confirms and `Esc` returns to review.
 SetTag performs preflight again, then writes and verifies. Analysis errors
-disable batch writing. When analysis is still running, preflight snapshots only
+disable batch writing until each failed track is re-enriched or dismissed with
+`Space`; a dismissed track leaves review but keeps its error in the library. When analysis is still running, preflight snapshots only
 completed, checked plans; later results cannot enter an already-confirmed
 write. A successful write does not exit the app: written tracks become current
 library entries, while any unwritten tracks remain in review.

@@ -23,10 +23,9 @@ Findings from the September 2026 code review, in priority order.
 - [x] 12. Hung analysis can't be cancelled: the worker waits on the pipe with no timeout or cancel check.
   A second Q during analysis now quits immediately, and closing the loader terminates a stuck worker. Esc still stops only between tracks.
 - [x] 13. A background analysis result overwrites a plan the user is reviewing/editing; a late write then deletes the fresh workbench row.
-- [ ] 14. One persistently failing track blocks all writes; no way to dismiss it.
-  Question: DESIGN.md says analysis errors disable batch writing. Needs a product decision.
-- [ ] 15. B (library) resets the analysis selection, contrary to DESIGN.md.
-  Question: the reset pre-selects the next batch after a run, which may be intended.
+- [x] 14. One persistently failing track blocks all writes; no way to dismiss it.
+  Space on a failed track now dismisses it from review; the error stays visible in the library. Failures are not persisted, so a file that always fails is identified per session (or with `settag analyze PATH --output out.jsonl`, which records settag.error/v1 rows).
+- [x] 15. B (library) resets the analysis selection, contrary to DESIGN.md.
 - [x] 16. Hygiene reports "Nothing was changed" if the post-write rescan fails; partial-failure rescan is outside any `try`.
 - [ ] 17. Genre edit persists synchronously on the event loop (can block up to the SQLite timeout).
   Deferred: moving it off-thread needs ordered persistence so rapid edits cannot land out of order.
@@ -50,3 +49,4 @@ Findings from the September 2026 code review, in priority order.
 ## Architecture
 
 - [ ] 29. Extract a pure `Session` model from `tui/core.py` (selection/review/write state transitions) and move inspector text out.
+  Agreed to leave for a separate branch. Scope: own `analysis_selected`/`review_indices`/`write_selected`/`busy`/pending state with `accept_result`, `accept_written`, `accept_reverted`, `toggle`, `dismiss_failure`, testable without Textual; move the ~200 lines of inspector/status text into a pure module like `review_track`; remove the mixins' `TYPE_CHECKING` cross-stubs.

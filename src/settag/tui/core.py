@@ -802,7 +802,8 @@ class SetTagAppCore(App[TuiOutcome]):
                 "Enrichment failed",
                 f"  {entry.analysis_error.description}",
                 "",
-                "Return to the library with B to retry or choose another track.",
+                "Press Space to dismiss it so the other tracks can be written,",
+                "or return to the library with B to retry it.",
                 *identity,
             ]
         if entry.plan is None:
@@ -979,6 +980,9 @@ class SetTagAppCore(App[TuiOutcome]):
             selection = self.analysis_selected
         else:
             entry = self.entries[index]
+            if entry.analysis_error is not None:
+                self._dismiss_failure(index)
+                return
             if not entry.needs_write_review:
                 return
             if self._awaiting_new_result(index):
@@ -991,6 +995,26 @@ class SetTagAppCore(App[TuiOutcome]):
         else:
             selection.add(index)
         self._refresh_row(index)
+
+    def _dismiss_failure(self, index: int) -> None:
+        """Take a failed track out of review so it no longer blocks writing the rest.
+
+        The error stays on the track, so the library still shows which file failed and
+        why; a file that fails every time can be found and dealt with there.
+        """
+        entry = self.entries[index]
+        assert entry.analysis_error is not None
+        self.review_indices.discard(index)
+        self.notify(
+            f"Dismissed {entry.path.name}: {entry.analysis_error.description}. "
+            "It stays in the library with this error; press B to see it.",
+            title="Failed track dismissed",
+            timeout=10,
+        )
+        if self.review_indices:
+            self._rebuild_table(preserve_view=True)
+        else:
+            self._show_library()
 
     def action_toggle_all(self) -> None:
         if self.busy:
@@ -1064,8 +1088,10 @@ class SetTagAppCore(App[TuiOutcome]):
             return
         if self.analysis_running:
             self._analysis_navigation_changed = True
+        # Keep the user's own choices: a track they unchecked stays unchecked. Only tracks
+        # that no longer need enrichment drop out; A selects everything again.
         self.analysis_selected = {
-            index for index, entry in enumerate(self.entries) if entry.needs_analysis
+            index for index in self.analysis_selected if self.entries[index].needs_analysis
         }
         self._show_library()
 

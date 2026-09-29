@@ -30,6 +30,7 @@ from settag.tui.review import ReviewTree
 from settag.tui.screens import ErrorScreen
 from settag.workflow import (
     AnalysisBatch,
+    AnalysisFailure,
     MetadataBatch,
     MetadataStatus,
     MetadataTrack,
@@ -2159,3 +2160,90 @@ def test_a_track_being_re_enriched_cannot_be_edited_or_written_on_its_old_plan(
         asyncio.run(exercise())
     finally:
         release.set()
+
+
+def test_dismissing_a_failed_track_unblocks_writing_the_rest(tmp_path: Path) -> None:
+    good = tmp_path / "a-good.wav"
+    bad = tmp_path / "b-bad.wav"
+    for path in (good, bad):
+        _silent_wav(path)
+
+    def load_analysis(paths, _progress, _cancel) -> AnalysisBatch:
+        if paths == (bad,):
+            return AnalysisBatch(
+                planned=(), failures=(AnalysisFailure(bad, "DecodeError", "corrupt frame"),)
+            )
+        return _analysis_batch(paths)
+
+    app = SetTagApp(
+        source=tmp_path,
+        initial_metadata=MetadataBatch(
+            tracks=(_metadata_track(good), _metadata_track(bad)), failures=()
+        ),
+        analysis_loader=load_analysis,
+    )
+
+    async def exercise() -> None:
+        async with app.run_test(size=(140, 42)) as pilot:
+            await pilot.pause()
+            await pilot.press("r")
+            for _ in range(40):
+                await pilot.pause(0.05)
+                if not app.analysis_running and app.phase == "review":
+                    break
+            assert app.review_indices == {0, 1}
+            await pilot.press("w")
+            await pilot.pause()
+            assert not isinstance(app.screen, ConfirmWriteScreen)
+
+            tree = app.query_one(ReviewTree)
+            tree.move_cursor(tree.nodes[(1, "track")])
+            await pilot.pause()
+            await pilot.press("space")
+            await pilot.pause()
+            assert app.review_indices == {0}
+            assert app.entries[1].analysis_error is not None
+
+            await pilot.press("w")
+            for _ in range(30):
+                await pilot.pause(0.05)
+                if isinstance(app.screen, ConfirmWriteScreen):
+                    break
+            assert isinstance(app.screen, ConfirmWriteScreen)
+
+    asyncio.run(exercise())
+
+
+def test_returning_to_the_library_keeps_unchecked_tracks_unchecked(tmp_path: Path) -> None:
+    paths = [tmp_path / f"{name}.wav" for name in ("a", "b", "c")]
+    for path in paths:
+        _silent_wav(path)
+    app = SetTagApp(
+        source=tmp_path,
+        initial_metadata=MetadataBatch(
+            tracks=tuple(_metadata_track(path) for path in paths), failures=()
+        ),
+        analysis_loader=lambda batch, _progress, _cancel: _analysis_batch(batch),
+    )
+
+    async def exercise() -> None:
+        async with app.run_test(size=(140, 42)) as pilot:
+            await pilot.pause()
+            assert app.analysis_selected == {0, 1, 2}
+            # The user unchecks b, then enriches the rest.
+            app.analysis_selected = {0, 2}
+            await pilot.press("r")
+            for _ in range(40):
+                await pilot.pause(0.05)
+                if not app.analysis_running and app.phase == "review":
+                    break
+            assert app.phase == "review"
+
+            await pilot.press("b")
+            await pilot.pause()
+
+            assert app.phase == "choose"
+            assert app.entries[1].needs_analysis
+            assert 1 not in app.analysis_selected
+
+    asyncio.run(exercise())

@@ -68,7 +68,8 @@ class WriteFlow(SetTagAppCore):
         failures = self._review_failures()
         if failures:
             self.notify(
-                "Writing is disabled because one or more reviewed tracks failed analysis.",
+                "Writing is disabled because one or more reviewed tracks failed analysis. "
+                "Press Space on a failed track to dismiss it.",
                 severity="error",
             )
             return
