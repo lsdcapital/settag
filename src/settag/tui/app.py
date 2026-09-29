@@ -8,6 +8,7 @@ on ``SetTagAppCore`` or any flow mixin.
 from __future__ import annotations
 
 from textual.binding import Binding
+from textual.worker import Worker, WorkerState
 
 from settag.tui.analysis_flow import AnalysisFlow
 from settag.tui.style import APP_CSS
@@ -39,3 +40,28 @@ class SetTagApp(AnalysisFlow, WriteFlow, UndoFlow):
     ]
 
     CSS = APP_CSS
+
+    def on_worker_state_changed(self, event: Worker.StateChanged) -> None:
+        """Recover from an exception a worker did not catch itself.
+
+        Every worker runs with ``exit_on_error=False`` and handles its expected failures.
+        Anything else would leave ``busy`` or the analysis queue set, and quitting refuses
+        while either is, so the app could only be killed. Route it to the flow's own failure
+        handler, which resets that state and shows the error.
+        """
+        if event.state != WorkerState.ERROR:
+            return
+        error = event.worker.error
+        message = f"{type(error).__name__}: {error}"
+        group = event.worker.group
+        if group == "analysis":
+            self._analysis_failed(message)
+        elif group in {"write", "save"}:
+            self._write_failed(
+                "Write stopped unexpectedly",
+                f"{message}\n\nFiles already written were journaled and can be undone.",
+            )
+        elif group == "undo":
+            self._undo_failed("Undo stopped unexpectedly", message)
+        elif group == "metadata":
+            self._show_fatal_error(message)

@@ -34,6 +34,7 @@ class AnalysisFlow(SetTagAppCore):
             )
             return
         self._analysis_cancel_requested.clear()
+        self._quit_during_analysis_requested = False
         self._pending_analysis_indices = indices
         self._analysis_completed_count = 0
         self._analysis_success_count = 0

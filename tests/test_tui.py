@@ -27,6 +27,7 @@ from settag.tui import (
     UndoScreen,
 )
 from settag.tui.review import ReviewTree
+from settag.tui.screens import ErrorScreen
 from settag.workflow import (
     AnalysisBatch,
     MetadataBatch,
@@ -2011,3 +2012,77 @@ def test_opening_info_keeps_arrow_navigation_in_main_view(tmp_path, size, phase,
             assert app.has_class("details-open")
 
     asyncio.run(exercise())
+
+
+def test_a_second_q_quits_while_analysis_is_stuck_on_a_track(tmp_path: Path) -> None:
+    path = tmp_path / "track.wav"
+    _silent_wav(path)
+    release = Event()
+
+    def hanging_analysis(_paths, _progress, _cancel) -> AnalysisBatch:
+        release.wait(10)
+        return AnalysisBatch(planned=(), failures=(), cancelled=True)
+
+    app = SetTagApp(
+        source=path,
+        initial_metadata=MetadataBatch(tracks=(_metadata_track(path),), failures=()),
+        analysis_loader=hanging_analysis,
+    )
+
+    async def exercise() -> None:
+        async with app.run_test(size=(120, 36)) as pilot:
+            await pilot.pause()
+            await pilot.press("r")
+            await pilot.pause()
+            assert app.analysis_running
+
+            await pilot.press("q")
+            await pilot.pause()
+            assert app.is_running
+            assert app._analysis_cancel_requested.is_set()
+
+            await pilot.press("q")
+            await pilot.pause()
+            release.set()
+
+    try:
+        asyncio.run(exercise())
+    finally:
+        release.set()
+    assert app.return_value is not None
+    assert "Quit during enrichment" in app.return_value.message
+
+
+def test_an_uncaught_worker_error_still_lets_the_user_quit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "track.wav"
+    _silent_wav(path)
+    app = SetTagApp(
+        source=path,
+        initial_metadata=MetadataBatch(tracks=(_metadata_track(path),), failures=()),
+        analysis_loader=lambda paths, _progress, _cancel: _analysis_batch(paths),
+    )
+
+    def explode(*_args: object) -> None:
+        raise RuntimeError("bug in result handling")
+
+    async def exercise() -> None:
+        async with app.run_test(size=(120, 36)) as pilot:
+            await pilot.pause()
+            monkeypatch.setattr(app, "_analysis_item_complete", explode)
+            await pilot.press("r")
+            for _ in range(40):
+                await pilot.pause(0.05)
+                if not app.analysis_running:
+                    break
+
+            assert not app.analysis_running
+            assert isinstance(app.screen, ErrorScreen)
+            await pilot.press("escape")
+            await pilot.press("q")
+            await pilot.pause()
+
+    asyncio.run(exercise())
+    assert app.return_value is not None
+    assert app.return_value.message == "Nothing was written."

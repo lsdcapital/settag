@@ -152,6 +152,8 @@ class SetTagAppCore(App[TuiOutcome]):
         # type-only, so type checkers can resolve the call from _genre_edited below.
         def _persist(self, index: int) -> None: ...
 
+        def action_cancel_analysis(self) -> None: ...
+
     def __init__(
         self,
         *,
@@ -203,6 +205,7 @@ class SetTagAppCore(App[TuiOutcome]):
         self._pending_undo_batch: str | None = None
         self._pending_undo_skipped = 0
         self._written_count = 0
+        self._quit_during_analysis_requested = False
         self._table_layout: tuple[tuple[TrackTableColumn, int], ...] = ()
         self._inspector_state: tuple[AppPhase, int, str] | None = None
         self.sub_title = "Reading existing metadata"
@@ -1135,9 +1138,16 @@ class SetTagAppCore(App[TuiOutcome]):
             self.notify("A safety check or write is in progress.", severity="warning")
             return
         if self.analysis_running:
+            # Finished tracks are already saved to the workbench, and analysis writes
+            # nothing to audio files, so a second Q may leave without waiting. That is the
+            # only way out of a track the analyzer hangs on.
+            if self._quit_during_analysis_requested:
+                self.exit(TuiOutcome(0, "Quit during enrichment. Finished tracks were kept."))
+                return
+            self._quit_during_analysis_requested = True
+            self.action_cancel_analysis()
             self.notify(
-                "Analysis is still running. Press Esc to stop after the current "
-                "track before quitting.",
+                "Stopping after the current track. Press Q again to quit now.",
                 severity="warning",
             )
             return

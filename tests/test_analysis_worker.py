@@ -3,12 +3,12 @@ import os
 import time
 import wave
 from pathlib import Path
-from threading import Event
+from threading import Event, Thread
 from types import SimpleNamespace
 
 from textual.widgets import Static
 
-from settag.analysis_worker import SubprocessAnalysisLoader
+from settag.analysis_worker import AnalysisWorkerError, SubprocessAnalysisLoader
 from settag.policy import Prediction
 from settag.tags import OWNED_DESCRIPTIONS, GenreState
 from settag.tui import SetTagApp
@@ -57,6 +57,24 @@ def _busy_analyzer_factory(
 ) -> _BusyAnalyzer:
     assert tasks == ("genre",)
     return _BusyAnalyzer(model_dir / "analysis-started")
+
+
+class _HangingAnalyzer(_FakeAnalyzer):
+    def __init__(self, started_path: Path) -> None:
+        self.started_path = started_path
+
+    def analyze(self, path: Path) -> list[Prediction]:
+        self.started_path.write_text(path.name, encoding="utf-8")
+        while True:
+            time.sleep(1)
+
+
+def _hanging_analyzer_factory(
+    model_dir: Path,
+    tasks: tuple[str, ...],
+    sample: str,
+) -> _HangingAnalyzer:
+    return _HangingAnalyzer(model_dir / "analysis-started")
 
 
 def _silent_wav(path: Path, *, seconds: float = 35.0) -> None:
@@ -195,3 +213,44 @@ def test_tui_remains_responsive_during_gil_holding_analysis(
         asyncio.run(exercise())
     finally:
         loader.close()
+
+
+def test_close_stops_a_worker_stuck_on_one_track(tmp_path: Path) -> None:
+    """Quitting mid-analysis closes the loader; a hung track must not hang the quit."""
+    path = tmp_path / "track.wav"
+    _silent_wav(path)
+    loader = SubprocessAnalysisLoader(
+        tmp_path,
+        ("genre",),
+        top=5,
+        threshold=0.10,
+        analyzer_factory=_hanging_analyzer_factory,
+        poll_interval=0.01,
+        shutdown_timeout=0.2,
+    )
+    outcome: list[BaseException] = []
+
+    def analyze() -> None:
+        try:
+            loader((path,), lambda *_args: None, lambda: False)
+        except BaseException as error:
+            outcome.append(error)
+
+    thread = Thread(target=analyze)
+    thread.start()
+    for _ in range(1000):
+        if (tmp_path / "analysis-started").exists():
+            break
+        time.sleep(0.01)
+    assert (tmp_path / "analysis-started").exists()
+
+    # Closed from a helper thread so a regression fails here instead of hanging the suite.
+    closer = Thread(target=loader.close, daemon=True)
+    closer.start()
+    closer.join(timeout=10)
+    thread.join(timeout=10)
+
+    assert not closer.is_alive()
+    assert not thread.is_alive()
+    assert len(outcome) == 1
+    assert isinstance(outcome[0], AnalysisWorkerError)

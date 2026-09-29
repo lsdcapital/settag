@@ -19,8 +19,9 @@ Findings from the September 2026 code review, in priority order.
 
 ## TUI
 
-- [ ] 11. An unhandled worker exception leaves `busy`/`analysis_running` set and the app can't be quit. Add `on_worker_state_changed` recovery and a force-quit.
-- [ ] 12. Hung analysis can't be cancelled: the worker waits on the pipe with no timeout or cancel check.
+- [x] 11. An unhandled worker exception leaves `busy`/`analysis_running` set and the app can't be quit. Add `on_worker_state_changed` recovery and a force-quit.
+- [x] 12. Hung analysis can't be cancelled: the worker waits on the pipe with no timeout or cancel check.
+  A second Q during analysis now quits immediately, and closing the loader terminates a stuck worker. Esc still stops only between tracks.
 - [ ] 13. A background analysis result overwrites a plan the user is reviewing/editing; a late write then deletes the fresh workbench row.
 - [ ] 14. One persistently failing track blocks all writes; no way to dismiss it.
 - [ ] 15. B (library) resets the analysis selection, contrary to DESIGN.md.

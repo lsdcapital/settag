@@ -21,6 +21,7 @@ from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.widgets import Button, Footer, Header, Static, Tree
 from textual.widgets.tree import TreeNode
+from textual.worker import Worker, WorkerState
 
 from settag.hygiene import (
     SCAN_LABELS,
@@ -648,6 +649,18 @@ class HygieneApp(App[TuiOutcome]):
         self._pending_prepared = ()
         self._update_status("Nothing was changed")
         self.push_screen(ErrorScreen(title, message))
+
+    def on_worker_state_changed(self, event: Worker.StateChanged) -> None:
+        """Reset ``busy`` after an exception a worker did not catch, so Q still works."""
+        if event.state != WorkerState.ERROR:
+            return
+        error = event.worker.error
+        title = (
+            "Cleanup stopped unexpectedly"
+            if event.worker.group == "hygiene-write"
+            else "Scan stopped unexpectedly"
+        )
+        self._failed(title, f"{type(error).__name__}: {error}")
 
     async def action_quit(self) -> None:
         if self.busy:

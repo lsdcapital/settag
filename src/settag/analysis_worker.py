@@ -206,28 +206,42 @@ class SubprocessAnalysisLoader:
             self._ensure_started()
 
     def close(self) -> None:
-        with self._lock:
-            if self._closed:
-                return
-            self._closed = True
-            connection = self._connection
+        # An analysis in flight holds the lock until the worker answers, and a worker stuck
+        # on one track never does. Stopping it makes that request fail and let go, so
+        # quitting mid-analysis cannot hang here.
+        if not self._lock.acquire(timeout=self._shutdown_timeout):
             process = self._process
-            self._connection = None
-            self._process = None
+            if process is not None:
+                with suppress(ValueError, OSError):
+                    process.terminate()
+            self._lock.acquire()
+        try:
+            self._close_locked()
+        finally:
+            self._lock.release()
 
-            if connection is not None:
-                if process is not None and process.is_alive():
-                    with suppress(BrokenPipeError, EOFError, OSError):
-                        connection.send(_Shutdown())
-                connection.close()
+    def _close_locked(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        connection = self._connection
+        process = self._process
+        self._connection = None
+        self._process = None
 
-            if process is None:
-                return
-            process.join(self._shutdown_timeout)
-            if process.is_alive():
-                process.terminate()
-                process.join()
-            process.close()
+        if connection is not None:
+            if process is not None and process.is_alive():
+                with suppress(BrokenPipeError, EOFError, OSError):
+                    connection.send(_Shutdown())
+            connection.close()
+
+        if process is None:
+            return
+        process.join(self._shutdown_timeout)
+        if process.is_alive():
+            process.terminate()
+            process.join()
+        process.close()
 
     def __enter__(self) -> SubprocessAnalysisLoader:
         return self
