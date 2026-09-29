@@ -9,6 +9,7 @@ Findings from the September 2026 code review, in priority order.
 - [x] 3. External writes between the staleness check and `os.replace` are overwritten. Re-stat just before the replace.
 - [x] 4. One malformed journal row makes `recent()`/`batch()` raise, locking out all undo history.
 - [ ] 5. Journal entry is recorded after `os.replace`; a crash in between leaves an unrecorded write.
+  Deferred: the window is the moment between the rename and one SQLite insert. Closing it needs a pending/committed two-phase journal entry and a schema bump.
 - [x] 6. Retrying after a partial undo flags already-restored files as changed; undo doesn't update the journal with restored stat. Undo order is oldest-first despite the docstring.
 - [x] 7. Atomic replace drops macOS xattrs, breaks hard links; no directory fsync after rename.
   Xattrs/ACLs are now copied on macOS, with `F_FULLFSYNC` and a directory fsync. Hard links still break: inherent to write-then-rename.
