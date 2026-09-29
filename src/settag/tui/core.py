@@ -11,7 +11,6 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from pathlib import Path
 from threading import Event
-from typing import TYPE_CHECKING
 
 from rich.text import Text
 from textual import events, on, work
@@ -19,6 +18,7 @@ from textual.app import App, ComposeResult
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.coordinate import Coordinate
 from textual.css.query import NoMatches
+from textual.message import Message
 from textual.widgets import (
     DataTable,
     Footer,
@@ -125,6 +125,14 @@ REVIEW_ACTIONS = frozenset(
 )
 
 
+class EditSaveFailed(Message):
+    """A genre edit could not be saved to the workbench."""
+
+    def __init__(self, error: str) -> None:
+        super().__init__()
+        self.error = error
+
+
 class SetTagAppCore(App[TuiOutcome]):
     """Metadata-first library browser and explicit analysis/write workflow.
 
@@ -133,13 +141,6 @@ class SetTagAppCore(App[TuiOutcome]):
     ``SetTagApp`` in ``app.py``, since Textual reads them from the app class
     actually instantiated.
     """
-
-    if TYPE_CHECKING:
-        # Implemented by settag.tui.analysis_flow.AnalysisFlow. Declared here,
-        # type-only, so type checkers can resolve the call from _genre_edited below.
-        def _persist(self, index: int) -> None: ...
-
-        def action_cancel_analysis(self) -> None: ...
 
     def __init__(
         self,
@@ -188,7 +189,7 @@ class SetTagAppCore(App[TuiOutcome]):
         self._pending_undo_skipped = 0
         self._written_count = 0
         self._quit_during_analysis_requested = False
-        # Created on the first genre edit; see AnalysisFlow._persist.
+        # Created on the first genre edit; see _persist.
         self._edit_saver: ThreadPoolExecutor | None = None
         self._table_layout: tuple[tuple[TrackTableColumn, int], ...] = ()
         self._inspector_state: tuple[AppPhase, int, str] | None = None
@@ -925,6 +926,52 @@ class SetTagAppCore(App[TuiOutcome]):
         staged = ", ".join(genres) or "None"
         self._update_status(f"Staged standard file genre: {staged}")
 
+    def _persist(self, index: int) -> None:
+        """Save one entry's plan after a user edit, without blocking the UI.
+
+        The analysis worker holds the workbench while it saves a result, and SQLite
+        then waits up to its timeout, so saving on the event loop could freeze the app
+        for seconds. Edits go to a single background thread instead, which also keeps
+        two quick edits of one track from landing out of order.
+        """
+        item = self.entries[index].plan
+        if item is None or self.persist_plan is None:
+            return
+        if self._edit_saver is None:
+            self._edit_saver = ThreadPoolExecutor(
+                max_workers=1, thread_name_prefix="settag-edit-save"
+            )
+        self._edit_saver.submit(self._save_edit, item)
+
+    def _save_edit(self, item: PlannedWrite) -> None:
+        error = self._persist_item(item)
+        if error is not None:
+            # post_message rather than call_from_thread: it never waits on the event loop,
+            # so a save finishing while the app shuts down cannot hang either side.
+            self.post_message(EditSaveFailed(error))
+
+    @on(EditSaveFailed)
+    def _edit_save_failed(self, message: EditSaveFailed) -> None:
+        self._report_persist_failure(message.error)
+
+    def _persist_item(self, item: PlannedWrite) -> str | None:
+        """Save one plan to the workbench; safe on any thread. Returns the failure, if any."""
+        if self.persist_plan is None:
+            return None
+        try:
+            self.persist_plan(item)
+        except Exception as error:
+            return f"{type(error).__name__}: {error}"
+        return None
+
+    def _report_persist_failure(self, error: str) -> None:
+        self.notify(
+            "The result is still available in this session, but could not "
+            f"be saved to the local workbench: {error}",
+            severity="warning",
+            timeout=8,
+        )
+
     def action_hygiene(self) -> None:
         if self.busy:
             return
@@ -935,31 +982,3 @@ class SetTagAppCore(App[TuiOutcome]):
             )
             return
         self.exit(TuiOutcome(0, "Opening metadata hygiene.", next_action="hygiene"))
-
-    async def action_quit(self) -> None:
-        if self.busy:
-            self.notify("A safety check or write is in progress.", severity="warning")
-            return
-        if self.analysis_running:
-            # Finished tracks are already saved to the workbench, and analysis writes
-            # nothing to audio files, so a second Q may leave without waiting. That is the
-            # only way out of a track the analyzer hangs on.
-            if self._quit_during_analysis_requested:
-                self.exit(TuiOutcome(0, "Quit during enrichment. Finished tracks were kept."))
-                return
-            self._quit_during_analysis_requested = True
-            self.action_cancel_analysis()
-            self.notify(
-                "Stopping after the current track. Press Q again to quit now.",
-                severity="warning",
-            )
-            return
-        if self._written_count:
-            message = (
-                f"Done. {self._written_count} "
-                f"file{'s' if self._written_count != 1 else ''} "
-                "written and verified."
-            )
-        else:
-            message = "Nothing was written."
-        self.exit(TuiOutcome(0, message))

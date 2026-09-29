@@ -2,25 +2,15 @@
 
 from __future__ import annotations
 
-from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
-from textual import on, work
-from textual.message import Message
+from textual import work
 from textual.widgets import ProgressBar, Static
 
 from settag.plans import PlannedWrite, stage_default_file_genre
 from settag.tui.core import SetTagAppCore
 from settag.tui.screens import ErrorScreen
 from settag.workflow import AnalysisBatch
-
-
-class EditSaveFailed(Message):
-    """A genre edit could not be saved to the workbench."""
-
-    def __init__(self, error: str) -> None:
-        super().__init__()
-        self.error = error
 
 
 class AnalysisFlow(SetTagAppCore):
@@ -307,50 +297,4 @@ class AnalysisFlow(SetTagAppCore):
             severity="warning"
             if self._analysis_partial_count or self._analysis_failure_count
             else "information",
-        )
-
-    def _persist(self, index: int) -> None:
-        """Save one entry's plan after a user edit, without blocking the UI.
-
-        The analysis worker holds the workbench while it saves a result, and SQLite
-        then waits up to its timeout, so saving on the event loop could freeze the app
-        for seconds. Edits go to a single background thread instead, which also keeps
-        two quick edits of one track from landing out of order.
-        """
-        item = self.entries[index].plan
-        if item is None or self.persist_plan is None:
-            return
-        if self._edit_saver is None:
-            self._edit_saver = ThreadPoolExecutor(
-                max_workers=1, thread_name_prefix="settag-edit-save"
-            )
-        self._edit_saver.submit(self._save_edit, item)
-
-    def _save_edit(self, item: PlannedWrite) -> None:
-        error = self._persist_item(item)
-        if error is not None:
-            # post_message rather than call_from_thread: it never waits on the event loop,
-            # so a save finishing while the app shuts down cannot hang either side.
-            self.post_message(EditSaveFailed(error))
-
-    @on(EditSaveFailed)
-    def _edit_save_failed(self, message: EditSaveFailed) -> None:
-        self._report_persist_failure(message.error)
-
-    def _persist_item(self, item: PlannedWrite) -> str | None:
-        """Save one plan to the workbench; safe on any thread. Returns the failure, if any."""
-        if self.persist_plan is None:
-            return None
-        try:
-            self.persist_plan(item)
-        except Exception as error:
-            return f"{type(error).__name__}: {error}"
-        return None
-
-    def _report_persist_failure(self, error: str) -> None:
-        self.notify(
-            "The result is still available in this session, but could not "
-            f"be saved to the local workbench: {error}",
-            severity="warning",
-            timeout=8,
         )

@@ -54,8 +54,10 @@ settag/cli/     args      the accepted command grammar
 
 settag/tui/     app       the concrete App: bindings and stylesheet, composed
                           from the core and the three flows below
-                core      state, phases, selection, table and inspector rendering
-                analysis_flow   R/Esc: the analysis worker, progress, persistence
+                core      phases, widgets, selection actions, plan persistence
+                session   Textual-free selection/review/write state and its rules
+                inspector Textual-free details-panel text for one track
+                analysis_flow   R/Esc: the analysis worker and progress
                 write_flow      S/W: preflight, confirm, apply, verify, complete
                 undo_flow       U: journal list, preflight, restore, complete
                 hygiene   independent metadata-hygiene review
@@ -73,11 +75,23 @@ Each flow is a subclass of `SetTagAppCore`, and `SetTagApp` inherits all
 three. That is deliberate over mixins or controller objects: the flows read
 and write the core's state as `self`, Textual's `@work` and `call_from_thread`
 need `self` to be the app, and the type checker sees every attribute through
-the subclass relationship. Where the core calls into a flow, it declares the
-method under `TYPE_CHECKING` only, so the dependency direction is visible
-without the core importing a flow. Persistence of a completed analysis runs on
-the analysis worker thread; the main thread only receives the staged plan and
-any storage error, so a slow or locked workbench cannot hold the event loop.
+the subclass relationship. The core never calls into a flow; anything that
+coordinates several flows, such as quitting or recovering from a worker error,
+lives on `SetTagApp`, which sees them all.
+
+The state the flows share is not theirs to reset by hand. `ReviewSession` owns
+the track list, the analysis selection, the review set, the write selection,
+and the running analysis queue, and every change goes through one of its
+methods (`accept_result`, `accept_written`, `accept_reverted`, the toggles,
+`dismiss_failure`, `stage_genre`). Rules such as "a track still being
+re-enriched cannot be edited or written" are enforced there once and tested
+without Textual. `busy` and the pending write and undo payloads stay on the
+app: they coordinate background workers rather than describe the library.
+
+Persistence of a completed analysis runs on the analysis worker thread; the
+main thread only receives the staged plan and any storage error. Genre edits
+are saved on one background thread, in order. Either way, a slow or locked
+workbench cannot hold the event loop.
 
 The rule that keeps the two honest: **no count or human-readable phrase
 derived from `PlannedWrite`, `PreparedWrite`, `WriteRecord`, or

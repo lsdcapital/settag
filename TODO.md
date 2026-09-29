@@ -50,5 +50,5 @@ Findings from the September 2026 code review, in priority order.
 
 ## Architecture
 
-- [ ] 29. Extract a pure `Session` model from `tui/core.py` (selection/review/write state transitions) and move inspector text out.
-  Agreed to leave for a separate branch. Scope: own `analysis_selected`/`review_indices`/`write_selected`/`busy`/pending state with `accept_result`, `accept_written`, `accept_reverted`, `toggle`, `dismiss_failure`, testable without Textual; move the ~200 lines of inspector/status text into a pure module like `review_track`; remove the mixins' `TYPE_CHECKING` cross-stubs.
+- [x] 29. Extract a pure `Session` model from `tui/core.py` (selection/review/write state transitions) and move inspector text out.
+  `tui/session.py` (`ReviewSession`) owns the selections and analysis queue; `tui/inspector.py` holds the details text; the `TYPE_CHECKING` stubs are gone. `busy` and pending write/undo payloads stay on the app as worker coordination.

@@ -11,6 +11,7 @@ from textual.binding import Binding
 from textual.worker import Worker, WorkerState
 
 from settag.tui.analysis_flow import AnalysisFlow
+from settag.tui.entries import TuiOutcome
 from settag.tui.style import APP_CSS
 from settag.tui.undo_flow import UndoFlow
 from settag.tui.write_flow import WriteFlow
@@ -65,3 +66,31 @@ class SetTagApp(AnalysisFlow, WriteFlow, UndoFlow):
             self._undo_failed("Undo stopped unexpectedly", message)
         elif group == "metadata":
             self._show_fatal_error(message)
+
+    async def action_quit(self) -> None:
+        if self.busy:
+            self.notify("A safety check or write is in progress.", severity="warning")
+            return
+        if self.analysis_running:
+            # Finished tracks are already saved to the workbench, and analysis writes
+            # nothing to audio files, so a second Q may leave without waiting. That is the
+            # only way out of a track the analyzer hangs on.
+            if self._quit_during_analysis_requested:
+                self.exit(TuiOutcome(0, "Quit during enrichment. Finished tracks were kept."))
+                return
+            self._quit_during_analysis_requested = True
+            self.action_cancel_analysis()
+            self.notify(
+                "Stopping after the current track. Press Q again to quit now.",
+                severity="warning",
+            )
+            return
+        if self._written_count:
+            message = (
+                f"Done. {self._written_count} "
+                f"file{'s' if self._written_count != 1 else ''} "
+                "written and verified."
+            )
+        else:
+            message = "Nothing was written."
+        self.exit(TuiOutcome(0, message))
