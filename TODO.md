@@ -6,14 +6,16 @@ Findings from the September 2026 code review, in priority order.
 
 - [x] 1. Clearing a FLAC genre never deletes it; undo of a genre added to a genreless FLAC fails verification (`tags.py` `VorbisOwnedTagStore.write_standard_genres`).
 - [x] 2. ID3v2.3 files are saved as v2.4, dropping TSIZ/TRDA/RVAD/EQUA/unknown frames (`tags.py` `_commit`). Preserve the original version.
-- [ ] 3. External writes between the staleness check and `os.replace` are overwritten. Re-stat just before the replace.
-- [ ] 4. One malformed journal row makes `recent()`/`batch()` raise, locking out all undo history.
+- [x] 3. External writes between the staleness check and `os.replace` are overwritten. Re-stat just before the replace.
+- [x] 4. One malformed journal row makes `recent()`/`batch()` raise, locking out all undo history.
 - [ ] 5. Journal entry is recorded after `os.replace`; a crash in between leaves an unrecorded write.
-- [ ] 6. Retrying after a partial undo flags already-restored files as changed; undo doesn't update the journal with restored stat. Undo order is oldest-first despite the docstring.
-- [ ] 7. Atomic replace drops macOS xattrs, breaks hard links; no directory fsync after rename.
+- [x] 6. Retrying after a partial undo flags already-restored files as changed; undo doesn't update the journal with restored stat. Undo order is oldest-first despite the docstring.
+- [x] 7. Atomic replace drops macOS xattrs, breaks hard links; no directory fsync after rename.
+  Xattrs/ACLs are now copied on macOS, with `F_FULLFSYNC` and a directory fsync. Hard links still break: inherent to write-then-rename.
 - [ ] 8. Undo restores Vorbis hygiene keys lowercased and merged across case variants.
-- [ ] 9. MP4 freeform hygiene writes force UTF-8; `apply_hygiene` calls `on_write` without the `suppress` `apply_prepared` uses.
-- [ ] 10. Non-UTF-8 bytes in an owned MP4 atom raise a raw `UnicodeDecodeError`.
+  Deferred: Vorbis field names are case-insensitive by spec, so readers see the same fields.
+- [x] 9. MP4 freeform hygiene writes force UTF-8; `apply_hygiene` calls `on_write` without the `suppress` `apply_prepared` uses.
+- [x] 10. Non-UTF-8 bytes in an owned MP4 atom raise a raw `UnicodeDecodeError`.
 
 ## TUI
 

@@ -17,7 +17,7 @@ import sqlite3
 import sys
 from collections.abc import Sequence
 from contextlib import closing, suppress
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from uuid import uuid4
@@ -159,6 +159,10 @@ class JournalBatch:
     started_at: str
     entries: tuple[WriteRecord, ...]
     reverted_at: str | None = None
+    #: Why this batch's entries could not be decoded. Such a batch is still listed, so one
+    #: damaged row does not hide the rest of the history, but it can never be restored:
+    #: undoing only the readable entries would silently skip a file.
+    error: str | None = None
 
     @property
     def track_count(self) -> int:
@@ -174,6 +178,8 @@ class JournalBatch:
 
     @property
     def summary(self) -> str:
+        if self.error is not None:
+            return f"unreadable journal entry ({self.error})"
         tracks = f"{self.track_count} track{'s' if self.track_count != 1 else ''}"
         genres = self.standard_genre_count
         details: list[str] = []
@@ -258,10 +264,7 @@ class WriteJournal:
                 """,
                 (limit,),
             ).fetchall()
-            return tuple(
-                self._batch_from_row(row, self._entries(connection, str(row["batch_id"])))
-                for row in rows
-            )
+            return tuple(self._listed_batch(connection, row) for row in rows)
 
     def batch(self, batch_id: str) -> JournalBatch | None:
         with closing(self._connect()) as connection:
@@ -279,7 +282,11 @@ class WriteJournal:
 
     def latest(self) -> JournalBatch | None:
         batches = self.recent(limit=1)
-        return batches[0] if batches else None
+        if not batches:
+            return None
+        if batches[0].error is not None:
+            raise JournalError(batches[0].error)
+        return batches[0]
 
     def mark_reverted(self, batch_id: str) -> None:
         with closing(self._connect()) as connection, connection:
@@ -328,6 +335,13 @@ class WriteJournal:
             (batch_id,),
         )
         return tuple(self._decode(str(row["record_json"]), batch_id) for row in rows)
+
+    def _listed_batch(self, connection: sqlite3.Connection, row: sqlite3.Row) -> JournalBatch:
+        try:
+            entries = self._entries(connection, str(row["batch_id"]))
+        except JournalError as error:
+            return replace(self._batch_from_row(row, ()), error=str(error))
+        return self._batch_from_row(row, entries)
 
     def _batch_from_row(
         self,

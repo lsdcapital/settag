@@ -345,6 +345,29 @@ def test_a_failing_recorder_never_fails_the_write(tmp_path: Path) -> None:
     assert read_owned_values(path)["SETTAG_GENRE"] == ["Electronic---House"]
 
 
+def test_retrying_a_partial_undo_does_not_block_files_it_already_restored(
+    tmp_path: Path,
+) -> None:
+    paths = [tmp_path / "a.wav", tmp_path / "b.wav"]
+    for path in paths:
+        _silent_wav(path)
+    before = [read_owned_values(path) for path in paths]
+    journal = WriteJournal(tmp_path / "journal.sqlite3")
+    recorder = BatchRecorder(journal)
+    apply_prepared(preflight_plan([_plan(path) for path in paths]), on_write=recorder)
+    batch = journal.batch(recorder.batch_id)
+    assert batch is not None
+    # The first attempt restored only the first file before stopping.
+    apply_undo(batch.entries[:1])
+
+    preflight = preflight_undo(batch.entries)
+    restored = apply_undo(preflight.restorable)
+
+    assert preflight.blocked == ()
+    assert restored == 2
+    assert [read_owned_values(path) for path in paths] == before
+
+
 def test_undo_skips_a_file_that_changed_after_the_write(tmp_path: Path) -> None:
     path = tmp_path / "track.wav"
     _silent_wav(path)

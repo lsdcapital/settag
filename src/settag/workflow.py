@@ -39,6 +39,7 @@ from settag.records import (
 )
 from settag.state import WorkbenchStore
 from settag.tags import (
+    OWNED_DESCRIPTIONS,
     GenreState,
     OwnedValues,
     TagChange,
@@ -916,8 +917,31 @@ def _undo_blocker(entry: WriteRecord, *, force: bool) -> str | None:
         return None
     stat = entry.path.stat()
     if stat.st_size != entry.size_after or stat.st_mtime_ns != entry.mtime_ns_after:
+        # A partial undo restores some files before failing, which changes their stat.
+        # Retrying must not report those as touched by another tool: restoring them again
+        # is a no-op, so only a file whose tags differ from the pre-write state is blocked.
+        if _already_restored(entry):
+            return None
         return "file changed after SetTag wrote it"
     return None
+
+
+def _already_restored(entry: WriteRecord) -> bool:
+    try:
+        store = owned_tag_store(entry.path)
+        owned = {description: store.read_value(description) for description in OWNED_DESCRIPTIONS}
+        if owned != {description: entry.owned_before.get(description) for description in owned}:
+            return False
+        if (
+            entry.standard_after is not None
+            and store.plan_standard_genres(entry.standard_before) is not None
+        ):
+            return False
+        return not (
+            entry.hygiene_changes and store.plan_hygiene(dict(entry.hygiene_before)).changes
+        )
+    except Exception:
+        return False
 
 
 def apply_undo(
@@ -926,7 +950,10 @@ def apply_undo(
     force: bool = False,
     on_progress: WriteProgressCallback | None = None,
 ) -> int:
-    """Restore the tag values each write replaced, newest write first.
+    """Restore the tag values each write replaced, in the order they were journaled.
+
+    A batch holds at most one write per file, so the order does not change the result;
+    callers rely on it matching ``entries`` to tell which files a partial undo restored.
 
     Only the SetTag-owned bundle, an explicitly staged conventional genre edit,
     and explicitly cleaned hygiene fields are rewritten. This is not a

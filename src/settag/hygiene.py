@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Callable, Sequence
+from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
@@ -446,7 +447,10 @@ def apply_hygiene(
             )
             completed += 1
             if on_write is not None:
-                on_write(_write_record(item))
+                # The file is already written and verified; as in `apply_prepared`, a
+                # recorder failure must not be reported as a failed write.
+                with suppress(Exception):
+                    on_write(_write_record(item))
             if on_progress is not None:
                 on_progress(completed, total, plan.path)
     except KeyboardInterrupt:

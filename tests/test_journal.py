@@ -231,3 +231,29 @@ def test_recorder_absorbs_a_failing_insert_and_reports_it(tmp_path: Path) -> Non
     assert recorder.error is not None
     assert "cannot be undone" in recorder.error
     assert "no column named" in recorder.error
+
+
+def test_one_damaged_entry_does_not_hide_the_rest_of_the_history(tmp_path: Path) -> None:
+    journal = WriteJournal(tmp_path / "journal.sqlite3")
+    journal.record("older", _record(tmp_path / "a.wav", written_at="2026-07-24T10:00:00Z"))
+    journal.record("newer", _record(tmp_path / "b.wav", written_at="2026-07-25T10:00:00Z"))
+    with sqlite3.connect(journal.path) as connection:
+        connection.execute(
+            "UPDATE write_entries SET record_json = '{broken' WHERE batch_id = 'newer'"
+        )
+
+    recent = journal.recent()
+
+    assert [batch.batch_id for batch in recent] == ["newer", "older"]
+    assert recent[0].error is not None
+    assert "unreadable" in recent[0].summary
+    assert recent[1].error is None
+    assert recent[1].track_count == 1
+    older = journal.batch("older")
+    assert older is not None
+    assert older.track_count == 1
+    # The damaged batch itself is never offered for a partial restore.
+    with pytest.raises(JournalError, match="Invalid journal entry"):
+        journal.batch("newer")
+    with pytest.raises(JournalError, match="Invalid journal entry"):
+        journal.latest()

@@ -1,10 +1,15 @@
 from __future__ import annotations
 
+import ctypes
+import ctypes.util
+import fcntl
 import json
 import os
 import shutil
+import sys
 from abc import ABC, abstractmethod
 from collections.abc import Mapping
+from contextlib import suppress
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Literal
@@ -255,9 +260,12 @@ def task_evidence_from_owned(
 class OwnedTagStore(ABC):
     format_name: str
 
-    def __init__(self, path: Path, audio: Any) -> None:
+    def __init__(self, path: Path, audio: Any, loaded_stat: os.stat_result | None = None) -> None:
         self.path = path
         self.audio = audio
+        # Taken before parsing, so any change after the tags were read shows up as a
+        # different stat when the candidate is about to replace the original.
+        self.loaded_stat = loaded_stat
 
     def plan(self, desired: OwnedValues) -> TagPlan:
         changes = tuple(
@@ -336,15 +344,35 @@ class OwnedTagStore(ABC):
         try:
             shutil.copy2(self.path, temporary)
             self._save(temporary)
+            _copy_extended_attributes(self.path, temporary)
             self._verify_candidate(temporary, desired, standard_genres, hygiene_values)
             # The rename is only atomic with respect to other processes. Without flushing
             # the candidate first, a power loss just after the swap can leave the name
             # pointing at a truncated file, and the original is already gone.
             with temporary.open("rb") as handle:
-                os.fsync(handle.fileno())
+                _full_fsync(handle.fileno())
+            # Copying, saving and verifying a large WAV can take seconds. Another tool
+            # writing the original in that window would be silently overwritten, so
+            # check once more as close to the swap as possible.
+            self._check_unchanged_since_load()
             os.replace(temporary, self.path)
+            # The rename itself lives in the directory. Until that is flushed, a power loss
+            # can bring the old file back even though the journal records the write.
+            _fsync_directory(self.path.parent)
         finally:
             temporary.unlink(missing_ok=True)
+
+    def _check_unchanged_since_load(self) -> None:
+        if self.loaded_stat is None:
+            return
+        current = self.path.stat()
+        before = self.loaded_stat
+        if (current.st_size, current.st_mtime_ns, current.st_ino) != (
+            before.st_size,
+            before.st_mtime_ns,
+            before.st_ino,
+        ):
+            raise TagStateChangedError(f"{self.path} changed on disk while SetTag was writing it")
 
     def _save(self, target: Path | None = None) -> None:
         if target is None:
@@ -813,7 +841,12 @@ class Mp4OwnedTagStore(OwnedTagStore):
             if isinstance(value, str):
                 values.append(value)
             elif isinstance(value, bytes):
-                values.append(value.decode("utf-8"))
+                try:
+                    values.append(value.decode("utf-8"))
+                except UnicodeDecodeError as error:
+                    raise UnsupportedTagFormatError(
+                        f"SetTag-owned MP4 atom {key} is not UTF-8 text in {self.path}"
+                    ) from error
             else:
                 raise UnsupportedTagFormatError(
                     f"Unexpected value in SetTag-owned MP4 atom {key} in {self.path}"
@@ -875,19 +908,77 @@ class Mp4OwnedTagStore(OwnedTagStore):
     def write_hygiene_value(self, field: str, values: list[str] | None) -> None:
         key = _parse_simple_hygiene_field(field, "MP4")
         tags = self.ensure_tags()
+        # Kept values are only ever text that decoded as UTF-8, but the atom may have been
+        # stored as implicit rather than explicit UTF-8. Keep its type so a partial cleanup
+        # does not change how other software classifies the atom.
+        existing = {getattr(value, "dataformat", None) for value in tags.get(key, ())}
         if key in tags:
             del tags[key]
         if not values:
             return
         if key.startswith("----:"):
+            dataformat = (
+                existing.pop()
+                if existing in ({AtomDataType.UTF8}, {AtomDataType.IMPLICIT})
+                else AtomDataType.UTF8
+            )
             tags[key] = [
-                MP4FreeForm(value.encode("utf-8"), dataformat=AtomDataType.UTF8) for value in values
+                MP4FreeForm(value.encode("utf-8"), dataformat=dataformat) for value in values
             ]
         else:
             tags[key] = values
 
 
+# copyfile(3) flags. COPYFILE_STAT is deliberately absent: it would copy the original's
+# mtime onto the candidate, hiding the write from other tools and from undo's staleness check.
+_COPYFILE_ACL = 1 << 0
+_COPYFILE_XATTR = 1 << 2
+
+
+def _copy_extended_attributes(source: Path, target: Path) -> None:
+    """Carry Finder tags and other extended attributes over to the candidate.
+
+    ``shutil.copy2`` already does this on Linux, but CPython has no ``os.listxattr`` on
+    macOS, so a DJ's colour tags and comments set in Finder would vanish on every write.
+    Best effort: failing here leaves the file exactly as the old behaviour did.
+    """
+    if sys.platform != "darwin":
+        return
+    with suppress(Exception):
+        libc = ctypes.CDLL(ctypes.util.find_library("c"), use_errno=True)
+        libc.copyfile(
+            os.fsencode(source), os.fsencode(target), None, _COPYFILE_ACL | _COPYFILE_XATTR
+        )
+
+
+def _full_fsync(fd: int) -> None:
+    """Flush to stable storage. On macOS plain fsync stops at the drive's cache."""
+    full_fsync = getattr(fcntl, "F_FULLFSYNC", None)
+    if full_fsync is not None:
+        try:
+            fcntl.fcntl(fd, full_fsync)
+            return
+        except OSError:
+            pass
+    os.fsync(fd)
+
+
+def _fsync_directory(directory: Path) -> None:
+    # Not every filesystem allows opening or syncing a directory; the rename has already
+    # happened, so this can only improve durability, never fail the write.
+    with suppress(OSError):
+        fd = os.open(directory, os.O_RDONLY)
+        try:
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+
+
 def owned_tag_store(path: Path) -> OwnedTagStore:
+    try:
+        loaded_stat = path.stat()
+    except OSError:
+        loaded_stat = None
     try:
         audio = mutagen.File(path)
         if (
@@ -903,11 +994,11 @@ def owned_tag_store(path: Path) -> OwnedTagStore:
     if audio is None:
         raise UnsupportedTagFormatError(f"Unrecognized metadata container: {path}")
     if isinstance(audio, (MP3, AIFF, WAVE)):
-        return Id3OwnedTagStore(path, audio)
+        return Id3OwnedTagStore(path, audio, loaded_stat)
     if isinstance(audio, FLAC):
-        return VorbisOwnedTagStore(path, audio)
+        return VorbisOwnedTagStore(path, audio, loaded_stat)
     if isinstance(audio, MP4):
-        return Mp4OwnedTagStore(path, audio)
+        return Mp4OwnedTagStore(path, audio, loaded_stat)
 
     raise UnsupportedTagFormatError(
         f"Metadata writes are not supported for {type(audio).__name__}: {path}"

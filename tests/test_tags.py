@@ -1,6 +1,8 @@
 import json
 import os
 import shutil
+import subprocess
+import sys
 import wave
 from pathlib import Path
 from typing import Any
@@ -8,10 +10,11 @@ from typing import Any
 import pytest
 from mutagen.flac import FLAC
 from mutagen.id3 import APIC, ID3, TCON, TIT2, TSIZ, TXXX, TYER
-from mutagen.mp4 import MP4, MP4FreeForm
+from mutagen.mp4 import MP4, AtomDataType, MP4FreeForm
 from mutagen.wave import WAVE
 
 from settag import __version__
+from settag import tags as tags_module
 from settag.policy import Prediction
 from settag.tags import (
     MP4_MEAN,
@@ -23,6 +26,7 @@ from settag.tags import (
     TagStateChangedError,
     UnsupportedTagFormatError,
     VorbisOwnedTagStore,
+    _simple_hygiene_field,
     apply_metadata_tags,
     build_task_owned_values,
     plan_owned_tags,
@@ -528,6 +532,34 @@ def test_mp4_store_uses_namespaced_freeform_atoms(tmp_path: Path) -> None:
     assert audio.save_count == 1
 
 
+def test_a_non_utf8_owned_mp4_atom_is_reported_as_unsupported(tmp_path: Path) -> None:
+    audio = FakeAudio({f"----:{MP4_MEAN}:GENRE": [MP4FreeForm(b"\xff\xfe")]})
+    store = Mp4OwnedTagStore(tmp_path / "track.m4a", audio)
+
+    with pytest.raises(UnsupportedTagFormatError, match="not UTF-8"):
+        store.read_value("SETTAG_GENRE")
+
+
+def test_mp4_hygiene_rewrite_keeps_an_implicit_atom_implicit(tmp_path: Path) -> None:
+    key = "----:com.apple.iTunes:COMMENT"
+    audio = FakeAudio(
+        {
+            key: [
+                MP4FreeForm(b"keep", dataformat=AtomDataType.IMPLICIT),
+                MP4FreeForm(b"https://spam.example", dataformat=AtomDataType.IMPLICIT),
+            ]
+        }
+    )
+    store = Mp4OwnedTagStore(tmp_path / "track.m4a", audio)
+
+    store.write_hygiene_value(_simple_hygiene_field("MP4", key), ["keep"])
+
+    assert audio.tags is not None
+    assert [(bytes(item), item.dataformat) for item in audio.tags[key]] == [
+        (b"keep", AtomDataType.IMPLICIT)
+    ]
+
+
 def test_unchanged_owned_values_do_not_rewrite_file(tmp_path: Path) -> None:
     desired = _desired()
     audio = FakeAudio({key: value for key, value in desired.items() if value is not None})
@@ -602,6 +634,29 @@ def test_failed_write_leaves_the_original_byte_identical(
     assert sorted(item.name for item in tmp_path.iterdir()) == [path.name]
 
 
+def test_an_external_write_during_the_commit_is_not_overwritten(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Another tool saving the file while SetTag verifies its candidate must win."""
+    path = _copy_fixture("tagged.flac", tmp_path)
+    real_verify = OwnedTagStore._verify_candidate
+
+    def external_write_then_verify(self: OwnedTagStore, *args: Any, **kwargs: Any) -> None:
+        other = FLAC(path)
+        other["TITLE"] = ["Edited in another app"]
+        other.save()
+        real_verify(self, *args, **kwargs)
+
+    monkeypatch.setattr(OwnedTagStore, "_verify_candidate", external_write_then_verify)
+
+    with pytest.raises(TagStateChangedError, match="changed on disk"):
+        apply_metadata_tags(path, _desired())
+
+    assert FLAC(path)["TITLE"] == ["Edited in another app"]
+    assert sorted(item.name for item in tmp_path.iterdir()) == [path.name]
+
+
 def test_committed_candidate_is_flushed_before_it_replaces_the_original(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -609,7 +664,7 @@ def test_committed_candidate_is_flushed_before_it_replaces_the_original(
     """The rename alone is not crash-safe: power loss can truncate an unflushed candidate."""
     path = _copy_fixture("tagged.flac", tmp_path)
     events: list[str] = []
-    real_fsync = os.fsync
+    real_fsync = tags_module._full_fsync
     real_replace = os.replace
 
     def record_fsync(fd: int) -> None:
@@ -620,9 +675,23 @@ def test_committed_candidate_is_flushed_before_it_replaces_the_original(
         events.append("replace")
         return real_replace(src, dst, *args, **kwargs)
 
-    monkeypatch.setattr(os, "fsync", record_fsync)
+    monkeypatch.setattr(tags_module, "_full_fsync", record_fsync)
     monkeypatch.setattr(os, "replace", record_replace)
 
     apply_metadata_tags(path, _desired())
 
     assert events == ["fsync", "replace"]
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="copy2 already keeps xattrs on Linux")
+def test_a_write_keeps_macos_extended_attributes(tmp_path: Path) -> None:
+    """Finder colour tags live in an xattr, which a copy-and-replace would otherwise drop."""
+    path = _copy_fixture("tagged.flac", tmp_path)
+    subprocess.run(["xattr", "-w", "user.settag-test", "keep me", str(path)], check=True)
+
+    apply_metadata_tags(path, _desired())
+
+    kept = subprocess.run(
+        ["xattr", "-p", "user.settag-test", str(path)], capture_output=True, text=True
+    )
+    assert kept.stdout.strip() == "keep me"
