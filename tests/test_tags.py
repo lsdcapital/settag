@@ -7,7 +7,7 @@ from typing import Any
 
 import pytest
 from mutagen.flac import FLAC
-from mutagen.id3 import APIC, ID3, TCON, TIT2, TXXX
+from mutagen.id3 import APIC, ID3, TCON, TIT2, TSIZ, TXXX, TYER
 from mutagen.mp4 import MP4, MP4FreeForm
 from mutagen.wave import WAVE
 
@@ -400,6 +400,60 @@ def test_explicit_genre_edit_uses_the_native_container_field(
     assert standard_plan is not None
     assert standard_plan.field == expected_field
     assert read_genre_state(path).standard == ("Deep House",)
+
+
+@pytest.mark.parametrize("fixture", [None, "tagged.flac", "tagged.m4a"])
+def test_explicit_empty_genre_edit_removes_the_file_genre(
+    tmp_path: Path, fixture: str | None
+) -> None:
+    # Undo restores `standard_before=()` for a file that had no genre, so clearing
+    # must work in every container or the undo fails verification.
+    if fixture is None:
+        path = tmp_path / "track.wav"
+        _tagged_wav(path)
+    else:
+        path = _copy_fixture(fixture, tmp_path)
+    desired = _desired()
+    standard_plan = plan_standard_genres(path, ())
+
+    apply_metadata_tags(
+        path,
+        desired,
+        standard_genres=(),
+        expected_standard=("Existing genre",),
+        expected_standard_change=standard_plan,
+    )
+
+    assert read_genre_state(path).standard == ()
+
+
+def test_id3v23_file_keeps_its_version_and_v23_only_frames(tmp_path: Path) -> None:
+    path = tmp_path / "track.wav"
+    _silent_wav(path)
+    audio = WAVE(path)
+    audio.add_tags()
+    assert isinstance(audio.tags, ID3)
+    audio.tags.add(TIT2(encoding=1, text=["Original title"]))
+    audio.tags.add(TCON(encoding=1, text=["Existing genre"]))
+    audio.tags.add(TYER(encoding=1, text=["1999"]))
+    audio.tags.add(TSIZ(encoding=1, text=["12345"]))
+    audio.save(v2_version=3)
+
+    apply_metadata_tags(
+        path,
+        _desired(),
+        standard_genres=("Techno", "Deep/House"),
+        expected_standard_change=plan_standard_genres(path, ("Techno", "Deep/House")),
+    )
+    tags = WAVE(path, v2_version=3).tags
+
+    assert tags is not None
+    assert tags.version[:2] == (2, 3)
+    assert tags["TYER"].text == ["1999"]
+    assert tags["TSIZ"].text == ["12345"]
+    assert tags["TIT2"].text == ["Original title"]
+    assert read_genre_state(path).standard == ("Techno", "Deep/House")
+    assert tags["TXXX:SETTAG_GENRE"].text == ["Electronic---Deep House"]
 
 
 def test_empty_result_removes_only_stale_owned_genre(tmp_path: Path) -> None:

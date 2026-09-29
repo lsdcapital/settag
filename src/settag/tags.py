@@ -327,7 +327,7 @@ class OwnedTagStore(ABC):
         if not self.path.exists():
             # No original exists, so there is nothing an interrupted write could damage and
             # nothing to read a candidate back from. Write directly.
-            self.audio.save()
+            self._save()
             return
 
         temporary = self.path.with_name(
@@ -335,7 +335,7 @@ class OwnedTagStore(ABC):
         )
         try:
             shutil.copy2(self.path, temporary)
-            self.audio.save(temporary)
+            self._save(temporary)
             self._verify_candidate(temporary, desired, standard_genres, hygiene_values)
             # The rename is only atomic with respect to other processes. Without flushing
             # the candidate first, a power loss just after the swap can leave the name
@@ -345,6 +345,12 @@ class OwnedTagStore(ABC):
             os.replace(temporary, self.path)
         finally:
             temporary.unlink(missing_ok=True)
+
+    def _save(self, target: Path | None = None) -> None:
+        if target is None:
+            self.audio.save()
+        else:
+            self.audio.save(target)
 
     def _verify_candidate(
         self,
@@ -529,6 +535,26 @@ def hygiene_field_label(field: str) -> str:
 class Id3OwnedTagStore(OwnedTagStore):
     format_name = "id3"
 
+    def _save(self, target: Path | None = None) -> None:
+        """Save in the tag's original ID3 version.
+
+        Mutagen saves v2.4 by default, and converting a v2.3 tag drops frames with no
+        v2.4 equivalent (TSIZ, TRDA, RVAD, EQUA, unknown frames) that undo cannot bring
+        back. `owned_tag_store` loads v2.3 tags without translating them, so saving as
+        v2.3 leaves every unrelated frame as it was. Multiple values are written
+        null-separated rather than joined with "/", which would be ambiguous for genres
+        like "Deep/House" and fail verification.
+        """
+        tags = self.audio.tags
+        if isinstance(tags, ID3) and tags.version[:2] == (2, 3):
+            options: dict[str, Any] = {"v2_version": 3, "v23_sep": None}
+            if target is None:
+                self.audio.save(**options)
+            else:
+                self.audio.save(target, **options)
+            return
+        super()._save(target)
+
     def field_name(self, description: str) -> str:
         return f"TXXX:{description}"
 
@@ -695,9 +721,10 @@ class VorbisOwnedTagStore(OwnedTagStore):
 
     def write_standard_genres(self, values: list[str]) -> None:
         tags = self.ensure_tags()
-        for key in list(tags):
-            if str(key).casefold() == "genre":
-                del tags[key]
+        # Vorbis keys are case-insensitive and mutagen's deletion is too, so this removes
+        # every GENRE/Genre/genre comment. Iterating the dict would yield (key, value) pairs.
+        if "GENRE" in tags:
+            del tags["GENRE"]
         if values:
             tags["GENRE"] = values
 
@@ -863,6 +890,13 @@ class Mp4OwnedTagStore(OwnedTagStore):
 def owned_tag_store(path: Path) -> OwnedTagStore:
     try:
         audio = mutagen.File(path)
+        if (
+            isinstance(audio, (MP3, AIFF, WAVE))
+            and isinstance(audio.tags, ID3)
+            and audio.tags.version[:2] == (2, 3)
+        ):
+            # Reload so v2.3 frames are kept as-is instead of translated to v2.4.
+            audio = type(audio)(path, v2_version=3)
     except mutagen.MutagenError as error:
         raise UnsupportedTagFormatError(f"Could not read metadata container: {path}") from error
 
