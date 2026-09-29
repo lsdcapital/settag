@@ -9,28 +9,14 @@ from pathlib import Path
 from textual import work
 
 from settag.journal import JournalBatch, JournalError, WriteRecord
-from settag.tags import OwnedValues
 from settag.tui.core import SetTagAppCore
 from settag.tui.screens import ConfirmUndoScreen, ErrorScreen, UndoScreen
 from settag.workflow import (
-    MetadataStatus,
     PartialWriteError,
     UndoPreflight,
     apply_undo,
     preflight_undo,
 )
-
-
-def _restored_status(owned: OwnedValues) -> MetadataStatus:
-    """Describe a track after its SetTag metadata was rolled back.
-
-    A restored bundle cannot be shown as up to date without re-inspecting it
-    against the current model and config, so anything still carrying SetTag
-    metadata is reported as needing reanalysis rather than over-claimed.
-    """
-    if all(values is None for values in owned.values()):
-        return "not_analyzed"
-    return "stale"
 
 
 class UndoFlow(SetTagAppCore):
@@ -227,30 +213,4 @@ class UndoFlow(SetTagAppCore):
 
     def _accept_reverted(self, entries: Sequence[WriteRecord]) -> int:
         """Show restored files as their previous state. Returns review plans cleared."""
-        by_path = {entry.path: index for index, entry in enumerate(self.entries)}
-        cleared = 0
-        for record in entries:
-            index = by_path.get(record.path)
-            if index is None:
-                continue
-            entry = self.entries[index]
-            if entry.plan is not None and entry.needs_write_review:
-                cleared += 1
-            standard_genre = (
-                record.standard_before
-                if record.standard_after is not None or entry.metadata is None
-                else entry.metadata.genre_state.standard
-            )
-            self._refresh_entry_metadata(
-                index,
-                owned=dict(record.owned_before),
-                standard_genre=standard_genre,
-                status=_restored_status(record.owned_before),
-            )
-            entry.plan = None
-            entry.plan_cached = False
-            entry.analysis_error = None
-            self.analysis_selected.discard(index)
-            self.write_selected.discard(index)
-            self.review_indices.discard(index)
-        return cleared
+        return self.session.accept_reverted(entries)

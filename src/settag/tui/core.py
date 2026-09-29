@@ -35,7 +35,6 @@ from settag.journal import (
 )
 from settag.plans import (
     PlannedWrite,
-    stage_file_genre,
 )
 from settag.policy import Prediction
 from settag.review_evidence import StoredEvidence, describe_evidence
@@ -59,6 +58,7 @@ from settag.tui.review import NodeKey, ReviewTree, review_track
 from settag.tui.screens import (
     GenreEditScreen,
 )
+from settag.tui.session import ReviewSession, WriteToggle
 from settag.tui.table import (
     GENRE_MATCH_STYLE,
     GENRE_REVIEW_STYLE,
@@ -70,8 +70,8 @@ from settag.tui.table import (
     visible_row_cells,
 )
 from settag.workflow import (
+    AnalysisFailure,
     MetadataBatch,
-    MetadataStatus,
     MetadataTrack,
 )
 
@@ -184,18 +184,13 @@ class SetTagAppCore(App[TuiOutcome]):
         self.analysis_tasks = ordered_tasks(analysis_tasks)
         if not self.analysis_tasks:
             raise ValueError("SetTagApp requires at least one analysis task")
-        self.entries: list[TrackEntry] = []
+        self.session = ReviewSession(self.analysis_tasks)
         self.visible_indices: list[int] = []
-        self.analysis_selected: set[int] = set()
-        self.write_selected: set[int] = set()
-        self.review_indices: set[int] = set()
         self.phase: AppPhase = "choose"
         self.library_filter: LibraryFilter = "all"
         self.genre_filter: GenreFilter = "all"
         self.busy = False
-        self._pending_analysis_indices: tuple[int, ...] = ()
         self._analysis_cancel_requested = Event()
-        self._analysis_completed_count = 0
         self._analysis_success_count = 0
         self._analysis_partial_count = 0
         self._analysis_failure_count = 0
@@ -213,20 +208,40 @@ class SetTagAppCore(App[TuiOutcome]):
         self._inspector_state: tuple[AppPhase, int, str] | None = None
         self.sub_title = "Reading existing metadata"
 
+    # The session owns this state; these names are how widgets, flows, and tests
+    # read it. Changes go through the session's methods.
+
+    @property
+    def entries(self) -> list[TrackEntry]:
+        return self.session.entries
+
+    @property
+    def analysis_selected(self) -> set[int]:
+        return self.session.analysis_selected
+
+    @analysis_selected.setter
+    def analysis_selected(self, value: set[int]) -> None:
+        self.session.analysis_selected = value
+
+    @property
+    def review_indices(self) -> set[int]:
+        return self.session.review_indices
+
+    @property
+    def write_selected(self) -> set[int]:
+        return self.session.write_selected
+
+    @property
+    def _pending_analysis_indices(self) -> tuple[int, ...]:
+        return self.session.pending_analysis
+
+    @property
+    def _analysis_completed_count(self) -> int:
+        return self.session.analysis_completed
+
     @property
     def analysis_running(self) -> bool:
-        return bool(self._pending_analysis_indices)
-
-    def _awaiting_new_result(self, index: int) -> bool:
-        """Whether the running analysis has yet to replace this track's plan.
-
-        A track with a partial cached result sits in review and in the analysis
-        selection at once. While it is re-enriched, an edit or a write made on the
-        old plan would be silently replaced by the new result, or would delete that
-        result's workbench row once the write finished. Such tracks are held until
-        their new result arrives.
-        """
-        return index in self._pending_analysis_indices[self._analysis_completed_count :]
+        return self.session.analysis_running
 
     def _notify_awaiting_new_result(self) -> None:
         self.notify(
@@ -397,18 +412,7 @@ class SetTagAppCore(App[TuiOutcome]):
         entries.extend(
             TrackEntry(path=failure.path, metadata_error=failure) for failure in metadata.failures
         )
-        self.entries = sorted(entries, key=lambda entry: str(entry.path))
-        self.analysis_selected = {
-            index
-            for index, entry in enumerate(self.entries)
-            if entry.can_analyze and entry.needs_analysis
-        }
-        self.review_indices = {
-            index for index, entry in enumerate(self.entries) if entry.plan is not None
-        }
-        self.write_selected = {
-            index for index in self.review_indices if self.entries[index].needs_write_review
-        }
+        self.session.load(entries)
         self.query_one("#loading").display = False
         self.query_one("#main").display = True
         self._show_library()
@@ -980,36 +984,24 @@ class SetTagAppCore(App[TuiOutcome]):
                     severity="warning",
                 )
                 return
-            selection = self.analysis_selected
-        else:
-            entry = self.entries[index]
-            if entry.analysis_error is not None:
-                self._dismiss_failure(index)
-                return
-            if not entry.needs_write_review:
-                return
-            if self._awaiting_new_result(index):
-                self._notify_awaiting_new_result()
-                return
-            selection = self.write_selected
+            self.session.toggle_analysis(index)
+            self._refresh_row(index)
+            return
 
-        if index in selection:
-            selection.remove(index)
-        else:
-            selection.add(index)
-        self._refresh_row(index)
+        failure = self.entries[index].analysis_error
+        outcome = self.session.toggle_write(index)
+        if outcome is WriteToggle.DISMISSED:
+            assert failure is not None
+            self._failure_dismissed(index, failure)
+        elif outcome is WriteToggle.AWAITING_RESULT:
+            self._notify_awaiting_new_result()
+        elif outcome is WriteToggle.TOGGLED:
+            self._refresh_row(index)
 
-    def _dismiss_failure(self, index: int) -> None:
-        """Take a failed track out of review so it no longer blocks writing the rest.
-
-        The error stays on the track, so the library still shows which file failed and
-        why; a file that fails every time can be found and dealt with there.
-        """
+    def _failure_dismissed(self, index: int, failure: AnalysisFailure) -> None:
         entry = self.entries[index]
-        assert entry.analysis_error is not None
-        self.review_indices.discard(index)
         self.notify(
-            f"Dismissed {entry.path.name}: {entry.analysis_error.description}. "
+            f"Dismissed {entry.path.name}: {failure.description}. "
             "It stays in the library with this error; press B to see it.",
             title="Failed track dismissed",
             timeout=10,
@@ -1025,20 +1017,9 @@ class SetTagAppCore(App[TuiOutcome]):
         if self.phase == "choose" and self.analysis_running:
             return
         if self.phase == "choose":
-            eligible = {index for index in self.visible_indices if self.entries[index].can_analyze}
-            selection = self.analysis_selected
+            self.session.toggle_all_analysis(self.visible_indices)
         else:
-            eligible = {
-                index
-                for index in self.visible_indices
-                if self.entries[index].needs_write_review and not self._awaiting_new_result(index)
-            }
-            selection = self.write_selected
-
-        if eligible and eligible.issubset(selection):
-            selection.difference_update(eligible)
-        else:
-            selection.update(eligible)
+            self.session.toggle_all_write(self.visible_indices)
         self._rebuild_table(preserve_view=True)
 
     def action_toggle_details(self) -> None:
@@ -1091,11 +1072,7 @@ class SetTagAppCore(App[TuiOutcome]):
             return
         if self.analysis_running:
             self._analysis_navigation_changed = True
-        # Keep the user's own choices: a track they unchecked stays unchecked. Only tracks
-        # that no longer need enrichment drop out; A selects everything again.
-        self.analysis_selected = {
-            index for index in self.analysis_selected if self.entries[index].needs_analysis
-        }
+        self.session.return_to_library()
         self._show_library()
 
     def action_edit_genre(self) -> None:
@@ -1104,7 +1081,7 @@ class SetTagAppCore(App[TuiOutcome]):
         index = self._current_review_index()
         if index is None:
             return
-        if self._awaiting_new_result(index):
+        if self.session.awaiting_new_result(index):
             self._notify_awaiting_new_result()
             return
         item = self.entries[index].plan
@@ -1127,54 +1104,13 @@ class SetTagAppCore(App[TuiOutcome]):
     def _genre_edited(self, index: int, result: str | None) -> None:
         if result is None:
             return
-        item = self.entries[index].plan
-        if item is None:
-            return
         genres = tuple(value.strip() for value in result.split(",") if value.strip())
-        updated = stage_file_genre(item, genres)
-        self.entries[index].plan = updated
-        if updated.needs_write_review:
-            self.write_selected.add(index)
-        else:
-            self.write_selected.discard(index)
+        if self.session.stage_genre(index, genres) is None:
+            return
         self._persist(index)
         self._refresh_row(index)
         staged = ", ".join(genres) or "None"
         self._update_status(f"Staged standard file genre: {staged}")
-
-    def _refresh_entry_metadata(
-        self,
-        index: int,
-        *,
-        owned: OwnedValues,
-        standard_genre: tuple[str, ...],
-        status: MetadataStatus,
-    ) -> None:
-        """Point one row at the metadata a file now holds.
-
-        Shared by the write and undo paths so a row never describes a state the
-        file is no longer in.
-        """
-        entry = self.entries[index]
-        if entry.metadata is None:
-            return
-        stored_by_task = task_evidence_from_owned(owned)
-        stored_genre = stored_by_task.get("genre", ())
-        entry.metadata = replace(
-            entry.metadata,
-            genre_state=replace(
-                entry.metadata.genre_state,
-                standard=standard_genre,
-                settag=tuple(prediction.label for prediction in stored_genre),
-            ),
-            owned=owned,
-            stored_predictions=stored_genre,
-            status=status,
-            analyzed_at=latest_analyzed_at(owned, self.analysis_tasks),
-            cached_plan=None,
-            cache_status=None,
-            cache_reason=None,
-        )
 
     def action_hygiene(self) -> None:
         if self.busy:

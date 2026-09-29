@@ -3,12 +3,10 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
-from dataclasses import replace
 from pathlib import Path
 
 from textual import work
 
-from settag.freshness import EnrichmentState
 from settag.journal import BatchRecorder
 from settag.plans import PlannedWrite
 from settag.tui.core import SetTagAppCore
@@ -74,7 +72,7 @@ class WriteFlow(SetTagAppCore):
             )
             return
         planned = self._selected_items()
-        held = [index for index in sorted(self.write_selected) if self._awaiting_new_result(index)]
+        held = self.session.held_for_reanalysis()
         if held:
             count = len(held)  # ui-count: selected rows still queued for re-enrichment
             self.notify(
@@ -213,32 +211,7 @@ class WriteFlow(SetTagAppCore):
         self._write_failed(title, message)
 
     def _accept_written(self, items: Sequence[PlannedWrite]) -> None:
-        by_path = {entry.path: index for index, entry in enumerate(self.entries)}
-        for item in items:
-            index = by_path[item.path]
-            standard_genre = (
-                item.target_file_genre if item.target_file_genre is not None else item.file_genre
-            )
-            self._refresh_entry_metadata(
-                index,
-                owned=item.desired,
-                standard_genre=standard_genre,
-                status="current",
-            )
-            entry = self.entries[index]
-            if entry.metadata is not None and item.enrichment is not None:
-                entry.metadata = replace(
-                    entry.metadata,
-                    enrichment=EnrichmentState(
-                        item.enrichment, item.desired.get("SETTAG_BEATPORT")
-                    ),
-                )
-            entry.plan = None
-            entry.plan_cached = False
-            entry.analysis_error = None
-            self.analysis_selected.discard(index)
-            self.write_selected.discard(index)
-            self.review_indices.discard(index)
+        self.session.accept_written(items)
 
     def _discard_written(
         self,
@@ -270,20 +243,7 @@ class WriteFlow(SetTagAppCore):
         self.push_screen(ErrorScreen(title, message))
 
     def _selected_items(self) -> tuple[PlannedWrite, ...]:
-        items: list[PlannedWrite] = []
-        for index in sorted(self.write_selected):
-            item = self.entries[index].plan
-            if (
-                item is not None
-                and item.needs_write_review
-                and not self._awaiting_new_result(index)
-            ):
-                items.append(item)
-        return tuple(items)
+        return self.session.writable_plans()
 
     def _review_failures(self) -> tuple[AnalysisFailure, ...]:
-        return tuple(
-            failure
-            for index in sorted(self.review_indices)
-            if (failure := self.entries[index].analysis_error) is not None
-        )
+        return self.session.review_failures()

@@ -740,7 +740,7 @@ def test_genre_filters_combine_with_library_filters_and_keep_analysis_scoped(
             assert app.visible_indices == [0, 2, 3]
             await pilot.press("r")
             assert scheduled == [(0, 2, 3)]
-            app._pending_analysis_indices = ()
+            app.session.end_analysis()
 
     asyncio.run(exercise())
 

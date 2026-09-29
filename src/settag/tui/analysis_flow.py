@@ -12,7 +12,7 @@ from textual.widgets import ProgressBar, Static
 from settag.plans import PlannedWrite, stage_default_file_genre
 from settag.tui.core import SetTagAppCore
 from settag.tui.screens import ErrorScreen
-from settag.workflow import AnalysisBatch, AnalysisFailure
+from settag.workflow import AnalysisBatch
 
 
 class EditSaveFailed(Message):
@@ -45,8 +45,7 @@ class AnalysisFlow(SetTagAppCore):
             return
         self._analysis_cancel_requested.clear()
         self._quit_during_analysis_requested = False
-        self._pending_analysis_indices = indices
-        self._analysis_completed_count = 0
+        self.session.begin_analysis(indices)
         self._analysis_success_count = 0
         self._analysis_partial_count = 0
         self._analysis_failure_count = 0
@@ -164,7 +163,6 @@ class AnalysisFlow(SetTagAppCore):
         total: int,
         path: Path,
     ) -> None:
-        self._analysis_completed_count = completed
         progress = self.query_one("#analysis-progress", ProgressBar)
         progress.update(total=total, progress=completed)
 
@@ -200,7 +198,6 @@ class AnalysisFlow(SetTagAppCore):
 
     def _hide_analysis_activity(self) -> None:
         self.query_one("#analysis-activity").display = False
-        self._analysis_completed_count = 0
         self._analysis_current_path = None
 
     def _analysis_failed(self, message: str) -> None:
@@ -208,7 +205,7 @@ class AnalysisFlow(SetTagAppCore):
         # ui-count: background tracks queued for this analysis run
         total = len(self._pending_analysis_indices)
         remaining = total - completed
-        self._pending_analysis_indices = ()
+        self.session.end_analysis()
         self._analysis_cancel_requested.clear()
         self._hide_analysis_activity()
         self.sub_title = (
@@ -238,15 +235,8 @@ class AnalysisFlow(SetTagAppCore):
             (item for item in batch.failures if item.path == entry.path),
             None,
         )
+        self.session.accept_result(index, plan, failure, completed=completed)
         if plan is not None:
-            entry.plan = plan
-            entry.plan_cached = False
-            entry.analysis_error = None
-            self.review_indices.add(index)
-            if plan.needs_write_review:
-                self.write_selected.add(index)
-            else:
-                self.write_selected.discard(index)
             if persist_error is not None:
                 self._report_persist_failure(persist_error)
             if plan.enrichment_status == "current":
@@ -254,19 +244,8 @@ class AnalysisFlow(SetTagAppCore):
             else:
                 self._analysis_partial_count += 1
         else:
-            if failure is None:
-                failure = AnalysisFailure(
-                    path=entry.path,
-                    error_type="RuntimeError",
-                    message="Analyzer returned no result for this track",
-                )
-            entry.plan = None
-            entry.analysis_error = failure
-            self.review_indices.add(index)
-            self.write_selected.discard(index)
             self._analysis_failure_count += 1
 
-        self.analysis_selected.discard(index)
         self._advance_analysis_activity(completed, total, entry.path)
         self._refresh_after_analysis(index)
         self.refresh_bindings()
@@ -293,7 +272,7 @@ class AnalysisFlow(SetTagAppCore):
         cancelled: bool,
     ) -> None:
         remaining = total - completed
-        self._pending_analysis_indices = ()
+        self.session.end_analysis()
         self._analysis_cancel_requested.clear()
         self._hide_analysis_activity()
         self.refresh_bindings()
