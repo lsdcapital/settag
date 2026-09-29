@@ -726,6 +726,11 @@ only through its explicit offline evaluation commands. Export from the final
 file state: its importer verifies the whole-file SHA-256 and rejects files
 retagged or replaced since export.
 
+For a reproducible local comparison with MuQ, see the
+[offline retrieval experiment](docs/muq-experiment.md). It uses an isolated
+PyTorch environment and produces neighbour lists and blinded listening playlists.
+MuQ is experimental and is not an analysis backend in the normal SetTag workflow.
+
 ### One enrichment workflow
 
 Open SetTag as usual and press **R — Enrich** on selected tracks. SetTag checks
