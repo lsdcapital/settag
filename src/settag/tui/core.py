@@ -28,7 +28,6 @@ from textual.widgets import (
     Tree,
 )
 
-from settag.freshness import enrichment_record, record_values
 from settag.journal import (
     WriteJournal,
     WriteRecord,
@@ -36,9 +35,6 @@ from settag.journal import (
 from settag.plans import (
     PlannedWrite,
 )
-from settag.policy import Prediction
-from settag.review_evidence import StoredEvidence, describe_evidence
-from settag.tags import OwnedValues, read_task_provenance, task_evidence_from_owned
 from settag.tasks import AnalysisTask, ordered_tasks
 from settag.tui.entries import (
     TASK_LABELS,
@@ -51,10 +47,9 @@ from settag.tui.entries import (
     PlanPersister,
     TrackEntry,
     TuiOutcome,
-    latest_analyzed_at,
-    suggested_label,
 )
-from settag.tui.review import NodeKey, ReviewTree, review_track
+from settag.tui.inspector import display_path, metadata_inspector, review_inspector
+from settag.tui.review import NodeKey, ReviewTree
 from settag.tui.screens import (
     GenreEditScreen,
 )
@@ -97,15 +92,6 @@ GENRE_FILTER_LABELS: dict[GenreFilter, str] = {
     "missing_genre": "Missing genre",
     "matches": "Matches",
 }
-
-
-def _display_path(path: Path) -> str:
-    """Keep paths recognizable without repeating the full home directory."""
-    try:
-        relative = path.relative_to(Path.home())
-    except ValueError:
-        return str(path)
-    return "~" if relative == Path(".") else str(Path("~") / relative)
 
 
 CHOOSE_ACTIONS = frozenset(
@@ -631,7 +617,7 @@ class SetTagAppCore(App[TuiOutcome]):
                 text += f"  ·  {failures} failed"
 
         self.query_one("#context", Static).update(
-            f"{text}\nTasks: {task_text}  ·  {_display_path(self.source)}"
+            f"{text}\nTasks: {task_text}  ·  {display_path(self.source)}"
             if self.phase == "choose"
             else text
         )
@@ -678,9 +664,15 @@ class SetTagAppCore(App[TuiOutcome]):
     def _update_inspector(self, index: int) -> None:
         entry = self.entries[index]
         if self.phase == "choose":
-            lines = self._metadata_inspector(entry, index)
+            lines = metadata_inspector(
+                entry,
+                selected_for_enrichment=index in self.analysis_selected,
+                context=self._row_context,
+            )
         else:
-            lines = self._review_inspector(entry, index)
+            lines = review_inspector(
+                entry, index, checked=index in self.write_selected, context=self._row_context
+            )
         try:
             inspector = self.query_one("#inspector", Static)
             inspector_scroll = self.query_one("#inspector-scroll", VerticalScroll)
@@ -694,185 +686,6 @@ class SetTagAppCore(App[TuiOutcome]):
         self._inspector_state = state
         inspector.update(text)
         inspector_scroll.scroll_home(animate=False)
-
-    def _metadata_inspector(self, entry: TrackEntry, index: int) -> list[str]:
-        identity = ["", entry.path.name, _display_path(entry.path.parent)]
-        lines: list[str] = []
-        if entry.metadata_error is not None:
-            return [
-                *lines,
-                "Metadata could not be read",
-                f"  {entry.metadata_error.description}",
-                "",
-                "This track cannot be analyzed safely until its metadata is readable.",
-                *identity,
-            ]
-
-        assert entry.metadata is not None
-        metadata = entry.metadata
-        genre = ", ".join(metadata.genre_state.standard) or "None"
-        evidence_owned = entry.plan.desired if entry.plan is not None else metadata.owned
-        if entry.plan is not None:
-            review = describe_evidence(entry.plan)
-        else:
-            display_owned = dict(metadata.evidence_view)
-            # Identity validation applies to display as well as lookup reuse.
-            record = enrichment_record(display_owned)
-            if (
-                record
-                and isinstance(record.get("catalog"), dict)
-                and record["catalog"].get("status") in ("matched", "no_match")
-                and not metadata.catalog_current
-            ):
-                display_owned["SETTAG_ENRICHMENT"] = record_values(
-                    audio_complete=record.get("audio") == "complete",
-                    catalog={"status": "unavailable", "reason": "Catalog check needs refreshing"},
-                )
-            selected = (
-                tuple(self._row_context.select_for_review(metadata.stored_predictions))
-                if metadata.status == "current"
-                else ()
-            )
-            review = describe_evidence(
-                StoredEvidence(display_owned, metadata.genre_state.standard, selected)
-            )
-        state = (
-            entry.plan.enrichment_status if entry.plan is not None else metadata.enrichment_status
-        )
-        lines.extend(
-            [
-                f"Recommendation: {review.recommendation}",
-                f"Based on: {review.recommendation_source}",
-                f"Current file tag: {genre}",
-                "",
-                review.catalog_title,
-                *(f"  {detail}" for detail in review.catalog_details),
-                "",
-                f"Enrichment: {state.replace('_', ' ').capitalize()}",
-                *review.notices,
-                "",
-                "Audio models · predictions",
-                *review.model_details,
-                f"Audio last analyzed: {self._full_analyzed_at(entry)}",
-                f"Candidates · {self._candidate_policy()}",
-            ]
-        )
-        lines.extend(
-            self._task_candidate_sections(
-                evidence_owned,
-                fallback_genre=metadata.stored_predictions,
-            )
-        )
-
-        lines.extend(
-            [
-                "",
-                *(
-                    [
-                        "Last enrichment attempt failed",
-                        f"  {entry.analysis_error.description}",
-                        "",
-                    ]
-                    if entry.analysis_error is not None
-                    else []
-                ),
-                (
-                    "Selected for enrichment."
-                    if index in self.analysis_selected
-                    else "Not selected for enrichment."
-                ),
-                *(["Press V to review this saved result."] if entry.plan is not None else []),
-                "Viewing evidence does not run enrichment or write tags.",
-                *identity,
-            ]
-        )
-        return lines
-
-    def _full_analyzed_at(self, entry: TrackEntry) -> str:
-        if entry.plan is not None:
-            return latest_analyzed_at(entry.plan.desired, self.analysis_tasks) or "Never"
-        if entry.metadata is not None and entry.metadata.cached_plan is not None:
-            return (
-                latest_analyzed_at(entry.metadata.cached_plan.desired, self.analysis_tasks)
-                or "Never"
-            )
-        if entry.metadata is not None:
-            return entry.metadata.analyzed_at or "Never"
-        return "Never"
-
-    def _review_inspector(self, entry: TrackEntry, index: int) -> list[str]:
-        identity = ["", entry.path.name, _display_path(entry.path.parent)]
-        lines: list[str] = []
-        if entry.analysis_error is not None:
-            return [
-                *lines,
-                "Enrichment failed",
-                f"  {entry.analysis_error.description}",
-                "",
-                "Press Space to dismiss it so the other tracks can be written,",
-                "or return to the library with B to retry it.",
-                *identity,
-            ]
-        if entry.plan is None:
-            return ["No enrichment result is available.", *identity]
-
-        review = review_track(index, entry, index in self.write_selected, self._row_context)
-
-        def describe(node, depth=0):
-            result = ["  " * depth + node.label]
-            for child in node.children:
-                result.extend(describe(child, depth + 1))
-            return result
-
-        for section in review.children:
-            lines.extend(describe(section))
-            lines.append("")
-        lines.extend(identity)
-        return lines
-
-    def _task_candidate_sections(
-        self,
-        owned: OwnedValues,
-        *,
-        fallback_genre: Sequence[Prediction] = (),
-    ) -> list[str]:
-        evidence_by_task = task_evidence_from_owned(owned)
-        provenance = read_task_provenance(owned)
-        lines: list[str] = []
-        for task in self.analysis_tasks:
-            evidence = evidence_by_task.get(task, ())
-            if not evidence and task == "genre":
-                evidence = fallback_genre
-            if evidence:
-                # ui-count: entries in this task's evidence list, shown only in this panel
-                count = len(evidence)
-                noun = "score" if count == 1 else "scores"
-                lines.append(f"{TASK_LABELS[task]} · {count} {noun}")
-                lines.append(
-                    self._candidate_line(
-                        self._row_context.select_for_review(evidence),
-                    )
-                )
-            elif task in provenance:
-                lines.append(f"{TASK_LABELS[task]} · No ranked evidence")
-            else:
-                lines.append(f"{TASK_LABELS[task]} · Not analyzed")
-        return lines
-
-    def _candidate_policy(self) -> str:
-        cutoff = f"{self.score_cutoff:.3f}".removesuffix("0")
-        return f"cutoff ≥ {cutoff} · top {self.review_top}"
-
-    def _candidate_line(
-        self,
-        selected: Sequence[Prediction],
-    ) -> str:
-        if selected:
-            return "  " + " · ".join(
-                f"{suggested_label((prediction,)) or prediction.label} {prediction.score:.3f}"
-                for prediction in selected
-            )
-        return "  No candidate met the cutoff"
 
     def _refresh_row(self, index: int, *, update_inspector: bool = True) -> None:
         if index not in self.visible_indices:
