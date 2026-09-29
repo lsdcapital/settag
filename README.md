@@ -485,6 +485,15 @@ LOG_LEVEL=DEBUG settag analyze "/path/to/track.mp3"
 Essentia's known one-time Abseil/MLIR startup messages are filtered separately
 because native TensorFlow code writes them before Python logging starts.
 
+If the app reports "Analyzer worker stopped unexpectedly" with an exit code, the
+native analyzer crashed on that file, and its own message was hidden by the
+startup filter or by the app's screen. Run that one file through the plain CLI to
+see it:
+
+```sh
+settag analyze "/path/to/track.mp3"
+```
+
 ## Metadata safety
 
 SetTag-owned model evidence and a conventional file genre are separate:

@@ -7,6 +7,7 @@ this module holds only what they all share.
 from __future__ import annotations
 
 from collections.abc import Sequence
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from pathlib import Path
 from threading import Event
@@ -206,6 +207,8 @@ class SetTagAppCore(App[TuiOutcome]):
         self._pending_undo_skipped = 0
         self._written_count = 0
         self._quit_during_analysis_requested = False
+        # Created on the first genre edit; see AnalysisFlow._persist.
+        self._edit_saver: ThreadPoolExecutor | None = None
         self._table_layout: tuple[tuple[TrackTableColumn, int], ...] = ()
         self._inspector_state: tuple[AppPhase, int, str] | None = None
         self.sub_title = "Reading existing metadata"

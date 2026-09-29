@@ -1,6 +1,7 @@
 # Review TODO
 
 Findings from the September 2026 code review, in priority order.
+`[x]` fixed, `[~]` closed as won't fix, `[ ]` open.
 
 ## Data safety
 
@@ -8,13 +9,13 @@ Findings from the September 2026 code review, in priority order.
 - [x] 2. ID3v2.3 files are saved as v2.4, dropping TSIZ/TRDA/RVAD/EQUA/unknown frames (`tags.py` `_commit`). Preserve the original version.
 - [x] 3. External writes between the staleness check and `os.replace` are overwritten. Re-stat just before the replace.
 - [x] 4. One malformed journal row makes `recent()`/`batch()` raise, locking out all undo history.
-- [ ] 5. Journal entry is recorded after `os.replace`; a crash in between leaves an unrecorded write.
-  Deferred: the window is the moment between the rename and one SQLite insert. Closing it needs a pending/committed two-phase journal entry and a schema bump.
+- [~] 5. Journal entry is recorded after `os.replace`; a crash in between leaves an unrecorded write.
+  Won't fix: the window is the moment between the rename and one SQLite insert. Closing it needs a pending/committed two-phase journal entry and a schema bump.
 - [x] 6. Retrying after a partial undo flags already-restored files as changed; undo doesn't update the journal with restored stat. Undo order is oldest-first despite the docstring.
 - [x] 7. Atomic replace drops macOS xattrs, breaks hard links; no directory fsync after rename.
   Xattrs/ACLs are now copied on macOS, with `F_FULLFSYNC` and a directory fsync. Hard links still break: inherent to write-then-rename.
-- [ ] 8. Undo restores Vorbis hygiene keys lowercased and merged across case variants.
-  Deferred: Vorbis field names are case-insensitive by spec, so readers see the same fields.
+- [~] 8. Undo restores Vorbis hygiene keys lowercased and merged across case variants.
+  Won't fix: Vorbis field names are case-insensitive by spec, so readers see the same fields.
 - [x] 9. MP4 freeform hygiene writes force UTF-8; `apply_hygiene` calls `on_write` without the `suppress` `apply_prepared` uses.
 - [x] 10. Non-UTF-8 bytes in an owned MP4 atom raise a raw `UnicodeDecodeError`.
 
@@ -28,8 +29,8 @@ Findings from the September 2026 code review, in priority order.
   Space on a failed track now dismisses it from review; the error stays visible in the library. Failures are not persisted, so a file that always fails is identified per session (or with `settag analyze PATH --output out.jsonl`, which records settag.error/v1 rows).
 - [x] 15. B (library) resets the analysis selection, contrary to DESIGN.md.
 - [x] 16. Hygiene reports "Nothing was changed" if the post-write rescan fails; partial-failure rescan is outside any `try`.
-- [ ] 17. Genre edit persists synchronously on the event loop (can block up to the SQLite timeout).
-  Deferred: moving it off-thread needs ordered persistence so rapid edits cannot land out of order.
+- [x] 17. Genre edit persists synchronously on the event loop (can block up to the SQLite timeout).
+  Edits now save on a single background thread, in order; failures are reported without blocking.
 - [x] 18. `_accept_reverted` drops review plans silently and leaves stale workbench rows.
 
 ## Analysis, Beatport, CLI
@@ -41,8 +42,8 @@ Findings from the September 2026 code review, in priority order.
 - [x] 22. `settag --no-tui ~/Music` (flag before path) fails with "command required".
 - [x] 23. Scanner picks up macOS `._*` AppleDouble files; unreadable directories are skipped silently.
 - [x] 24. `models download` / `models status` print raw tracebacks on network or checksum errors.
-- [ ] 25. First-analysis stderr capture discards native crash output.
-  Deferred: surviving a native abort needs output on disk that the parent reads back; low value in the TUI, where worker stderr goes to a terminal Textual owns.
+- [~] 25. First-analysis stderr capture discards native crash output.
+  Won't fix: surviving a native abort needs output on disk that the parent reads back. The README's Logging section explains how to see the crash with `settag analyze` on the file.
 - [x] 26. Worker response pickling failure loses the error message.
 - [x] 27. Model files are SHA-hashed ~3× per analyzer build and again on every retry.
 - [x] 28. `analyze --embeddings` leaves an empty file behind if opening `--output` fails; Beatport cache is never pruned.

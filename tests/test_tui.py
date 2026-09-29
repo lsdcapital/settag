@@ -1452,6 +1452,10 @@ def test_tui_restores_cached_plan_in_library_and_opens_review_on_request(
             await pilot.press("v")
             assert app.phase == "review"
             app._genre_edited(0, "House, Techno")
+            for _ in range(40):
+                if persisted:
+                    break
+                await pilot.pause(0.05)
             assert persisted[-1].target_file_genre == ("House", "Techno")
 
             await pilot.press("b")
@@ -2247,3 +2251,50 @@ def test_returning_to_the_library_keeps_unchecked_tracks_unchecked(tmp_path: Pat
             assert 1 not in app.analysis_selected
 
     asyncio.run(exercise())
+
+
+def test_genre_edits_save_in_order_without_blocking_the_ui(tmp_path: Path) -> None:
+    path = tmp_path / "track.wav"
+    _silent_wav(path)
+    plan = _analysis_batch([path]).planned[0]
+    metadata = replace(_metadata_track(path), cached_plan=plan, cache_status="ready")
+    unlocked = Event()
+    saved: list[tuple[str, ...] | None] = []
+
+    def locked_workbench(item: PlannedWrite) -> None:
+        # Stands in for SQLite waiting on a lock the analysis worker holds.
+        unlocked.wait(10)
+        saved.append(item.target_file_genre)
+        if item.target_file_genre == ("Techno",):
+            raise OSError("disk full")
+
+    app = SetTagApp(
+        source=path,
+        initial_metadata=MetadataBatch(tracks=(metadata,), failures=()),
+        analysis_loader=lambda *_args: pytest.fail("editing must not start analysis"),
+        persist_plan=locked_workbench,
+    )
+
+    async def exercise() -> None:
+        async with app.run_test(size=(140, 42)) as pilot:
+            await pilot.pause()
+            await pilot.press("v")
+            started = time.monotonic()
+            app._genre_edited(0, "House")
+            app._genre_edited(0, "Techno")
+            assert time.monotonic() - started < 0.5
+            assert app.entries[0].plan is not None
+            assert app.entries[0].plan.target_file_genre == ("Techno",)
+
+            unlocked.set()
+            for _ in range(40):
+                await pilot.pause(0.05)
+                if len(saved) == 2 and app._notifications:
+                    break
+            assert saved == [("House",), ("Techno",)]
+            assert any("could not be saved" in n.message for n in app._notifications)
+
+    try:
+        asyncio.run(exercise())
+    finally:
+        unlocked.set()
