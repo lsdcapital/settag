@@ -359,3 +359,42 @@ def test_hygiene_tools_wait_for_choice_and_run_only_selected_scan(
             assert len(app.batch.duplicate_groups) == 1
 
     asyncio.run(exercise())
+
+
+def test_a_failed_rescan_after_cleanup_still_reports_the_write(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "track.wav"
+    _hygiene_wav(path)
+    app = HygieneApp(
+        source=path,
+        paths=(path,),
+        batch=inspect_hygiene_paths((path,)),
+        journal=WriteJournal(tmp_path / "journal.sqlite3"),
+    )
+
+    def fail_rescan(*_args: object, **_kwargs: object) -> None:
+        raise PermissionError("volume unmounted")
+
+    async def exercise() -> None:
+        async with app.run_test(size=(120, 36)) as pilot:
+            await pilot.pause()
+            await pilot.press("w")
+            for _ in range(30):
+                await pilot.pause(0.05)
+                if isinstance(app.screen, ConfirmWriteScreen):
+                    break
+            monkeypatch.setattr("settag.tui.hygiene.inspect_hygiene_paths", fail_rescan)
+            await pilot.press("enter")
+            for _ in range(40):
+                await pilot.pause(0.05)
+                if not app.busy:
+                    break
+            status = str(app.query_one("#status", Static).render())
+            assert "Cleaned and verified 1 file." in status
+            assert "Nothing was changed" not in status
+
+    asyncio.run(exercise())
+    tags = WAVE(path).tags
+    assert tags is not None
+    assert tags.get("COMM:download:eng") is None

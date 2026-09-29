@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
+from contextlib import suppress
 from pathlib import Path
 
 from textual import work
@@ -147,6 +148,7 @@ class UndoFlow(SetTagAppCore):
         try:
             restored = apply_undo(entries, on_progress=self._undo_progress_from_worker)
         except PartialWriteError as error:
+            self._discard_restored(entries[: error.completed])
             self.call_from_thread(
                 self._undo_partly_failed,
                 str(error),
@@ -168,7 +170,20 @@ class UndoFlow(SetTagAppCore):
                     f"Files restored, but the journal could not be updated: {error}",
                     severity="warning",
                 )
+        self._discard_restored(entries)
         self.call_from_thread(self._undo_complete, restored, entries)
+
+    def _discard_restored(self, entries: Sequence[WriteRecord]) -> None:
+        """Drop workbench plans made against the files as they were before the undo.
+
+        Runs on the worker thread like the write flow's cleanup, so a locked workbench
+        holds this thread rather than the event loop. Best effort: a leftover row is
+        rejected as stale when it is next loaded.
+        """
+        if self.discard_plans is None or not entries:
+            return
+        with suppress(Exception):
+            self.discard_plans([entry.path for entry in entries])
 
     def _undo_progress_from_worker(self, completed: int, total: int, path: Path) -> None:
         self.call_from_thread(
@@ -177,12 +192,17 @@ class UndoFlow(SetTagAppCore):
         )
 
     def _undo_complete(self, restored: int, entries: Sequence[WriteRecord]) -> None:
-        self._accept_reverted(entries)
+        cleared = self._accept_reverted(entries)
         self.busy = False
         self._pending_undo = ()
         self._pending_undo_batch = None
         self._show_library()
         message = f"Restored {restored} file{'s' if restored != 1 else ''} to their previous tags."
+        if cleared:
+            message += (
+                f" {cleared} pending review{'s were' if cleared != 1 else ' was'} cleared"
+                " because the file changed; enrich again to review it."
+            )
         skipped = self._pending_undo_skipped
         self._pending_undo_skipped = 0
         if skipped:
@@ -205,13 +225,17 @@ class UndoFlow(SetTagAppCore):
         self._update_status("Nothing else will be restored")
         self.push_screen(ErrorScreen(title, message))
 
-    def _accept_reverted(self, entries: Sequence[WriteRecord]) -> None:
+    def _accept_reverted(self, entries: Sequence[WriteRecord]) -> int:
+        """Show restored files as their previous state. Returns review plans cleared."""
         by_path = {entry.path: index for index, entry in enumerate(self.entries)}
+        cleared = 0
         for record in entries:
             index = by_path.get(record.path)
             if index is None:
                 continue
             entry = self.entries[index]
+            if entry.plan is not None and entry.needs_write_review:
+                cleared += 1
             standard_genre = (
                 record.standard_before
                 if record.standard_after is not None or entry.metadata is None
@@ -229,3 +253,4 @@ class UndoFlow(SetTagAppCore):
             self.analysis_selected.discard(index)
             self.write_selected.discard(index)
             self.review_indices.discard(index)
+        return cleared

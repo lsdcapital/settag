@@ -22,12 +22,15 @@ Findings from the September 2026 code review, in priority order.
 - [x] 11. An unhandled worker exception leaves `busy`/`analysis_running` set and the app can't be quit. Add `on_worker_state_changed` recovery and a force-quit.
 - [x] 12. Hung analysis can't be cancelled: the worker waits on the pipe with no timeout or cancel check.
   A second Q during analysis now quits immediately, and closing the loader terminates a stuck worker. Esc still stops only between tracks.
-- [ ] 13. A background analysis result overwrites a plan the user is reviewing/editing; a late write then deletes the fresh workbench row.
+- [x] 13. A background analysis result overwrites a plan the user is reviewing/editing; a late write then deletes the fresh workbench row.
 - [ ] 14. One persistently failing track blocks all writes; no way to dismiss it.
+  Question: DESIGN.md says analysis errors disable batch writing. Needs a product decision.
 - [ ] 15. B (library) resets the analysis selection, contrary to DESIGN.md.
-- [ ] 16. Hygiene reports "Nothing was changed" if the post-write rescan fails; partial-failure rescan is outside any `try`.
+  Question: the reset pre-selects the next batch after a run, which may be intended.
+- [x] 16. Hygiene reports "Nothing was changed" if the post-write rescan fails; partial-failure rescan is outside any `try`.
 - [ ] 17. Genre edit persists synchronously on the event loop (can block up to the SQLite timeout).
-- [ ] 18. `_accept_reverted` drops review plans silently and leaves stale workbench rows.
+  Deferred: moving it off-thread needs ordered persistence so rapid edits cannot land out of order.
+- [x] 18. `_accept_reverted` drops review plans silently and leaves stale workbench rows.
 
 ## Analysis, Beatport, CLI
 

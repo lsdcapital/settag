@@ -587,20 +587,32 @@ class HygieneApp(App[TuiOutcome]):
                 on_progress=self._progress_from_worker,
                 on_write=recorder,
             )
-            refreshed = inspect_hygiene_paths(self.paths, scan=self.scan or "metadata")
         except PartialHygieneWriteError as error:
-            refreshed = inspect_hygiene_paths(self.paths, scan=self.scan or "metadata")
+            refreshed, rescan_error = self._rescan()
             self.call_from_thread(
                 self._partly_failed,
                 str(error),
                 refreshed,
                 recorder.error,
+                rescan_error,
             )
             return
         except Exception as error:
             self.call_from_thread(self._failed, "Cleanup failed", str(error))
             return
-        self.call_from_thread(self._complete, written, refreshed, recorder)
+        # Files are written by now, so a failing rescan must not be reported as a
+        # failed cleanup that changed nothing.
+        refreshed, rescan_error = self._rescan()
+        self.call_from_thread(self._complete, written, refreshed, recorder, rescan_error)
+
+    def _rescan(self) -> tuple[HygieneBatch | None, str | None]:
+        try:
+            return inspect_hygiene_paths(self.paths, scan=self.scan or "metadata"), None
+        except Exception as error:
+            return None, (
+                f"The library could not be rescanned ({type(error).__name__}: {error}). "
+                "Findings shown may already be cleaned; reopen hygiene to refresh them."
+            )
 
     def _progress_from_worker(self, completed: int, total: int, path: Path) -> None:
         self.call_from_thread(
@@ -611,10 +623,12 @@ class HygieneApp(App[TuiOutcome]):
     def _complete(
         self,
         written: int,
-        refreshed: HygieneBatch,
+        refreshed: HygieneBatch | None,
         recorder: BatchRecorder,
+        rescan_error: str | None = None,
     ) -> None:
-        self.batch = refreshed
+        if refreshed is not None:
+            self.batch = refreshed
         self._rebuild_rows(select_all=False)
         self.busy = False
         self._pending = ()
@@ -624,16 +638,20 @@ class HygieneApp(App[TuiOutcome]):
             self.notify(recorder.error, severity="warning", timeout=8)
         elif recorder.recorded:
             message += f" Undo with: settag undo {recorder.batch_id}"
+        if rescan_error is not None:
+            self.notify(rescan_error, severity="warning", timeout=10)
         self._rebuild_tree(message=message)
         self.notify(message, title="Hygiene complete", timeout=7)
 
     def _partly_failed(
         self,
         message: str,
-        refreshed: HygieneBatch,
+        refreshed: HygieneBatch | None,
         journal_error: str | None,
+        rescan_error: str | None = None,
     ) -> None:
-        self.batch = refreshed
+        if refreshed is not None:
+            self.batch = refreshed
         self._rebuild_rows(select_all=False)
         self.busy = False
         self._pending = ()
@@ -641,6 +659,8 @@ class HygieneApp(App[TuiOutcome]):
         self._rebuild_tree()
         if journal_error is not None:
             self.notify(journal_error, severity="warning", timeout=8)
+        if rescan_error is not None:
+            self.notify(rescan_error, severity="warning", timeout=10)
         self.push_screen(ErrorScreen("Cleanup stopped", message))
 
     def _failed(self, title: str, message: str) -> None:

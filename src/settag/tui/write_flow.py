@@ -73,8 +73,17 @@ class WriteFlow(SetTagAppCore):
             )
             return
         planned = self._selected_items()
+        held = [index for index in sorted(self.write_selected) if self._awaiting_new_result(index)]
+        if held:
+            count = len(held)  # ui-count: selected rows still queued for re-enrichment
+            self.notify(
+                f"{count} track{'s are' if count != 1 else ' is'} still being re-enriched "
+                "and will not be written until the new result arrives.",
+                severity="warning",
+            )
         if not planned:
-            self.notify("Include at least one changed track first.", severity="warning")
+            if not held:
+                self.notify("Include at least one changed track first.", severity="warning")
             return
         self.busy = True
         self._pending_write = planned
@@ -263,7 +272,11 @@ class WriteFlow(SetTagAppCore):
         items: list[PlannedWrite] = []
         for index in sorted(self.write_selected):
             item = self.entries[index].plan
-            if item is not None and item.needs_write_review:
+            if (
+                item is not None
+                and item.needs_write_review
+                and not self._awaiting_new_result(index)
+            ):
                 items.append(item)
         return tuple(items)
 

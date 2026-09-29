@@ -1543,6 +1543,7 @@ def test_tui_write_is_journaled_and_can_be_undone_in_app(tmp_path: Path) -> None
     path = tmp_path / "track.wav"
     _silent_wav(path)
     journal = WriteJournal(tmp_path / "journal.sqlite3")
+    discarded: list[tuple[Path, ...]] = []
     app = SetTagApp(
         source=path,
         initial_metadata=MetadataBatch(
@@ -1551,6 +1552,7 @@ def test_tui_write_is_journaled_and_can_be_undone_in_app(tmp_path: Path) -> None
         ),
         analysis_loader=lambda paths, _progress, _cancel: _analysis_batch(paths),
         journal=journal,
+        discard_plans=lambda paths: discarded.append(tuple(paths)),
     )
 
     async def exercise() -> None:
@@ -1611,6 +1613,8 @@ def test_tui_write_is_journaled_and_can_be_undone_in_app(tmp_path: Path) -> None
     batch = journal.latest()
     assert batch is not None
     assert batch.reverted_at is not None
+    # Once for the write, once more for the undo: neither leaves a stale workbench plan.
+    assert discarded == [(path,), (path,)]
 
 
 def test_tui_undo_reports_an_empty_journal(tmp_path: Path) -> None:
@@ -2086,3 +2090,72 @@ def test_an_uncaught_worker_error_still_lets_the_user_quit(
     asyncio.run(exercise())
     assert app.return_value is not None
     assert app.return_value.message == "Nothing was written."
+
+
+def test_a_track_being_re_enriched_cannot_be_edited_or_written_on_its_old_plan(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "track.wav"
+    _silent_wav(path)
+    current = _analysis_batch((path,)).planned[0]
+    desired = {
+        **current.desired,
+        "SETTAG_ENRICHMENT": record_values(
+            audio_complete=True, catalog={"status": "unavailable", "reason": "offline"}
+        ),
+    }
+    partial = replace(
+        current,
+        desired=desired,
+        owned_changes=tuple(
+            friendly_change(change) for change in plan_owned_tags(path, desired).changes
+        ),
+    )
+    assert partial.enrichment_status != "current"
+    metadata = replace(_metadata_track(path), cached_plan=partial, cache_status="ready")
+    release = Event()
+
+    def slow_analysis(paths, _progress, _cancel) -> AnalysisBatch:
+        release.wait(10)
+        return _analysis_batch(paths)
+
+    app = SetTagApp(
+        source=tmp_path,
+        initial_metadata=MetadataBatch(tracks=(metadata,), failures=()),
+        analysis_loader=slow_analysis,
+    )
+
+    async def exercise() -> None:
+        async with app.run_test(size=(140, 42)) as pilot:
+            await pilot.pause()
+            assert app.analysis_selected == {0}
+            assert app.write_selected == {0}
+            await pilot.press("r")
+            await pilot.pause()
+            assert app.analysis_running
+            await pilot.press("v")
+            await pilot.pause()
+            assert app.phase == "review"
+
+            await pilot.press("space")
+            await pilot.press("e")
+            await pilot.press("w")
+            await pilot.pause()
+            assert app.write_selected == {0}
+            assert not isinstance(app.screen, (GenreEditScreen, ConfirmWriteScreen))
+            assert not app.busy
+
+            release.set()
+            for _ in range(40):
+                await pilot.pause(0.05)
+                if not app.analysis_running:
+                    break
+            assert not app.analysis_running
+            plan = app.entries[0].plan
+            assert plan is not None
+            assert plan.enrichment_status == "current"
+
+    try:
+        asyncio.run(exercise())
+    finally:
+        release.set()

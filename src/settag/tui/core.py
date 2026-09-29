@@ -214,6 +214,23 @@ class SetTagAppCore(App[TuiOutcome]):
     def analysis_running(self) -> bool:
         return bool(self._pending_analysis_indices)
 
+    def _awaiting_new_result(self, index: int) -> bool:
+        """Whether the running analysis has yet to replace this track's plan.
+
+        A track with a partial cached result sits in review and in the analysis
+        selection at once. While it is re-enriched, an edit or a write made on the
+        old plan would be silently replaced by the new result, or would delete that
+        result's workbench row once the write finished. Such tracks are held until
+        their new result arrives.
+        """
+        return index in self._pending_analysis_indices[self._analysis_completed_count :]
+
+    def _notify_awaiting_new_result(self) -> None:
+        self.notify(
+            "This track is being re-enriched. Review it when the new result arrives.",
+            severity="warning",
+        )
+
     def compose(self) -> ComposeResult:
         yield Header()
         with Vertical(id="loading"):
@@ -964,6 +981,9 @@ class SetTagAppCore(App[TuiOutcome]):
             entry = self.entries[index]
             if not entry.needs_write_review:
                 return
+            if self._awaiting_new_result(index):
+                self._notify_awaiting_new_result()
+                return
             selection = self.write_selected
 
         if index in selection:
@@ -982,7 +1002,9 @@ class SetTagAppCore(App[TuiOutcome]):
             selection = self.analysis_selected
         else:
             eligible = {
-                index for index in self.visible_indices if self.entries[index].needs_write_review
+                index
+                for index in self.visible_indices
+                if self.entries[index].needs_write_review and not self._awaiting_new_result(index)
             }
             selection = self.write_selected
 
@@ -1052,6 +1074,9 @@ class SetTagAppCore(App[TuiOutcome]):
             return
         index = self._current_review_index()
         if index is None:
+            return
+        if self._awaiting_new_result(index):
+            self._notify_awaiting_new_result()
             return
         item = self.entries[index].plan
         assert item is not None
