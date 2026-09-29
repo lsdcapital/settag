@@ -67,7 +67,7 @@ check-site:
 	cd site && pnpm typecheck
 	cd site && pnpm build
 	@test -f site/dist/client/index.html
-	@grep -aq "Nothing about your library leaves the machine." site/dist/client/index.html
+	@grep -aq "Audio never leaves the machine." site/dist/client/index.html
 
 format:
 	uv run ruff format .

@@ -23,6 +23,7 @@ class ConfigError(ValueError):
 class SetTagConfig:
     tasks: tuple[AnalysisTask, ...] = ("genre",)
     genre_sample: AudioSample = "middle"
+    catalog_offline: bool = False
 
 
 def default_config_path() -> Path:
@@ -75,4 +76,10 @@ def load_config(path: Path = DEFAULT_CONFIG_PATH) -> SetTagConfig:
         raise ConfigError(
             f"{resolved}: unknown analysis genre_sample {raw_sample!r}; choose from {choices}"
         )
-    return SetTagConfig(tasks=selected, genre_sample=raw_sample)
+    catalog = value.get("catalog", {})
+    if not isinstance(catalog, dict):
+        raise ConfigError(f"{resolved}: [catalog] must be a TOML table")
+    offline: Any = catalog.get("offline", SetTagConfig.catalog_offline)
+    if not isinstance(offline, bool):
+        raise ConfigError(f"{resolved}: catalog.offline must be true or false")
+    return SetTagConfig(tasks=selected, genre_sample=raw_sample, catalog_offline=offline)

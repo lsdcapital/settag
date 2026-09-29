@@ -60,3 +60,15 @@ def test_invalid_analysis_sample_is_rejected(tmp_path: Path, contents: str) -> N
 
     with pytest.raises(ConfigError, match="choose from full, middle, spaced"):
         load_config(path)
+
+
+def test_catalog_lookups_are_online_unless_configured_offline(tmp_path: Path) -> None:
+    path = tmp_path / "config.toml"
+    assert load_config(tmp_path / "missing.toml").catalog_offline is False
+
+    path.write_text("[catalog]\noffline = true\n", encoding="utf-8")
+    assert load_config(path).catalog_offline is True
+
+    path.write_text('[catalog]\noffline = "yes"\n', encoding="utf-8")
+    with pytest.raises(ConfigError, match=r"catalog\.offline"):
+        load_config(path)

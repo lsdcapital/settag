@@ -13,6 +13,7 @@ from mutagen.id3 import COMM, ID3, TCON, TXXX
 from mutagen.wave import WAVE
 
 from settag import __version__
+from settag.beatport import PublicPageProvider
 from settag.catalog import DISCOGS519_MAEST
 from settag.cli import (
     _analyze_one,
@@ -717,6 +718,7 @@ def test_run_reads_no_config_when_every_option_is_given(
             "genre",
             "--genre-sample",
             "full",
+            "--no-offline",
             "--config",
             str(config_path),
         ]
@@ -1516,3 +1518,39 @@ def test_a_failed_model_download_is_one_line_not_a_traceback(
     assert result == 2
     assert "settag: models download failed:" in captured.err
     assert "Traceback" not in captured.err
+
+
+@pytest.mark.parametrize(
+    ("flags", "config", "expected"),
+    [
+        ([], "", False),
+        (["--offline"], "", True),
+        ([], "[catalog]\noffline = true\n", True),
+    ],
+)
+def test_offline_makes_no_beatport_requests(
+    tmp_path: Path, monkeypatch, flags: list[str], config: str, expected: bool
+) -> None:
+    path = tmp_path / "track.wav"
+    _silent_wav(path)
+    config_path = tmp_path / "config.toml"
+    config_path.write_text(config, encoding="utf-8")
+    monkeypatch.setattr(
+        "settag.cli.commands.EssentiaGenreAnalyzer",
+        lambda _model_dir, **_options: FakeAnalyzer(),
+    )
+    real_provider = PublicPageProvider
+    offline_flags: list[bool] = []
+
+    def recording_provider(*args, **kwargs):
+        offline_flags.append(kwargs.get("offline", False))
+        return real_provider(*args, **kwargs)
+
+    monkeypatch.setattr("settag.enrichment.PublicPageProvider", recording_provider)
+
+    result = main(
+        ["run", str(path), "--no-tui", "--tasks", "genre", "--config", str(config_path), *flags]
+    )
+
+    assert result == 0
+    assert offline_flags == [expected]

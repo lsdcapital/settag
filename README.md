@@ -750,7 +750,16 @@ The advanced `analyze` command remains a raw audio-model export/diagnostic tool.
 
 Beatport requests send track identity text, such as artist/title or ISRC, to Beatport;
 audio stays local. Successful catalog pages are cached for seven days under
-`~/.cache/settag/beatport` (`SETTAG_BEATPORT_CACHE` overrides that location). Source
+`~/.cache/settag/beatport` (`SETTAG_BEATPORT_CACHE` overrides that location).
+To make no Beatport requests, pass `--offline` or set it in the config file:
+
+```toml
+[catalog]
+offline = true
+```
+
+Offline runs still use catalog pages cached by earlier runs; tracks without one
+are marked **Partial** until an online run checks them. Source
 failures are shown in review while useful results from other sources are retained.
 SetPath does not yet use the additional catalog evidence in ranking.
 

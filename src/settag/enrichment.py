@@ -165,9 +165,14 @@ class EnrichmentLoader:
         threshold: float = 0.1,
         cached_audio: Callable[[Path], PlannedWrite | None] | None = None,
         state_store: WorkbenchStore | None = None,
+        offline: bool = False,
     ) -> None:
         self.audio_loader = audio_loader
-        self.provider = provider or PublicPageProvider(default_cache_dir(), max_requests=300)
+        # Offline still answers from pages cached by earlier runs; it only never asks
+        # Beatport, so no track identity leaves the machine.
+        self.provider = provider or PublicPageProvider(
+            default_cache_dir(), max_requests=300, offline=offline
+        )
         self.expected_model_ids = expected_model_ids
         self.expected_config = expected_config
         self.top = top

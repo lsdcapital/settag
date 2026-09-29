@@ -34,8 +34,8 @@ Findings from the September 2026 code review, in priority order.
 ## Analysis, Beatport, CLI
 
 - [x] 19. A per-track `LookupStopped` disables Beatport for the rest of the batch. Split service-level from per-track errors.
-- [ ] 20. Beatport scraping is always on; add an opt-out (`--offline` / config).
-  Question: opt-out flag vs opt-in default, given the site's "nothing leaves the machine" copy.
+- [x] 20. Beatport scraping is always on; add an opt-out (`--offline` / config).
+  `--offline/--no-offline` and `[catalog] offline = true`; README and site copy updated.
 - [x] 21. Read-phase network errors (`ConnectionResetError`, `IncompleteRead`, `RemoteDisconnected`) escape Beatport retry/stop handling.
 - [x] 22. `settag --no-tui ~/Music` (flag before path) fails with "command required".
 - [x] 23. Scanner picks up macOS `._*` AppleDouble files; unreadable directories are skipped silently.

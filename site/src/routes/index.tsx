@@ -113,7 +113,8 @@ function Home() {
               <p className="block__body">
                 Inference happens on your machine. Model files download once into{" "}
                 <code>~/.cache/settag/models</code> and are checked against pinned SHA-256 digests
-                before anything loads. Nothing about your library leaves the machine.
+                before anything loads. Audio never leaves the machine. Enrichment sends only artist,
+                title, or ISRC to Beatport, and <code>--offline</code> turns that off.
               </p>
             </div>
           </div>

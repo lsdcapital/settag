@@ -56,6 +56,15 @@ def build_parser() -> argparse.ArgumentParser:
         help=(f"TOML config file used for TUI defaults (default: {config_path})."),
     )
     run.add_argument(
+        "--offline",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help=(
+            "Skip Beatport requests and use only cached catalog pages; --no-offline "
+            "overrides the config (default: config catalog.offline, then online)."
+        ),
+    )
+    run.add_argument(
         "--no-tui",
         action="store_true",
         help="Print a plain dry-run summary instead of opening the app.",

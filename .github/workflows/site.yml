@@ -60,4 +60,4 @@ jobs:
       - name: Verify the page was prerendered
         run: |
           test -f dist/client/index.html
-          grep -aq "Nothing about your library leaves the machine." dist/client/index.html
+          grep -aq "Audio never leaves the machine." dist/client/index.html

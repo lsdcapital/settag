@@ -123,10 +123,11 @@ def _run_default(args: argparse.Namespace) -> int:
     try:
         # Read the file only when something is still unset, so explicit flags keep
         # working against a config this build cannot parse.
-        needed = args.tasks is None or args.genre_sample is None
+        needed = args.tasks is None or args.genre_sample is None or args.offline is None
         configured = load_config(args.config) if needed else SetTagConfig()
         tasks = args.tasks if args.tasks is not None else configured.tasks
         sample = args.genre_sample if args.genre_sample is not None else configured.genre_sample
+        offline = args.offline if args.offline is not None else configured.catalog_offline
         paths = scan_audio(args.path)
     except Exception as error:
         print(str(error), file=sys.stderr)
@@ -279,6 +280,7 @@ def _run_default(args: argparse.Namespace) -> int:
                     state_store=store,
                     top=args.top,
                     threshold=args.threshold,
+                    offline=offline,
                 ),
                 persist_plan=store.save,
                 discard_plans=store.delete,
@@ -315,6 +317,7 @@ def _run_default(args: argparse.Namespace) -> int:
             ),
             top=args.top,
             threshold=args.threshold,
+            offline=offline,
         )(
             paths,
             lambda index, total, path: LOGGER.info(
