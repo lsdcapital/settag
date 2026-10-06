@@ -54,6 +54,7 @@ class HygieneReviewRow:
     finding: HygieneFinding | None = None
     failure: HygieneFailure | None = None
     duplicate: HygieneDuplicateGroup | None = None
+    quality: HygieneTrack | None = None
 
     @property
     def is_selectable(self) -> bool:
@@ -150,7 +151,10 @@ class HygieneApp(App[TuiOutcome]):
             with VerticalScroll(id="hygiene-tools"):
                 yield Static("Choose a hygiene tool", classes="section-title")
                 yield Button("Metadata cleanup", id="scan-metadata", variant="primary")
-                yield Static("Review comments, URLs, encoder tags, and empty or repeated values.")
+                yield Static(
+                    "Review comments, URLs, encoder tags, and empty or repeated values. "
+                    "Notes low bitrates and sample rates from the file header."
+                )
                 yield Button("Duplicate detection", id="scan-duplicates")
                 yield Static("Read audio to find matching copies, ignoring tags and filenames.")
                 yield Button("Run both", id="scan-all")
@@ -241,7 +245,12 @@ class HygieneApp(App[TuiOutcome]):
             HygieneReviewRow(path=group.paths[0], duplicate=group)
             for group in self.batch.duplicate_groups
         ]
-        self.rows = [*finding_rows, *failure_rows, *duplicate_rows]
+        quality_rows = [
+            HygieneReviewRow(path=track.path, quality=track)
+            for track in self.batch.tracks
+            if track.quality_notes
+        ]
+        self.rows = [*finding_rows, *failure_rows, *quality_rows, *duplicate_rows]
         self.selected = (
             {index for index, row in enumerate(self.rows) if row.is_selectable}
             if select_all
@@ -288,6 +297,9 @@ class HygieneApp(App[TuiOutcome]):
                     )
                 parent = self._track_nodes[row.path]
                 self._finding_nodes[index] = parent.add_leaf(self._finding_label(index), data=index)
+            elif row.quality is not None:
+                notes = "; ".join(row.quality.quality_notes)
+                tree.root.add_leaf(Text(f"Audio quality · {row.path.name} · {notes}"), data=index)
             elif row.duplicate is not None:
                 tree.root.add_leaf(
                     Text(f"Duplicate audio · {row.duplicate.file_count} files · {row.path.name}"),
@@ -321,6 +333,7 @@ class HygieneApp(App[TuiOutcome]):
             summary = f"{self._scan_label} · {self.batch.track_count} scanned"
             if self.scan != "duplicates":
                 summary += f" · {self.batch.finding_count} cleanup suggestions"
+                summary += f" · {self.batch.quality_track_count} audio quality notes"
             if self.scan != "metadata":
                 summary += f" · {self.batch.duplicate_group_count} duplicate groups"
             summary += f" · {self.batch.failure_count} errors"
@@ -412,6 +425,22 @@ class HygieneApp(App[TuiOutcome]):
         if index >= len(self.rows):
             return
         row = self.rows[index]
+        if row.quality is not None:
+            self.query_one("#inspector", Static).update(
+                "\n".join(
+                    (
+                        f"Audio quality · {row.path.name}",
+                        *row.quality.quality_notes,
+                        "",
+                        "Read from the file header; no audio was decoded.",
+                        "Review only. No tag edit improves audio: replace the file with a",
+                        "better copy if it matters.",
+                        "",
+                        str(row.path),
+                    )
+                )
+            )
+            return
         if row.duplicate is not None:
             self.query_one("#inspector", Static).update(
                 "\n".join(

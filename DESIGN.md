@@ -31,6 +31,7 @@ but should not install, invoke, bundle, or write through SetTag.
 `src/settag/hygiene.py` owns the independent, model-free cleanup operations:
 
 - inspect supported comment-like and generated text fields
+- attach header-only audio quality notes from `quality.py`
 - turn deterministic rules into individually reviewable findings
 - preflight selected field-level cleanup plans
 - apply, verify, and journal cleanup writes
@@ -133,6 +134,13 @@ Hygiene opens a tool chooser for metadata cleanup, duplicate detection, or both.
 directly; noninteractive runs default to metadata. Metadata scans do not hash
 audio, and duplicate scans do not inspect cleanup tags. Duplicate groups are
 read-only findings and never enter tag cleanup plans.
+
+Metadata scans also attach header-only audio quality notes to each track
+(`src/settag/quality.py`): low bitrate, low sample rate or bit depth, and contents
+that do not match the extension. They reuse the Mutagen object the tags were read
+from, so they cost no extra file open, and like duplicate groups they are review-only
+rows that never enter a cleanup plan. When the extension does not match, only that
+mismatch is reported, since the misread header's rates are meaningless.
 
 Hygiene is a sibling workflow, not an analysis phase. It never constructs or
 loads a model:

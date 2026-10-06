@@ -27,7 +27,7 @@ FIXTURES = Path(__file__).parent / "fixtures"
 
 
 def _silent_wav(path: Path) -> None:
-    rate = 8_000
+    rate = 44_100
     with wave.open(str(path), "wb") as output:
         output.setnchannels(1)
         output.setsampwidth(2)
@@ -237,8 +237,8 @@ def test_duplicate_audio_ignores_tags_but_distinguishes_samples(tmp_path: Path) 
     with wave.open(str(distinct), "wb") as output:
         output.setnchannels(1)
         output.setsampwidth(2)
-        output.setframerate(8000)
-        output.writeframes(b"\x01\x00" * 8000)
+        output.setframerate(44_100)
+        output.writeframes(b"\x01\x00" * 44_100)
     before = {path: path.read_bytes() for path in (first, second, distinct)}
     progress = []
     batch = inspect_hygiene_paths(
@@ -315,3 +315,39 @@ def test_duplicate_scan_never_inspects_metadata(tmp_path: Path, monkeypatch) -> 
     assert batch.scan == "duplicates"
     assert batch.finding_count == 0
     assert len(batch.duplicate_groups) == 1
+
+
+def test_metadata_scan_reports_header_quality_without_a_cleanup_finding(
+    tmp_path: Path, capsys
+) -> None:
+    clean = tmp_path / "clean.wav"
+    low = tmp_path / "low.wav"
+    _silent_wav(clean)
+    with wave.open(str(low), "wb") as output:
+        output.setnchannels(1)
+        output.setsampwidth(2)
+        output.setframerate(22_050)
+        output.writeframes(b"\0\0" * 22_050)
+    batch = inspect_hygiene_paths((clean, low))
+    assert [track.quality_notes for track in batch.tracks] == [
+        (),
+        ("low sample rate (22,050 Hz)",),
+    ]
+    assert batch.quality_track_count == 1
+    assert batch.finding_count == 0
+    assert batch.clean_track_count == 2
+    _print_hygiene_batch(tmp_path, batch)
+    output = capsys.readouterr().err
+    assert "Audio quality notes:  1" in output
+    assert f"Audio quality (review only): {low}" in output
+
+
+def test_duplicate_scan_reports_no_quality_notes(tmp_path: Path) -> None:
+    path = tmp_path / "low.wav"
+    with wave.open(str(path), "wb") as output:
+        output.setnchannels(1)
+        output.setsampwidth(2)
+        output.setframerate(22_050)
+        output.writeframes(b"\0\0" * 22_050)
+    batch = inspect_hygiene_paths((path,), scan="duplicates")
+    assert batch.tracks[0].quality_notes == ()

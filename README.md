@@ -10,6 +10,8 @@ plain, non-TUI CLI for scripts, redirected output, saved plans, and CI.
 Metadata hygiene is a separate, model-free workflow. It finds suspicious
 comments, web addresses, duplicate or empty text values, and generated encoder
 markers, then lets you review individual field-level removals before writing.
+It also notes low bitrates, low sample rates, and files whose contents do not
+match their extension, read from the file header.
 
 Supported files:
 
@@ -384,6 +386,20 @@ A comment such as `electronicfresh.com` is suggested for removal because it
 contains a web address. An ordinary DJ note remains untouched. Encoder markers
 such as `Lavf62.12.102`, empty values, and exact duplicate values are also
 suggested. These rules create review suggestions, never automatic writes.
+
+Metadata cleanup also reads each file's audio header and notes, for review
+only:
+
+- a constant-bitrate MP3 below 256 kbps, or a VBR MP3 or AAC file averaging below
+  160 kbps;
+- a sample rate below 44.1 kHz, or a bit depth below 16;
+- contents that read as a different format than the extension says, such as a
+  `.wav` that is actually an MP3 stream.
+
+These notes appear as their own rows, never as checkable fixes: no tag edit
+improves audio. They come from the header alone, so a 320 kbps MP3 transcoded
+from a 128 kbps source is not caught; see `docs/quality-check.md` for the
+spectral check being evaluated for that.
 
 Opening hygiene presents three tools: **Metadata cleanup**, **Duplicate detection**,
 and **Run both**. Press `T` in a review to choose another tool. Metadata cleanup

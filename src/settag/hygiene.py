@@ -11,6 +11,7 @@ from typing import Literal
 
 from settag.hashing import sha256_audio, sha256_file
 from settag.journal import WriteRecord
+from settag.quality import header_quality_notes
 from settag.records import utc_now
 from settag.tags import (
     HygieneTag,
@@ -93,6 +94,8 @@ class HygieneTrack:
     source_size: int
     source_mtime_ns: int
     findings: tuple[HygieneFinding, ...]
+    # Report-only: read from the audio header, and never part of a cleanup write.
+    quality_notes: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -148,6 +151,10 @@ class HygieneBatch:
     @property
     def clean_track_count(self) -> int:
         return self.track_count - self.affected_track_count
+
+    @property
+    def quality_track_count(self) -> int:
+        return sum(bool(track.quality_notes) for track in self.tracks)
 
 
 @dataclass(frozen=True)
@@ -247,6 +254,7 @@ def inspect_hygiene_path(path: Path) -> HygieneTrack:
         source_size=stat.st_size,
         source_mtime_ns=stat.st_mtime_ns,
         findings=findings,
+        quality_notes=header_quality_notes(resolved, store.audio),
     )
 
 

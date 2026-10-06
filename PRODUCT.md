@@ -59,7 +59,9 @@ prerendered, static companion to the open-source repository and package.
   separately from SetTag-owned evidence, and verifies completed writes.
 - Metadata hygiene is a separate model-free review that flags web addresses in
   comment-like fields, duplicates, empty values, and encoder markers. Only
-  individually checked suggestions are removed, verified, and journaled.
+  individually checked suggestions are removed, verified, and journaled. It also
+  notes low bitrates, low sample rates, and mismatched containers from the audio
+  header, as review-only rows.
 - SetTag requires Python 3.10–3.14 and currently supports recent macOS releases
   and Linux on x86_64. Windows and Linux on ARM are unsupported because
   `essentia-tensorflow` does not publish compatible wheels.

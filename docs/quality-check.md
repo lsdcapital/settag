@@ -111,6 +111,11 @@ the same hard ceiling.
 
 ## Before this moves into SetTag
 
+The header-only checks (bitrate, sample rate, bit depth) and a new one, contents
+that do not match the extension, now run in SetTag's hygiene metadata scan as
+review-only notes (`src/settag/quality.py`). The extension check catches the
+ID3-prefixed WAV above. The spectral wall check remains here.
+
 - Check "In This Life" against a second copy to settle whether a 19.8 kHz wall in a
   lossless file is a transcode or a master.
 - Validate with more than one encoder: every fake here came from LAME, while stores

@@ -13,7 +13,7 @@ from settag.tui import ConfirmWriteScreen, HygieneApp
 
 
 def _hygiene_wav(path: Path) -> None:
-    rate = 8_000
+    rate = 44_100
     with wave.open(str(path), "wb") as output:
         output.setnchannels(1)
         output.setsampwidth(2)
@@ -301,6 +301,43 @@ def test_duplicate_groups_are_visible_but_never_selected(tmp_path: Path, size) -
             await pilot.press("a", "a")
             assert node.data not in app.selected
             assert len(app._selected_plans()) == 2
+
+    asyncio.run(exercise())
+
+
+@pytest.mark.parametrize("size", [(120, 36), (80, 24)])
+def test_audio_quality_notes_are_visible_but_never_selected(tmp_path: Path, size) -> None:
+    good = tmp_path / "good.wav"
+    low = tmp_path / "low.wav"
+    _hygiene_wav(good)
+    with wave.open(str(low), "wb") as output:
+        output.setnchannels(1)
+        output.setsampwidth(2)
+        output.setframerate(22_050)
+        output.writeframes(b"\0\0" * 22_050)
+    app = HygieneApp(
+        source=tmp_path,
+        paths=(good, low),
+        batch=inspect_hygiene_paths((good, low)),
+        journal=WriteJournal(tmp_path / "journal.sqlite3"),
+    )
+
+    async def exercise() -> None:
+        async with app.run_test(size=size) as pilot:
+            await pilot.pause()
+            tree = app.query_one(Tree)
+            node = tree.root.children[-1]
+            assert str(node.label) == "Audio quality · low.wav · low sample rate (22,050 Hz)"
+            tree.move_cursor(node)
+            await pilot.pause()
+            inspector = str(app.query_one("#inspector", Static).render())
+            assert "no audio was decoded" in inspector
+            assert str(low) in inspector
+            await pilot.press("space")
+            assert node.data not in app.selected
+            await pilot.press("a", "a")
+            assert node.data not in app.selected
+            assert [plan.path for plan in app._selected_plans()] == [good]
 
     asyncio.run(exercise())
 
