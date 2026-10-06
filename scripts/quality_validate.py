@@ -17,6 +17,8 @@ from collections import Counter
 from pathlib import Path
 from typing import Any
 
+import numpy as np
+
 sys.path.insert(0, str(Path(__file__).parent))
 
 from quality_check import band_levels, find_cliff, header_facts, verdict
@@ -84,15 +86,14 @@ def main() -> int:
             facts = header_facts(path)
         except Exception:
             continue
-        # A source that already fails the check is no ground truth for "ok".
-        if (
-            facts["lossless"]
-            and verdict(facts, find_cliff(band_levels(path, facts["sample_rate"])))[0] == "ok"
-        ):
+        # Sources are not prefiltered by the check: a lossless source it flags is either
+        # a false positive or a fake in the library, and the report should show which.
+        if facts["lossless"]:
             sources.append(path)
         if len(sources) >= args.limit:
             break
     rows: list[dict[str, Any]] = []
+    levels: list[np.ndarray] = []
     with tempfile.TemporaryDirectory() as tmp:
         for index, source in enumerate(sources, 1):
             work = Path(tmp) / str(index)
@@ -106,7 +107,8 @@ def main() -> int:
             for name, (expected, steps) in VARIANTS.items():
                 built = build(source_wav, name, steps, work)
                 facts = header_facts(built)
-                cliff = find_cliff(band_levels(built, facts["sample_rate"]))
+                levels.append(band_levels(built, facts["sample_rate"]))
+                cliff = find_cliff(levels[-1])
                 status, reasons = verdict(facts, cliff)
                 rows.append(
                     {
@@ -114,6 +116,7 @@ def main() -> int:
                         "variant": name,
                         "expected": expected,
                         "status": status,
+                        "facts": facts,
                         "cliff": cliff,
                         "reasons": reasons,
                     }
@@ -131,6 +134,8 @@ def main() -> int:
         "by_variant": {k: dict(v) for k, v in by_variant.items()},
     }
     args.output.mkdir(parents=True, exist_ok=True)
+    # Saved so thresholds can be retuned without re-encoding: row i is levels[i].
+    np.save(args.output / "levels.npy", np.stack(levels))
     (args.output / "validate.json").write_text(
         json.dumps({**summary, "rows": rows}, ensure_ascii=False, indent=2) + "\n"
     )

@@ -29,11 +29,13 @@ BAND_HZ = 100.0
 # common encoder lowpasses that low at a bitrate a DJ would keep.
 SEARCH_FROM_HZ = 12_000.0
 # A lowpass is a steep wall with near-nothing above it; natural rolloff is neither.
-MIN_STEEP_DB = 18.0
-MIN_DROP_DB = 20.0
-# 320 kbps LAME lowpasses at about 20.5 kHz. A lossless file with a wall at or
-# below this almost certainly passed through a lossy encoder.
-LOSSLESS_MAX_CUTOFF_HZ = 20_800.0
+# Tuned with quality_validate.py (see docs/quality-check.md); 18/20 missed a tenth
+# of known transcodes, and 12/12 flagged genuine lossless sources.
+MIN_STEEP_DB = 14.0
+MIN_DROP_DB = 16.0
+# LAME 320 measures at 19.8-20.1 kHz. Resampling a 48 kHz master to 44.1 kHz leaves
+# its own filter at 20.5-21 kHz, which must not read as a lossy wall.
+LOSSLESS_MAX_CUTOFF_HZ = 20_400.0
 # LAME 256 kbps and V0 sit around 19.5-19.7 kHz; 192 kbps around 18.6 kHz.
 HIGH_BITRATE_MIN_CUTOFF_HZ = 18_800.0
 HIGH_BITRATE_KBPS = 256
@@ -121,7 +123,9 @@ def band_levels(path: Path, sample_rate: int) -> np.ndarray:
     return 10 * np.log10(np.maximum(totals / np.maximum(counts, 1), 1e-14))
 
 
-def find_cliff(levels: np.ndarray) -> dict[str, Any]:
+def find_cliff(
+    levels: np.ndarray, min_steep_db: float = MIN_STEEP_DB, min_drop_db: float = MIN_DROP_DB
+) -> dict[str, Any]:
     """The highest-contrast wall above SEARCH_FROM_HZ, or none.
 
     `steep_db` compares the 300 Hz just below a candidate edge with 300 Hz just above
@@ -139,7 +143,7 @@ def find_cliff(levels: np.ndarray) -> dict[str, Any]:
         measured = {"steep_db": round(steep, 1), "drop_db": round(drop, 1)}
         if steep > nearest["steep_db"]:
             nearest = {"hz": edge * BAND_HZ, **measured}
-        if steep >= MIN_STEEP_DB and drop >= MIN_DROP_DB and drop > best["drop_db"]:
+        if steep >= min_steep_db and drop >= min_drop_db and drop > best["drop_db"]:
             best = {"cutoff_hz": edge * BAND_HZ, **measured}
     return {**best, "nearest": nearest}
 
