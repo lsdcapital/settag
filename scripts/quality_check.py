@@ -127,20 +127,21 @@ def find_cliff(levels: np.ndarray) -> dict[str, Any]:
     `steep_db` compares the 300 Hz just below a candidate edge with 300 Hz just above
     it (skipping one band of transition); `drop_db` compares the level just below with
     the loudest stretch anywhere above, so a dip followed by real content is no wall.
+    `nearest` is the steepest edge whether or not it passed, for tuning the thresholds.
     """
     best: dict[str, Any] = {"cutoff_hz": None, "steep_db": 0.0, "drop_db": 0.0}
+    nearest: dict[str, Any] = {"hz": None, "steep_db": 0.0, "drop_db": 0.0}
     top = len(levels) - 2  # the last bands hug Nyquist and are unreliable
     for edge in range(int(SEARCH_FROM_HZ // BAND_HZ), top - 4):
         below = float(np.mean(levels[edge - 3 : edge]))
         steep = below - float(np.mean(levels[edge + 1 : edge + 4]))
         drop = below - float(np.percentile(levels[edge + 1 : top], 90))
+        measured = {"steep_db": round(steep, 1), "drop_db": round(drop, 1)}
+        if steep > nearest["steep_db"]:
+            nearest = {"hz": edge * BAND_HZ, **measured}
         if steep >= MIN_STEEP_DB and drop >= MIN_DROP_DB and drop > best["drop_db"]:
-            best = {
-                "cutoff_hz": edge * BAND_HZ,
-                "steep_db": round(steep, 1),
-                "drop_db": round(drop, 1),
-            }
-    return best
+            best = {"cutoff_hz": edge * BAND_HZ, **measured}
+    return {**best, "nearest": nearest}
 
 
 def verdict(facts: dict[str, Any], cliff: dict[str, Any]) -> tuple[str, list[str]]:

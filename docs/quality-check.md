@@ -53,17 +53,43 @@ ffmpeg 320 kbps MP3 and a WAV with a gentle 6 kHz rolloff as clean.
 Pilot library (897 tracks: 828 MP3 at 320 kbps, 59 AIFF, the rest FLAC, WAV, ALAC and
 AAC): 23 suspects, 2.6%. Twenty-one are 320 kbps MP3s with a wall between 13.7 and
 18.7 kHz, mostly older pop, rock, dance and trance tracks, plus two Beatport purchases
-at 17.5 and 18.5 kHz. The others are a genuine 128 kbps MP3 and one low-sample-rate
-file. Of the 320 kbps MP3s, 661 show a wall at 19.8-20.1 kHz, the expected LAME 320
+at 17.5 and 18.5 kHz. The others are a genuine 128 kbps MP3 and a `.wav` that is
+flagged for the wrong reason: it is a WAV with an ID3 tag prepended, which mutagen reads
+as a 32 kHz MP3 and ffmpeg refuses to open. That file is broken, just not lossy. Of the 320 kbps MP3s, 661 show a wall at 19.8-20.1 kHz, the expected LAME 320
 lowpass, and 129 show no wall at all. Checking took 0.43 s per track on an Apple-silicon
 Mac, read-only and single-threaded.
 
-The suspects have not yet been confirmed in a spectrogram, so there is no measured
-false-positive rate. `manual_verdict` in `report.json` is where to record each call.
+Spectrograms of the 22 decodable suspects (ffmpeg `showspectrumpic`, one minute from
+60 s) all show a flat, hard ceiling at the reported wall, with nothing above it for the
+whole window: the lossy signature, not a natural rolloff. Two ceilings jump mid-track,
+which suggests edits spliced from sources of different quality. This was checked by
+eye by Claude, not by the library owner, so it is a second look, not ground truth.
+
+## Validation against known transcodes
+
+`scripts/quality_validate.py` measures the error rates directly. It takes lossless
+tracks that pass the check, cuts a 90-second excerpt from the middle of each, and
+builds seven files per track with LAME and ffmpeg: three that should pass (the excerpt,
+320 CBR, V0) and four that should be flagged (320 from a 128 or 192 source, FLAC from a
+128 or 320 source). The truth of every file is known by construction.
+
+```sh
+.venv/bin/python scripts/quality_validate.py ~/Music/Library --output /tmp/validate
+```
+
+With 40 AIFF sources from the pilot library: no false positives in 120 clean files,
+and 89% of 160 fakes caught (128 to 320: 34 of 40; 192 to 320: 38; 128 to FLAC: 34;
+320 to FLAC: 37). Every miss found no wall at all. In the one inspected, a 128 kbps
+wall measured 17 dB steep and 18 dB deep, just under the 18 and 20 dB thresholds, so
+lowering them would catch more. `find_cliff` now reports the steepest edge as
+`nearest` even when it fails, so thresholds can be tuned from a saved run.
 
 ## Before this moves into SetTag
 
-- Confirm the 23 suspects in Spek and record the false-positive rate here.
+- Tune `MIN_STEEP_DB` and `MIN_DROP_DB` against a saved validation run, rechecking
+  that the clean files still pass.
+- Validate with more than one encoder: every fake here came from LAME, while stores
+  and rippers also use iTunes AAC, FhG and ffmpeg's encoders.
 - Decide whether a wall in a Beatport purchase is a mislabelled lossy master (worth
   reporting to the store) or a mastering choice.
 - In the app it would be a read-only report column and a `settag quality` command,
