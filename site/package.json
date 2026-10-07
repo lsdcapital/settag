@@ -19,22 +19,22 @@
     "deploy": "pnpm run build && doppler run --project settag --config prod -- wrangler deploy"
   },
   "dependencies": {
-    "@tanstack/react-router": "^1.170.40",
-    "@tanstack/react-start": "^1.168.59",
+    "@tanstack/react-router": "^1.170.41",
+    "@tanstack/react-start": "^1.168.60",
     "react": "^19.3.0",
     "react-dom": "^19.3.0"
   },
   "devDependencies": {
-    "@tanstack/router-cli": "^1.167.39",
-    "@types/node": "^26.6.3",
+    "@tanstack/router-cli": "^1.167.40",
+    "@types/node": "^26.6.4",
     "@types/react": "^19.3.0",
     "@types/react-dom": "^19.3.0",
-    "@vitejs/plugin-react": "^6.1.1",
-    "oxfmt": "^0.70.0",
-    "oxlint": "^1.85.0",
+    "@vitejs/plugin-react": "^6.1.2",
+    "oxfmt": "^0.72.0",
+    "oxlint": "^1.87.0",
     "typescript": "^7.0.2",
-    "vite": "^8.3.1",
-    "wrangler": "^4.142.0"
+    "vite": "^8.3.2",
+    "wrangler": "^4.147.0"
   },
   "packageManager": "pnpm@11.25.0"
 }
