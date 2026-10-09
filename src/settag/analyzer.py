@@ -6,7 +6,7 @@ import os
 import re
 import sys
 import tempfile
-from collections.abc import Iterator, Sequence
+from collections.abc import Generator, Sequence
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
@@ -354,7 +354,7 @@ class EssentiaTaskAnalyzer:
 
 
 @contextmanager
-def _filter_tensorflow_startup_stderr() -> Iterator[None]:
+def _filter_tensorflow_startup_stderr() -> Generator[None]:
     """Remove known harmless TensorFlow startup lines from native stderr."""
     sys.stderr.flush()
     saved_stderr = os.dup(2)
