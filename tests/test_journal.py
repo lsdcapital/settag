@@ -1,4 +1,5 @@
 import sqlite3
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -11,6 +12,14 @@ from settag.journal import (
     new_batch_id,
 )
 from settag.tags import OWNED_DESCRIPTIONS
+
+# The fixtures below are dated around this moment. Pinning the journal's clock to it keeps
+# their retention age fixed, rather than letting them drift out of the window as time passes.
+NOW = datetime(2026, 7, 25, 12, 0, tzinfo=timezone.utc)
+
+
+def _journal(path: Path, *, now: datetime = NOW) -> WriteJournal:
+    return WriteJournal(path, clock=lambda: now)
 
 
 def _empty_owned() -> dict[str, list[str] | None]:
@@ -45,7 +54,7 @@ def _record(
 
 
 def test_records_round_trip_through_the_database(tmp_path: Path) -> None:
-    journal = WriteJournal(tmp_path / "journal.sqlite3")
+    journal = _journal(tmp_path / "journal.sqlite3")
     entry = _record(tmp_path / "track.wav")
 
     journal.record("batch-1", entry)
@@ -59,7 +68,7 @@ def test_records_round_trip_through_the_database(tmp_path: Path) -> None:
 
 
 def test_batch_groups_every_file_from_one_apply(tmp_path: Path) -> None:
-    journal = WriteJournal(tmp_path / "journal.sqlite3")
+    journal = _journal(tmp_path / "journal.sqlite3")
     first = _record(tmp_path / "a.wav")
     second = _record(tmp_path / "b.wav", standard_after=None)
 
@@ -74,7 +83,7 @@ def test_batch_groups_every_file_from_one_apply(tmp_path: Path) -> None:
 
 
 def test_recent_returns_newest_batches_first_and_latest_matches(tmp_path: Path) -> None:
-    journal = WriteJournal(tmp_path / "journal.sqlite3")
+    journal = _journal(tmp_path / "journal.sqlite3")
     journal.record("older", _record(tmp_path / "a.wav", written_at="2026-07-24T10:00:00Z"))
     journal.record("newer", _record(tmp_path / "b.wav", written_at="2026-07-25T10:00:00Z"))
 
@@ -87,7 +96,7 @@ def test_recent_returns_newest_batches_first_and_latest_matches(tmp_path: Path) 
 
 
 def test_mark_reverted_is_visible_in_the_summary(tmp_path: Path) -> None:
-    journal = WriteJournal(tmp_path / "journal.sqlite3")
+    journal = _journal(tmp_path / "journal.sqlite3")
     journal.record("batch-1", _record(tmp_path / "track.wav"))
 
     journal.mark_reverted("batch-1")
@@ -99,7 +108,7 @@ def test_mark_reverted_is_visible_in_the_summary(tmp_path: Path) -> None:
 
 
 def test_prune_drops_batches_past_the_retention_window(tmp_path: Path) -> None:
-    journal = WriteJournal(tmp_path / "journal.sqlite3")
+    journal = _journal(tmp_path / "journal.sqlite3")
     journal.record("old", _record(tmp_path / "a.wav", written_at="2020-01-01T00:00:00Z"))
 
     # Only one batch is recorded here: starting a second batch would enforce retention on
@@ -111,7 +120,7 @@ def test_prune_drops_batches_past_the_retention_window(tmp_path: Path) -> None:
 
 
 def test_starting_a_batch_enforces_the_retention_window(tmp_path: Path) -> None:
-    journal = WriteJournal(tmp_path / "journal.sqlite3")
+    journal = _journal(tmp_path / "journal.sqlite3")
     journal.record("old", _record(tmp_path / "a.wav", written_at="2020-01-01T00:00:00Z"))
     journal.record("new", _record(tmp_path / "b.wav", written_at="2026-07-25T10:00:00Z"))
 
@@ -119,11 +128,19 @@ def test_starting_a_batch_enforces_the_retention_window(tmp_path: Path) -> None:
     assert journal.batch("new") is not None
 
 
+def test_retention_is_measured_from_the_journal_clock(tmp_path: Path) -> None:
+    path = tmp_path / "journal.sqlite3"
+    _journal(path).record("batch", _record(tmp_path / "a.wav"))
+
+    assert _journal(path, now=NOW + timedelta(days=89)).prune(days=90) == 0
+    assert _journal(path, now=NOW + timedelta(days=91)).prune(days=90) == 1
+
+
 def test_retention_runs_once_per_batch_not_once_per_file(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    journal = WriteJournal(tmp_path / "journal.sqlite3")
+    journal = _journal(tmp_path / "journal.sqlite3")
     calls = 0
     original = WriteJournal.prune
 
@@ -144,7 +161,7 @@ def test_a_failing_prune_never_loses_the_write(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Retention is housekeeping: it must not turn a committed write into an error."""
-    journal = WriteJournal(tmp_path / "journal.sqlite3")
+    journal = _journal(tmp_path / "journal.sqlite3")
 
     def explode(self: WriteJournal, days: int = 90, *, keep: str | None = None) -> int:
         raise sqlite3.OperationalError("disk is unhappy")
@@ -161,11 +178,11 @@ def test_a_newer_database_schema_is_refused(tmp_path: Path) -> None:
         connection.execute("PRAGMA user_version = 99")
 
     with pytest.raises(JournalError, match="newer than"):
-        WriteJournal(path).recent()
+        _journal(path).recent()
 
 
 def test_unknown_batch_and_empty_journal_report_nothing(tmp_path: Path) -> None:
-    journal = WriteJournal(tmp_path / "journal.sqlite3")
+    journal = _journal(tmp_path / "journal.sqlite3")
 
     assert journal.batch("nope") is None
     assert journal.latest() is None
@@ -190,7 +207,7 @@ def test_readable_changes_omit_an_untouched_file_genre(tmp_path: Path) -> None:
 def test_recorder_absorbs_storage_failures_and_reports_them(tmp_path: Path) -> None:
     unusable = tmp_path / "not-a-directory"
     unusable.write_text("", encoding="utf-8")
-    recorder = BatchRecorder(WriteJournal(unusable / "journal.sqlite3"))
+    recorder = BatchRecorder(_journal(unusable / "journal.sqlite3"))
 
     recorder(_record(tmp_path / "track.wav"))
 
@@ -200,7 +217,7 @@ def test_recorder_absorbs_storage_failures_and_reports_them(tmp_path: Path) -> N
 
 
 def test_recorder_reports_no_error_when_every_write_is_journaled(tmp_path: Path) -> None:
-    recorder = BatchRecorder(WriteJournal(tmp_path / "journal.sqlite3"))
+    recorder = BatchRecorder(_journal(tmp_path / "journal.sqlite3"))
 
     recorder(_record(tmp_path / "track.wav"))
 
@@ -223,7 +240,7 @@ def test_recorder_absorbs_a_failing_insert_and_reports_it(tmp_path: Path) -> Non
     with sqlite3.connect(path) as connection:
         connection.execute("CREATE TABLE write_entries (id INTEGER PRIMARY KEY, batch_id TEXT)")
         connection.execute("PRAGMA user_version = 1")
-    recorder = BatchRecorder(WriteJournal(path))
+    recorder = BatchRecorder(_journal(path))
 
     recorder(_record(tmp_path / "track.wav"))
 
@@ -234,7 +251,7 @@ def test_recorder_absorbs_a_failing_insert_and_reports_it(tmp_path: Path) -> Non
 
 
 def test_one_damaged_entry_does_not_hide_the_rest_of_the_history(tmp_path: Path) -> None:
-    journal = WriteJournal(tmp_path / "journal.sqlite3")
+    journal = _journal(tmp_path / "journal.sqlite3")
     journal.record("older", _record(tmp_path / "a.wav", written_at="2026-07-24T10:00:00Z"))
     journal.record("newer", _record(tmp_path / "b.wav", written_at="2026-07-25T10:00:00Z"))
     with sqlite3.connect(journal.path) as connection:

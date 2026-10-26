@@ -3,6 +3,7 @@ import os
 import shutil
 import subprocess
 import sys
+import time
 import wave
 from pathlib import Path
 from typing import Any
@@ -16,14 +17,18 @@ from mutagen.wave import WAVE
 from settag import __version__
 from settag import tags as tags_module
 from settag.policy import Prediction
+from settag.scanner import WRITE_TEMPORARY_MARKER
 from settag.tags import (
     MP4_MEAN,
     OWNED_DESCRIPTIONS,
     PROVENANCE_SCHEMA,
     GenreState,
+    Id3OwnedTagStore,
     Mp4OwnedTagStore,
     OwnedTagStore,
     TagStateChangedError,
+    TagVerificationError,
+    TagWriteRefusedError,
     UnsupportedTagFormatError,
     VorbisOwnedTagStore,
     _simple_hygiene_field,
@@ -695,3 +700,172 @@ def test_a_write_keeps_macos_extended_attributes(tmp_path: Path) -> None:
         ["xattr", "-p", "user.settag-test", str(path)], capture_output=True, text=True
     )
     assert kept.stdout.strip() == "keep me"
+
+
+def _also_on_the_candidate(
+    monkeypatch: pytest.MonkeyPatch,
+    store: type[OwnedTagStore],
+    damage: Any,
+) -> None:
+    """Make every save also apply ``damage`` to the candidate, as a library bug would."""
+    real_save = store._save
+
+    def save_then_damage(self: OwnedTagStore, target: Path | None = None) -> None:
+        real_save(self, target)
+        assert target is not None
+        damage(target)
+
+    monkeypatch.setattr(store, "_save", save_then_damage)
+
+
+def test_a_write_that_drops_an_unrelated_frame_is_refused(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Artwork and Serato's GEOB cue frames are not SetTag's, so losing one is a failure."""
+    path = tmp_path / "track.wav"
+    _tagged_wav(path)
+    before = path.read_bytes()
+
+    def drop_artwork(target: Path) -> None:
+        audio = WAVE(target)
+        assert isinstance(audio.tags, ID3)
+        audio.tags.delall("APIC")
+        audio.save()
+
+    _also_on_the_candidate(monkeypatch, Id3OwnedTagStore, drop_artwork)
+
+    with pytest.raises(TagVerificationError, match="also have changed APIC"):
+        apply_metadata_tags(path, _desired())
+
+    assert path.read_bytes() == before
+    assert sorted(item.name for item in tmp_path.iterdir()) == [path.name]
+
+
+def test_a_write_that_changes_an_unrelated_comment_is_refused(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    path = _copy_fixture("tagged.flac", tmp_path)
+
+    def retitle(target: Path) -> None:
+        audio = FLAC(target)
+        audio["TITLE"] = ["Not the original title"]
+        audio.save()
+
+    _also_on_the_candidate(monkeypatch, VorbisOwnedTagStore, retitle)
+
+    with pytest.raises(TagVerificationError, match="also have changed title"):
+        apply_metadata_tags(path, _desired())
+
+
+def test_a_write_that_changes_the_audio_is_refused(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    path = tmp_path / "track.wav"
+    _tagged_wav(path)
+    before = path.read_bytes()
+
+    def flip_a_sample(target: Path) -> None:
+        data = bytearray(target.read_bytes())
+        data[data.index(b"data") + 8] ^= 0xFF
+        target.write_bytes(bytes(data))
+
+    _also_on_the_candidate(monkeypatch, Id3OwnedTagStore, flip_a_sample)
+
+    with pytest.raises(TagVerificationError, match="audio data"):
+        apply_metadata_tags(path, _desired())
+
+    assert path.read_bytes() == before
+
+
+@pytest.mark.skipif(not hasattr(os, "link"), reason="needs hard links")
+def test_a_hard_linked_file_is_not_split_from_its_other_names(tmp_path: Path) -> None:
+    """Replacing one name would leave the other with the old tags."""
+    path = _copy_fixture("tagged.flac", tmp_path)
+    other = tmp_path / "linked.flac"
+    os.link(path, other)
+    before = path.read_bytes()
+
+    with pytest.raises(TagWriteRefusedError, match="2 hard links"):
+        apply_metadata_tags(path, _desired())
+
+    assert path.read_bytes() == before
+    assert os.path.samefile(path, other)
+
+
+@pytest.mark.skipif(not hasattr(os, "geteuid"), reason="POSIX ownership")
+def test_a_file_owned_by_another_user_is_not_taken_over(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    path = _copy_fixture("tagged.flac", tmp_path)
+    before = path.read_bytes()
+    owner = path.stat().st_uid
+    monkeypatch.setattr(os, "geteuid", lambda: owner + 1)
+
+    with pytest.raises(TagWriteRefusedError, match="another user"):
+        apply_metadata_tags(path, _desired())
+
+    assert path.read_bytes() == before
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="only macOS can set a creation date")
+def test_a_write_keeps_the_original_creation_date(tmp_path: Path) -> None:
+    """Finder's Date Created would otherwise become the original's last-modified time.
+
+    That is what the copy alone produces: `copy2` gives the candidate the original's
+    modification time, which pulls a later creation date back to it.
+    """
+    path = _copy_fixture("tagged.flac", tmp_path)
+    # Moving the modification time before the creation date moves the creation date too,
+    # so set the creation date first and then a later modification time.
+    created = 1_577_836_800.0  # 2020-01-01
+    modified = created + 365 * 24 * 60 * 60
+    os.utime(path, (created, created))
+    os.utime(path, (modified, modified))
+    assert (path.stat().st_birthtime, path.stat().st_mtime) == (created, modified)
+
+    apply_metadata_tags(path, _desired())
+
+    assert path.stat().st_birthtime == created
+    assert path.stat().st_mtime > modified
+
+
+def test_a_write_builds_its_candidate_under_a_hidden_name(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A candidate a hard kill leaves behind must not show up in Finder or a DJ app."""
+    path = _copy_fixture("tagged.flac", tmp_path)
+    seen: list[str] = []
+    real_verify = OwnedTagStore._verify_candidate
+
+    def record(self: OwnedTagStore, candidate: Path, *args: Any) -> None:
+        seen.append(candidate.name)
+        real_verify(self, candidate, *args)
+
+    monkeypatch.setattr(OwnedTagStore, "_verify_candidate", record)
+
+    apply_metadata_tags(path, _desired())
+
+    assert seen == [f".tagged{WRITE_TEMPORARY_MARKER}-{os.getpid()}.flac"]
+
+
+def test_a_write_sweeps_candidates_a_crashed_write_left_behind(tmp_path: Path) -> None:
+    path = _copy_fixture("tagged.flac", tmp_path)
+    abandoned = tmp_path / f".other{WRITE_TEMPORARY_MARKER}-4242.flac"
+    legacy = tmp_path / f"other{WRITE_TEMPORARY_MARKER}.flac"
+    in_progress = tmp_path / f".third{WRITE_TEMPORARY_MARKER}-4343.flac"
+    not_ours = tmp_path / ".other.flac"
+    two_hours_ago = time.time() - 2 * 60 * 60
+    for leftover in (abandoned, legacy, in_progress, not_ours):
+        leftover.write_bytes(b"copy")
+    for old in (abandoned, legacy, not_ours):
+        os.utime(old, (two_hours_ago, two_hours_ago))
+
+    apply_metadata_tags(path, _desired())
+
+    remaining = sorted(item.name for item in tmp_path.iterdir())
+    assert remaining == sorted([path.name, in_progress.name, not_ours.name])

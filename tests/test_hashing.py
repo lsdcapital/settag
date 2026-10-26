@@ -15,7 +15,7 @@ from pathlib import Path
 import pytest
 from mutagen.id3 import ID3, TIT2, TPE1
 
-from settag.hashing import sha256_audio, sha256_file
+from settag.hashing import sha256_audio, sha256_file, sha256_untagged
 
 
 def _silent_wav(path: Path, *, seconds: float = 2.0, rate: int = 8_000) -> None:
@@ -137,3 +137,30 @@ def test_audio_digest_is_stable_across_reads(tmp_path: Path, seconds: float) -> 
     _silent_wav(path, seconds=seconds)
 
     assert sha256_audio(path) == sha256_audio(path)
+
+
+def test_untagged_digest_covers_the_chunks_a_tag_write_must_keep(tmp_path: Path) -> None:
+    """Cue points are not audio, but a tag write that dropped them would still be wrong."""
+    path = tmp_path / "track.wav"
+    _silent_wav(path)
+    with path.open("ab") as handle:
+        handle.write(b"cue " + struct.pack("<I", 4) + b"\0\0\0\0")
+    before = sha256_untagged(path)
+
+    data = bytearray(path.read_bytes())
+    data[-1] = 1
+    path.write_bytes(bytes(data))
+
+    assert sha256_untagged(path) != before
+
+
+def test_untagged_digest_ignores_the_id3_chunk(tmp_path: Path) -> None:
+    path = tmp_path / "track.wav"
+    _silent_wav(path)
+    before = sha256_untagged(path)
+
+    tags = ID3()
+    tags.add(TIT2(encoding=3, text=["Title"]))
+    tags.save(path)
+
+    assert sha256_untagged(path) == before

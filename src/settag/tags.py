@@ -3,10 +3,13 @@ from __future__ import annotations
 import ctypes
 import ctypes.util
 import fcntl
+import hashlib
 import json
 import os
+import re
 import shutil
 import sys
+import time
 from abc import ABC, abstractmethod
 from collections.abc import Mapping
 from contextlib import suppress
@@ -25,7 +28,7 @@ from mutagen.wave import WAVE
 
 from settag import __version__
 from settag.beatport import TrackIdentity
-from settag.hashing import sha256_json
+from settag.hashing import sha256_json, sha256_untagged
 from settag.policy import Prediction
 from settag.scanner import WRITE_TEMPORARY_MARKER
 from settag.tasks import TASK_FIELDS, TASK_ORDER, AnalysisTask, task_name
@@ -72,6 +75,10 @@ class TagVerificationError(RuntimeError):
 
 class TagStateChangedError(RuntimeError):
     pass
+
+
+class TagWriteRefusedError(RuntimeError):
+    """The file is one a copy-and-replace write would change in ways beyond its tags."""
 
 
 @dataclass(frozen=True)
@@ -338,14 +345,16 @@ class OwnedTagStore(ABC):
             self._save()
             return
 
-        temporary = self.path.with_name(
-            f"{self.path.stem}{WRITE_TEMPORARY_MARKER}{self.path.suffix}"
-        )
+        original = self.loaded_stat or self.path.stat()
+        _refuse_unsafe_replacement(self.path, original)
+        _sweep_stale_temporaries(self.path.parent)
+        temporary = _temporary_for(self.path)
         try:
             shutil.copy2(self.path, temporary)
             self._save(temporary)
             _copy_extended_attributes(self.path, temporary)
             self._verify_candidate(temporary, desired, standard_genres, hygiene_values)
+            _keep_file_identity(temporary, original)
             # The rename is only atomic with respect to other processes. Without flushing
             # the candidate first, a power loss just after the swap can leave the name
             # pointing at a truncated file, and the original is already gone.
@@ -387,7 +396,8 @@ class OwnedTagStore(ABC):
         standard_genres: tuple[str, ...] | None,
         hygiene_values: Mapping[str, list[str] | None] | None,
     ) -> None:
-        """Read the candidate back from disk and refuse to commit anything incomplete."""
+        """Read the candidate back from disk and refuse to commit anything incomplete,
+        or anything that changed more than it was asked to."""
         written = owned_tag_store(candidate)
         remaining = written.plan(desired)
         if remaining.changes:
@@ -404,6 +414,69 @@ class OwnedTagStore(ABC):
                 raise TagVerificationError(
                     f"Metadata hygiene verification failed for {self.path}: {fields}"
                 )
+        self._verify_nothing_else_changed(
+            candidate, written, desired, standard_genres, hygiene_values
+        )
+
+    def _verify_nothing_else_changed(
+        self,
+        candidate: Path,
+        written: OwnedTagStore,
+        desired: OwnedValues,
+        standard_genres: tuple[str, ...] | None,
+        hygiene_values: Mapping[str, list[str] | None] | None,
+    ) -> None:
+        """Refuse a candidate that differs from the original anywhere it was not asked to.
+
+        Checking only the fields SetTag wrote would let a library bug drop an unrelated
+        item unnoticed: artwork, or the Serato cue points and beatgrids kept in ID3 GEOB
+        frames. So every other tag item, every non-tag metadata block, and the audio must
+        read back exactly as the original has them.
+        """
+        # The original is re-read because in memory the write has already been applied.
+        # Confirming it is unchanged first means any difference below is the candidate's,
+        # not another app's.
+        self._check_unchanged_since_load()
+        original = owned_tag_store(self.path)
+        touched = self._touched_keys(desired, standard_genres, hygiene_values)
+        before = original._preserved_items(touched)
+        after = written._preserved_items(touched)
+        if before != after:
+            changed = ", ".join(sorted({key for key, _ in set(before) ^ set(after)}))
+            raise TagVerificationError(
+                f"Metadata verification failed for {self.path}: "
+                f"the write would also have changed {changed}"
+            )
+        if sha256_untagged(candidate) != sha256_untagged(self.path):
+            raise TagVerificationError(
+                f"Audio verification failed for {self.path}: "
+                "the write would have changed the audio data"
+            )
+
+    def _touched_keys(
+        self,
+        desired: OwnedValues,
+        standard_genres: tuple[str, ...] | None,
+        hygiene_values: Mapping[str, list[str] | None] | None,
+    ) -> frozenset[str]:
+        keys = {self._item_key(self.field_name(description)) for description in desired}
+        if standard_genres is not None:
+            keys.add(self._item_key(self.standard_genre_field_name()))
+        keys.update(self._hygiene_item_key(field) for field in hygiene_values or {})
+        return frozenset(keys)
+
+    def _item_key(self, name: str) -> str:
+        """The key a tag item is compared under; see `_preserved_items`."""
+        return name
+
+    @abstractmethod
+    def _hygiene_item_key(self, field: str) -> str:
+        pass
+
+    @abstractmethod
+    def _preserved_items(self, touched: frozenset[str]) -> list[tuple[str, str]]:
+        """Every tag item and metadata block a write must leave alone, as sorted
+        (key, fingerprint) pairs, excluding the items whose keys are in ``touched``."""
 
     def plan_standard_genres(
         self,
@@ -586,6 +659,22 @@ class Id3OwnedTagStore(OwnedTagStore):
     def field_name(self, description: str) -> str:
         return f"TXXX:{description}"
 
+    def _hygiene_item_key(self, field: str) -> str:
+        return _id3_hash_key(*_parse_hygiene_field(field, "ID3"))
+
+    def _preserved_items(self, touched: frozenset[str]) -> list[tuple[str, str]]:
+        tags = self.audio.tags
+        if tags is None:
+            return []
+        items = [
+            (frame.HashKey, _frame_fingerprint(frame))
+            for frame in tags.values()
+            if frame.HashKey not in touched
+        ]
+        # Frames mutagen cannot parse are carried through a save as raw bytes.
+        items.extend(("unknown frame", repr(raw)) for raw in getattr(tags, "unknown_frames", ()))
+        return sorted(items)
+
     def read_standard_genres(self) -> list[str]:
         tags = self.audio.tags
         if tags is None:
@@ -733,6 +822,29 @@ class VorbisOwnedTagStore(OwnedTagStore):
     def field_name(self, description: str) -> str:
         return description
 
+    def _item_key(self, name: str) -> str:
+        # Vorbis comment names are case-insensitive.
+        return name.casefold()
+
+    def _hygiene_item_key(self, field: str) -> str:
+        return self._item_key(_parse_simple_hygiene_field(field, "VORBIS"))
+
+    def _preserved_items(self, touched: frozenset[str]) -> list[tuple[str, str]]:
+        tags = self.audio.tags
+        items = [
+            (self._item_key(str(key)), str(value))
+            for key, value in (tags if tags is not None else ())
+            if self._item_key(str(key)) not in touched
+        ]
+        # Pictures, cue sheets, seek tables and application blocks sit beside the
+        # comments and are rewritten with them.
+        items.extend(
+            (type(block).__name__, hashlib.sha256(block.write()).hexdigest())
+            for block in getattr(self.audio, "metadata_blocks", ())
+            if block.code not in (_FLAC_PADDING, _FLAC_VORBIS_COMMENT)
+        )
+        return sorted(items)
+
     def read_standard_genres(self) -> list[str]:
         tags = self.audio.tags
         if tags is None:
@@ -813,6 +925,15 @@ class Mp4OwnedTagStore(OwnedTagStore):
             raise ValueError(f"Invalid SetTag-owned field: {description}")
         name = description[len("SETTAG_") :]
         return f"----:{MP4_MEAN}:{name}"
+
+    def _hygiene_item_key(self, field: str) -> str:
+        return _parse_simple_hygiene_field(field, "MP4")
+
+    def _preserved_items(self, touched: frozenset[str]) -> list[tuple[str, str]]:
+        tags = self.audio.tags
+        if tags is None:
+            return []
+        return sorted((str(key), repr(value)) for key, value in tags.items() if key not in touched)
 
     def read_standard_genres(self) -> list[str]:
         tags = self.audio.tags
@@ -927,6 +1048,150 @@ class Mp4OwnedTagStore(OwnedTagStore):
             ]
         else:
             tags[key] = values
+
+
+_FLAC_PADDING = 1
+_FLAC_VORBIS_COMMENT = 4
+
+
+def _frame_fingerprint(frame: Any) -> str:
+    """Describe an ID3 frame by its content.
+
+    The text encoding is left out: saving a v2.3 tag re-encodes text into one v2.3 can
+    store, which changes the bytes but not what the frame says.
+    """
+    copy = type(frame)(frame)
+    if hasattr(copy, "encoding"):
+        copy.encoding = ENCODING_UTF8
+    return repr(copy)
+
+
+def _refuse_unsafe_replacement(path: Path, original: os.stat_result) -> None:
+    """Refuse a write that replacing the file would turn into more than a tag change.
+
+    A rename swaps the directory entry, not the file. Other hard links to the original
+    would keep pointing at it, so those names would silently keep the old tags. And the
+    replacement belongs to whoever wrote it, so a file owned by another user would change
+    hands, which only root can undo.
+    """
+    if original.st_nlink > 1:
+        raise TagWriteRefusedError(
+            f"{path} has {original.st_nlink} hard links; replacing it would leave the "
+            "other names with the old tags"
+        )
+    geteuid = getattr(os, "geteuid", None)
+    if geteuid is not None and geteuid() not in (0, original.st_uid):
+        raise TagWriteRefusedError(
+            f"{path} belongs to another user; replacing it would take it away from them"
+        )
+
+
+def _keep_file_identity(candidate: Path, original: os.stat_result) -> None:
+    """Give the candidate the original's group and creation date, as an in-place write would.
+
+    Best effort, like the extended attributes: a group the user does not belong to cannot
+    be kept, and the file is still theirs. The owner already matches unless SetTag runs as
+    root, which is the one case it can be restored in.
+    """
+    with suppress(OSError, AttributeError):
+        os.chown(candidate, original.st_uid, original.st_gid)
+    _keep_creation_time(candidate, original)
+
+
+# setattrlist(2) constants and structures, for the creation date.
+_ATTR_BIT_MAP_COUNT = 5
+_ATTR_CMN_CRTIME = 0x00000200
+_FSOPT_NOFOLLOW = 0x00000001
+
+
+class _AttrList(ctypes.Structure):
+    _fields_ = [
+        ("bitmapcount", ctypes.c_ushort),
+        ("reserved", ctypes.c_uint16),
+        ("commonattr", ctypes.c_uint32),
+        ("volattr", ctypes.c_uint32),
+        ("dirattr", ctypes.c_uint32),
+        ("fileattr", ctypes.c_uint32),
+        ("forkattr", ctypes.c_uint32),
+    ]
+
+
+class _Timespec(ctypes.Structure):
+    _fields_ = [("tv_sec", ctypes.c_long), ("tv_nsec", ctypes.c_long)]
+
+
+def _keep_creation_time(candidate: Path, original: os.stat_result) -> None:
+    """Carry the original's creation date, which Finder shows as Date Created, over.
+
+    A replacement is a new file to the filesystem. `copy2` gives it the original's
+    modification time, and APFS pulls a later creation date back to that, so without
+    this every tagged track's Date Created would become its last-modified time.
+    Only macOS can set a creation date; Linux exposes none to set.
+    """
+    birthtime = getattr(original, "st_birthtime", None)
+    if sys.platform != "darwin" or birthtime is None:
+        return
+    with suppress(Exception):
+        libc = ctypes.CDLL(ctypes.util.find_library("c"), use_errno=True)
+        seconds = int(birthtime)
+        nanoseconds = min(round((birthtime - seconds) * 1_000_000_000), 999_999_999)
+        attributes = _AttrList(bitmapcount=_ATTR_BIT_MAP_COUNT, commonattr=_ATTR_CMN_CRTIME)
+        value = _Timespec(seconds, nanoseconds)
+        libc.setattrlist(
+            os.fsencode(candidate),
+            ctypes.byref(attributes),
+            ctypes.byref(value),
+            ctypes.sizeof(value),
+            _FSOPT_NOFOLLOW,
+        )
+
+
+# A write takes seconds, so a candidate this old was abandoned by a process that died.
+STALE_TEMPORARY_SECONDS = 60 * 60
+
+# Candidate names `_temporary_for` makes, and the visible name earlier versions used.
+_TEMPORARY_NAME = re.compile(
+    rf"^(?:\..+{re.escape(WRITE_TEMPORARY_MARKER)}-\d+|.+{re.escape(WRITE_TEMPORARY_MARKER)})"
+    rf"\.[A-Za-z0-9]+$",
+    re.ASCII,
+)
+
+# Directories already swept by this process. Sweeping once per directory, rather than
+# once per write, keeps a batch over one large folder from listing it for every file.
+_swept_directories: set[Path] = set()
+
+
+def _temporary_for(path: Path) -> Path:
+    """Name the candidate a write is built in.
+
+    Hidden, so a candidate abandoned by a hard kill does not show up in Finder or in a
+    DJ app's folder import, and unique to the process, so two runs never share one. It
+    keeps the original suffix so container detection behaves identically.
+    """
+    return path.with_name(f".{path.stem}{WRITE_TEMPORARY_MARKER}-{os.getpid()}{path.suffix}")
+
+
+def _sweep_stale_temporaries(directory: Path) -> None:
+    """Delete candidates a crashed write left in ``directory``.
+
+    The scanner already ignores them, but each is a full copy of a track. Only names of
+    exactly the candidate shape are touched, and only once no write can still be using
+    them.
+    """
+    if directory in _swept_directories:
+        return
+    _swept_directories.add(directory)
+    cutoff = time.time() - STALE_TEMPORARY_SECONDS
+    with suppress(OSError):
+        for entry in os.scandir(directory):
+            if not _TEMPORARY_NAME.match(entry.name):
+                continue
+            with suppress(OSError):
+                if (
+                    entry.is_file(follow_symlinks=False)
+                    and entry.stat(follow_symlinks=False).st_mtime < cutoff
+                ):
+                    os.unlink(entry.path)
 
 
 # copyfile(3) flags. COPYFILE_STAT is deliberately absent: it would copy the original's

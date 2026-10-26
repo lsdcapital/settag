@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any, BinaryIO
 
@@ -12,6 +12,7 @@ CHUNK_SIZE = 1024 * 1024
 ByteRange = tuple[int, int]
 
 _MP4_CONTAINER_ATOMS = frozenset({b"moov", b"trak", b"mdia", b"minf", b"stbl", b"udta"})
+_ID3_CHUNKS = frozenset({b"id3 ", b"ID3 "})
 
 
 def sha256_file(path: Path) -> str:
@@ -49,10 +50,27 @@ def sha256_audio(path: Path) -> str:
     A container this cannot parse falls back to hashing the whole file. That is
     the old behaviour, so an unrecognized format is no worse off than before.
     """
+    return _sha256_ranges(path, untagged=False)
+
+
+def sha256_untagged(path: Path) -> str:
+    """Hash everything a tag write must leave exactly as it was.
+
+    Broader than `sha256_audio`, which is a stored track identity and so must not
+    change scope. In a RIFF or IFF container this covers every chunk but the ID3
+    one, so cue points, broadcast-WAV metadata and INFO lists are held to the same
+    standard as the samples. In FLAC, MP4 and MP3 the two digests coincide: the
+    tags live outside the audio ranges there, and the tag store compares the
+    remaining metadata item by item.
+    """
+    return _sha256_ranges(path, untagged=True)
+
+
+def _sha256_ranges(path: Path, *, untagged: bool) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as handle:
         size = handle.seek(0, 2)
-        for offset, length in audio_ranges(handle, size):
+        for offset, length in _ranges(handle, size, untagged=untagged):
             handle.seek(offset)
             remaining = length
             while remaining > 0:
@@ -70,6 +88,10 @@ def audio_ranges(handle: BinaryIO, size: int) -> list[ByteRange]:
     Dispatch reads the container's magic bytes rather than the file extension,
     because the extension is the one part of a file a rename can lie about.
     """
+    return _ranges(handle, size, untagged=False)
+
+
+def _ranges(handle: BinaryIO, size: int, *, untagged: bool) -> list[ByteRange]:
     start = _after_id3v2(handle, size)
     handle.seek(start)
     magic = handle.read(12)
@@ -77,9 +99,21 @@ def audio_ranges(handle: BinaryIO, size: int) -> list[ByteRange]:
     if magic[:4] == b"fLaC":
         return _flac_ranges(handle, start + 4, size)
     if magic[:4] == b"RIFF" and magic[8:12] == b"WAVE":
-        return _chunk_ranges(handle, start + 12, size, big_endian=False, wanted=(b"fmt ", b"data"))
+        return _chunk_ranges(
+            handle,
+            start + 12,
+            size,
+            big_endian=False,
+            keep=_untagged_chunk if untagged else (b"fmt ", b"data").__contains__,
+        )
     if magic[:4] == b"FORM" and magic[8:12] in (b"AIFF", b"AIFC"):
-        return _chunk_ranges(handle, start + 12, size, big_endian=True, wanted=(b"COMM", b"SSND"))
+        return _chunk_ranges(
+            handle,
+            start + 12,
+            size,
+            big_endian=True,
+            keep=_untagged_chunk if untagged else (b"COMM", b"SSND").__contains__,
+        )
     if magic[4:8] == b"ftyp":
         return _mp4_ranges(handle, start, size)
 
@@ -155,7 +189,7 @@ def _chunk_ranges(
     size: int,
     *,
     big_endian: bool,
-    wanted: tuple[bytes, ...],
+    keep: Callable[[bytes], bool],
 ) -> list[ByteRange]:
     """Collect the payloads of the named chunks in a RIFF or IFF container.
 
@@ -173,7 +207,7 @@ def _chunk_ranges(
         name = header[:4]
         # A streamed file can carry a placeholder length; clamp rather than trust it.
         length = min(int.from_bytes(header[4:8], order), size - offset - 8)
-        if name in wanted and length > 0:
+        if keep(name) and length > 0:
             ranges.append((offset + 8, length))
         # Chunks are padded to an even boundary, and the pad byte is not payload.
         offset += 8 + length + (length % 2)
@@ -210,6 +244,10 @@ def _mp4_ranges(handle: BinaryIO, start: int, size: int) -> list[ByteRange]:
             ranges.append((payload, offset + length - payload))
         offset += length
     return ranges
+
+
+def _untagged_chunk(name: bytes) -> bool:
+    return name not in _ID3_CHUNKS
 
 
 def _syncsafe(value: bytes) -> int:

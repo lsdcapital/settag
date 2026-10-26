@@ -42,6 +42,7 @@ def test_scan_skips_an_abandoned_write_candidate(tmp_path: Path) -> None:
     track = tmp_path / "track.mp3"
     track.touch()
     (tmp_path / f"track{WRITE_TEMPORARY_MARKER}.mp3").touch()
+    (tmp_path / f".track{WRITE_TEMPORARY_MARKER}-4242.mp3").touch()
 
     assert scan_audio(tmp_path) == [track.resolve()]
 

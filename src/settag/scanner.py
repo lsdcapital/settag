@@ -9,7 +9,8 @@ class UnsupportedInputError(ValueError):
 
 # Marker in the name of the temporary copy a tag write is built in. It keeps the
 # audio suffix so container detection matches the original, which means a copy
-# abandoned by a hard kill would otherwise look like one more track to scan.
+# abandoned by a hard kill would otherwise look like one more track to scan. The
+# next write in that folder deletes it once it is stale; see `tags._temporary_for`.
 WRITE_TEMPORARY_MARKER = ".settag-part"
 
 SUPPORTED_EXTENSIONS = frozenset(

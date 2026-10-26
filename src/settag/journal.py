@@ -15,7 +15,7 @@ import json
 import os
 import sqlite3
 import sys
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from contextlib import closing, suppress
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta, timezone
@@ -28,13 +28,17 @@ from settag.plans import (
     friendly_standard_genre_change,
     standard_genre_field,
 )
-from settag.records import utc_now
 from settag.tags import OWNED_DESCRIPTIONS, OwnedValues, TagChange
 
 JOURNAL_SCHEMA_VERSION = 1
 WRITE_RECORD_SCHEMA = "settag.write/v2"
 READABLE_WRITE_RECORD_SCHEMAS = frozenset({"settag.write/v1", WRITE_RECORD_SCHEMA})
 DEFAULT_RETENTION_DAYS = 90
+
+#: Source of the current time. Retention compares stored timestamps against it, so it is
+#: a dependency of the journal rather than a call buried in ``prune``: tests pin it beside
+#: their fixture dates instead of letting those dates age out of the retention window.
+Clock = Callable[[], datetime]
 
 
 class JournalError(RuntimeError):
@@ -60,8 +64,12 @@ def default_journal_db() -> Path:
 DEFAULT_JOURNAL_DB = default_journal_db()
 
 
+def system_clock() -> datetime:
+    return datetime.now(timezone.utc)
+
+
 def new_batch_id() -> str:
-    stamp = utc_now().replace("-", "").replace(":", "").removesuffix("Z")
+    stamp = _timestamp(system_clock()).replace("-", "").replace(":", "").removesuffix("Z")
     return f"{stamp}-{uuid4().hex[:8]}"
 
 
@@ -195,8 +203,9 @@ class JournalBatch:
 
 
 class WriteJournal:
-    def __init__(self, path: Path = DEFAULT_JOURNAL_DB) -> None:
+    def __init__(self, path: Path = DEFAULT_JOURNAL_DB, *, clock: Clock = system_clock) -> None:
         self.path = path.expanduser().resolve()
+        self.clock = clock
 
     def record(self, batch_id: str, entry: WriteRecord) -> None:
         """Append one completed write. Called only after the file is verified."""
@@ -292,7 +301,7 @@ class WriteJournal:
         with closing(self._connect()) as connection, connection:
             connection.execute(
                 "UPDATE write_batches SET reverted_at = ? WHERE batch_id = ?",
-                (utc_now(), batch_id),
+                (_timestamp(self.clock()), batch_id),
             )
 
     def prune(self, days: int = DEFAULT_RETENTION_DAYS, *, keep: str | None = None) -> int:
@@ -302,7 +311,7 @@ class WriteJournal:
         batch starts, and a machine whose clock is behind the retention window would otherwise
         delete the very write it just recorded.
         """
-        cutoff = _days_ago(days)
+        cutoff = _timestamp(self.clock() - timedelta(days=days))
         with closing(self._connect()) as connection, connection:
             batch_ids = [
                 str(row["batch_id"])
@@ -520,6 +529,7 @@ def _hygiene_values(value: object, location: str) -> dict[str, list[str] | None]
     return result
 
 
-def _days_ago(days: int) -> str:
-    moment = datetime.now(timezone.utc) - timedelta(days=days)
-    return moment.replace(microsecond=0).isoformat().replace("+00:00", "Z")
+def _timestamp(moment: datetime) -> str:
+    """Format a moment the way every stored journal timestamp is written."""
+    utc = moment.astimezone(timezone.utc).replace(microsecond=0)
+    return utc.isoformat().replace("+00:00", "Z")
