@@ -35,6 +35,7 @@ from settag.journal import (
 from settag.plans import (
     PlannedWrite,
 )
+from settag.policy import LibraryCutoffs
 from settag.tasks import AnalysisTask, ordered_tasks
 from settag.tui.entries import (
     TASK_LABELS,
@@ -181,6 +182,7 @@ class SetTagAppCore(App[TuiOutcome]):
         self._analysis_success_count = 0
         self._analysis_partial_count = 0
         self._analysis_failure_count = 0
+        self._library_cutoffs: dict[AnalysisTask, LibraryCutoffs] = {}
         self._analysis_current_path: Path | None = None
         self._analysis_navigation_changed = False
         self._pending_write: tuple[PlannedWrite, ...] = ()
@@ -400,6 +402,7 @@ class SetTagAppCore(App[TuiOutcome]):
             TrackEntry(path=failure.path, metadata_error=failure) for failure in metadata.failures
         )
         self.session.load(entries)
+        self._rank_library()
         self.query_one("#loading").display = False
         self.query_one("#main").display = True
         self._show_library()
@@ -426,7 +429,14 @@ class SetTagAppCore(App[TuiOutcome]):
             tasks=self.analysis_tasks,
             review_top=self.review_top,
             score_cutoff=self.score_cutoff,
+            library_cutoffs=self._library_cutoffs,
         )
+
+    def _rank_library(self) -> None:
+        """Re-rank labels against the library. Run when its evidence changes in bulk:
+        after the scan and after each enrichment batch, not per result, so labels on
+        other rows do not shift while one batch is still arriving."""
+        self._library_cutoffs = self.session.library_cutoffs(self.analysis_tasks)
 
     def _visible_cells(self, index: int) -> tuple[str | Text, ...]:
         """Supply one row's app state to the renderer in tui.table."""

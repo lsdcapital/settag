@@ -263,6 +263,7 @@ class AnalysisFlow(SetTagAppCore):
     ) -> None:
         remaining = total - completed
         self.session.end_analysis()
+        self._rank_library()
         self._analysis_cancel_requested.clear()
         self._hide_analysis_activity()
         self.refresh_bindings()

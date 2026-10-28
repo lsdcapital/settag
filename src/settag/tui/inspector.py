@@ -202,12 +202,10 @@ def _task_candidate_sections(
             # ui-count: entries in this task's evidence list, shown only in this panel
             count = len(evidence)
             noun = "score" if count == 1 else "scores"
-            lines.append(f"{TASK_LABELS[task]} · {count} {noun}")
-            lines.append(
-                _candidate_line(
-                    context.select_for_review(evidence),
-                )
-            )
+            ranked = context.ranks_against_library(task)
+            policy = " · top 3 here and top 40% of library" if ranked else ""
+            lines.append(f"{TASK_LABELS[task]} · {count} {noun}{policy}")
+            lines.append(_candidate_line(context.select_for_review(evidence, task), ranked=ranked))
         elif task in provenance:
             lines.append(f"{TASK_LABELS[task]} · No ranked evidence")
         else:
@@ -220,10 +218,12 @@ def _candidate_policy(context: RowContext) -> str:
     return f"cutoff ≥ {cutoff} · top {context.review_top}"
 
 
-def _candidate_line(selected: Sequence[Prediction]) -> str:
+def _candidate_line(selected: Sequence[Prediction], *, ranked: bool = False) -> str:
     if selected:
         return "  " + " · ".join(
             f"{suggested_label((prediction,)) or prediction.label} {prediction.score:.3f}"
             for prediction in selected
         )
-    return "  No candidate met the cutoff"
+    return (
+        "  No label stands out against the library" if ranked else "  No candidate met the cutoff"
+    )

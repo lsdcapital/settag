@@ -5,8 +5,8 @@ Column choice is width-driven, so it is kept away from the app's state machine.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
-from dataclasses import dataclass
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass, field
 from typing import Literal
 
 from rich.text import Text
@@ -16,7 +16,13 @@ from textual.widgets import DataTable
 
 from settag.freshness import current_catalog_evidence
 from settag.plans import catalog_genre_summary, catalog_genres, standard_genre_from_model_label
-from settag.policy import Prediction, select_predictions
+from settag.policy import (
+    SALIENT_TASKS,
+    LibraryCutoffs,
+    Prediction,
+    select_predictions,
+    select_salient,
+)
 from settag.tags import OwnedValues, task_evidence_from_owned
 from settag.tasks import AnalysisTask
 from settag.tui.entries import TrackEntry, latest_analyzed_at, suggested_label
@@ -128,8 +134,18 @@ class RowContext:
     tasks: tuple[AnalysisTask, ...]
     review_top: int
     score_cutoff: float
+    #: Per salient task, each label's library ranking; empty for a task the library is
+    #: too small to rank, which then falls back to the score cutoff.
+    library_cutoffs: Mapping[AnalysisTask, LibraryCutoffs] = field(default_factory=dict)
 
-    def select_for_review(self, evidence: Sequence[Prediction]) -> list[Prediction]:
+    def ranks_against_library(self, task: AnalysisTask) -> bool:
+        return task in SALIENT_TASKS and bool(self.library_cutoffs.get(task))
+
+    def select_for_review(
+        self, evidence: Sequence[Prediction], task: AnalysisTask = "genre"
+    ) -> list[Prediction]:
+        if self.ranks_against_library(task):
+            return select_salient(evidence, cutoffs=self.library_cutoffs[task], top=self.review_top)
         return select_predictions(
             evidence,
             threshold=self.score_cutoff,
@@ -154,7 +170,7 @@ def primary_review_predictions(entry: TrackEntry, context: RowContext) -> list[P
         evidence = evidence_by_task.get(task, ())
         if not evidence and task == "genre" and entry.metadata is not None:
             evidence = entry.metadata.stored_predictions
-        selected = context.select_for_review(evidence)
+        selected = context.select_for_review(evidence, task)
         if selected:
             return selected
     return []

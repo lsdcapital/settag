@@ -1,10 +1,12 @@
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Literal
 
 import numpy as np
+
+from settag.tasks import AnalysisTask
 
 # Ranked evidence retained per task. This must cover a whole taxonomy, not a shortlist:
 # a consumer computing a signed composite (high-arousal labels minus low-arousal ones)
@@ -66,6 +68,63 @@ def select_predictions(
         raise ValueError("top must be at least 1")
 
     return [item for item in predictions if item.score >= threshold][:top]
+
+
+# Mood/theme and instrument labels are picked against the library rather than an absolute
+# score. EffNet head scales differ several-fold between labels (on an 888-track library
+# `Bass` averaged 0.518 and `Space` 0.054), so a single cutoff admits only the loud ones:
+# at 0.10 `Bass` and `Synthesizer` landed on 98-99% of tracks and told the reviewer
+# nothing. A label is shown when it is prominent FOR the track (in its top three) and the
+# track is strong ACROSS the library (in the top 40% for that label). Both legs are
+# rank-based, so the rule needs no per-label tuning. It is the rule SetPath applies to the
+# same evidence (`prediction-salience.ts`), kept identical so both show the same labels;
+# change the two together. Genre keeps the absolute cutoff: its stored evidence is a
+# top-60 slice of 519 labels, so a library ranking of it would be censored.
+SALIENT_TASKS: frozenset[AnalysisTask] = frozenset({"mood-theme", "instrument"})
+TOP_LABELS_PER_TRACK = 3
+LIBRARY_FRACTION = 0.4
+# Below this many analysed tracks the library ranking is a handful of files, and the
+# absolute cutoff is the better guess. A judgement, not a measurement.
+MIN_LIBRARY_TRACKS = 20
+
+LibraryCutoffs = Mapping[str, float]
+
+
+def library_cutoffs(evidence_rows: Iterable[Sequence[Prediction]]) -> dict[str, float]:
+    """Per label, the lowest score that still ranks in the library's top 40%.
+
+    Each row is one analysed track's evidence for one task. A label missing from a row
+    scored below the evidence limit there and ranks as zero. An empty result means the
+    library is too small to rank against.
+    """
+    rows = [{item.label: item.score for item in row} for row in evidence_rows if row]
+    # ui-count: tracks the library ranking is computed over
+    covered = len(rows)
+    if covered < MIN_LIBRARY_TRACKS:
+        return {}
+    rank = max(1, round(covered * LIBRARY_FRACTION))
+    labels = {label for row in rows for label in row}
+    return {
+        label: sorted((row.get(label, 0.0) for row in rows), reverse=True)[rank - 1]
+        for label in labels
+    }
+
+
+def select_salient(
+    predictions: Iterable[Prediction],
+    *,
+    cutoffs: LibraryCutoffs,
+    top: int,
+) -> list[Prediction]:
+    """The track's top labels that also rank in the library's top 40% for that label."""
+    if top < 1:
+        raise ValueError("top must be at least 1")
+    ranked = sorted(predictions, key=lambda item: (-item.score, item.label))
+    return [
+        item
+        for item in ranked[: min(top, TOP_LABELS_PER_TRACK)]
+        if item.label in cutoffs and item.score >= cutoffs[item.label]
+    ]
 
 
 # How much of a track the genre model reads. MAEST embeds one 30s patch at a time and

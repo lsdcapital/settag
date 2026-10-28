@@ -5,6 +5,7 @@ from pathlib import Path
 
 from test_tui import _analysis_batch, _metadata_track, _silent_wav
 
+from settag.policy import Prediction, library_cutoffs
 from settag.state import AudioFailure
 from settag.tui.entries import TrackEntry
 from settag.tui.inspector import display_path, metadata_inspector, review_inspector
@@ -68,3 +69,24 @@ def test_library_details_explain_a_file_that_keeps_failing(tmp_path: Path) -> No
     assert "Audio analysis failed the last 3 times" in lines
     assert "  DecodeError: corrupt frame" in lines
     assert entry_analysis(entry, CONTEXT) == "Keeps failing · 3 tries"
+
+
+def test_mood_candidates_rank_against_the_library_once_it_is_large_enough(
+    tmp_path: Path,
+) -> None:
+    rows = [
+        [Prediction("Deep", 0.6 - n / 100), Prediction("Party", 0.05 + n / 1000)] for n in range(25)
+    ]
+    context = RowContext(
+        tasks=("genre", "mood-theme"),
+        review_top=5,
+        score_cutoff=0.10,
+        library_cutoffs={"mood-theme": library_cutoffs(rows)},
+    )
+
+    # Party never reaches 0.10, but it is second on this track and in the library's top 40%.
+    assert [p.label for p in context.select_for_review(rows[-1], "mood-theme")] == ["Party"]
+    # Genre keeps the score cutoff.
+    assert [p.label for p in context.select_for_review(rows[-1], "genre")] == ["Deep"]
+    assert context.ranks_against_library("mood-theme")
+    assert not RowContext(("mood-theme",), 5, 0.10).ranks_against_library("mood-theme")

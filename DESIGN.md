@@ -547,6 +547,18 @@ Scores are mean sigmoid activations across audio patches. They are suitable
 for ranking and applying a score cutoff but are not demonstrated calibrated
 confidence or probabilities.
 
+Review ranks mood/theme and instrument labels against the library instead of the
+score cutoff: a label is shown when it is in the track's top three and the track
+is in the library's top 40% for it. Label scales differ several-fold (on an
+888-track library `Bass` averaged 0.518 and `Space` 0.054), so a single cutoff
+admits only the loud labels. The rule matches SetPath's, the main consumer of the
+same evidence, and was checked to select identically on that library. The library
+ranking is recomputed after the scan and after each enrichment batch, not per
+result, so other rows do not shift mid-batch. Below 20 analysed tracks, and for
+genre, whose stored evidence is a censored top-60 slice of 519 labels, the score
+cutoff applies. It affects review display only; files keep every score and the
+plain `analyze` export keeps the cutoff-based `selected` list.
+
 ## Complete analysis record
 
 `settag.analysis/v3` records the source fingerprint, analysis time, backend,

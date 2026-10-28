@@ -365,6 +365,13 @@ settag "/path/to/music" --top 5 --score-cutoff 0.10
 
 `--threshold` remains an alias for `--score-cutoff`.
 
+In the app, the score cutoff applies to genre. Mood/theme and instrument scores
+differ several-fold between labels, so a single cutoff puts `Bass` and
+`Synthesizer` on nearly every track. Once at least 20 tracks are analysed, the app
+instead shows a mood/theme or instrument label when it is in the track's top three
+and the track is in the library's top 40% for that label. SetPath applies the same
+rule to the same scores, so both show the same labels. Files always keep every score.
+
 ## Metadata hygiene
 
 Hygiene is intentionally separate from genre analysis:

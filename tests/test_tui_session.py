@@ -5,12 +5,14 @@ background result, a write, an undo, and the user's own toggles all go through
 ``ReviewSession``, so the rule holds no matter which screen triggered it.
 """
 
+import json
 from dataclasses import replace
 from pathlib import Path
 
 from test_tui import _analysis_batch, _metadata_track, _silent_wav
 
 from settag.journal import WriteRecord
+from settag.policy import MIN_LIBRARY_TRACKS
 from settag.state import AudioFailure
 from settag.tui.entries import TrackEntry
 from settag.tui.session import ReviewSession, WriteToggle
@@ -212,3 +214,26 @@ def test_a_file_that_keeps_failing_is_left_out_but_can_be_retried(tmp_path: Path
     session.begin_analysis((0,))
     session.accept_result(0, _plan(session, 0), None, completed=1)
     assert not session.entries[0].audio_keeps_failing
+
+
+def test_library_cutoffs_rank_the_evidence_the_library_holds(tmp_path: Path) -> None:
+    session = ReviewSession(("genre", "mood-theme"))
+    entries = []
+    for n in range(MIN_LIBRARY_TRACKS):
+        path = tmp_path / f"{n:02}.wav"
+        scores = [{"label": "Deep", "score": n / 100}, {"label": "Party", "score": 0.05}]
+        owned = {
+            **_metadata_track(path).owned,
+            "SETTAG_MOOD_THEME": ["Deep", "Party"],
+            "SETTAG_MOOD_THEME_SCORES": [json.dumps(scores)],
+        }
+        entries.append(TrackEntry(path=path, metadata=replace(_metadata_track(path), owned=owned)))
+    session.load(entries)
+
+    cutoffs = session.library_cutoffs(("genre", "mood-theme"))
+
+    assert set(cutoffs) == {"mood-theme"}
+    # 40% of 20 tracks is 8: the eighth strongest Deep score is 0.12.
+    assert cutoffs["mood-theme"]["Deep"] == 0.12
+    session.load(entries[:-1])
+    assert session.library_cutoffs(("mood-theme",)) == {"mood-theme": {}}

@@ -18,6 +18,7 @@ from pathlib import Path
 from settag.freshness import EnrichmentState
 from settag.journal import WriteRecord
 from settag.plans import PlannedWrite, stage_file_genre
+from settag.policy import SALIENT_TASKS, LibraryCutoffs, library_cutoffs
 from settag.tags import OwnedValues, task_evidence_from_owned
 from settag.tasks import AnalysisTask
 from settag.tui.entries import TrackEntry, latest_analyzed_at
@@ -61,6 +62,30 @@ class ReviewSession:
         self.write_selected = {
             index for index in self.review_indices if self.entries[index].needs_write_review
         }
+
+    def library_cutoffs(self, tasks: Iterable[AnalysisTask]) -> dict[AnalysisTask, LibraryCutoffs]:
+        """Each salient task's label ranking over the evidence this library holds now.
+
+        A fresh result counts as soon as it arrives, a saved plan as it would be written,
+        and an unanalysed track not at all.
+        """
+        cutoffs: dict[AnalysisTask, LibraryCutoffs] = {}
+        for task in tasks:
+            if task not in SALIENT_TASKS:
+                continue
+            rows = []
+            for entry in self.entries:
+                owned = (
+                    entry.plan.desired
+                    if entry.plan is not None
+                    else entry.metadata.owned
+                    if entry.metadata is not None
+                    else None
+                )
+                if owned is not None:
+                    rows.append(task_evidence_from_owned(owned).get(task, ()))
+            cutoffs[task] = library_cutoffs(rows)
+        return cutoffs
 
     # Analysis
 

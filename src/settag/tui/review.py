@@ -49,7 +49,7 @@ def review_track(index: int, entry: TrackEntry, selected: bool, context: RowCont
     candidates: list[ReviewNode] = []
     for task in context.tasks:
         predictions = by_task.get(task, ())
-        chosen = context.select_for_review(predictions)
+        chosen = context.select_for_review(predictions, task)
         if chosen:
             candidates.extend(
                 ReviewNode(
@@ -61,7 +61,9 @@ def review_track(index: int, entry: TrackEntry, selected: bool, context: RowCont
             )
         else:
             state = (
-                "No candidate met the cutoff"
+                "No label stands out against the library"
+                if predictions and context.ranks_against_library(task)
+                else "No candidate met the cutoff"
                 if predictions
                 else "No ranked evidence"
                 if task in provenance

@@ -9,10 +9,12 @@ from settag.policy import (
     SPACED_PATCHES,
     Prediction,
     collect_evidence,
+    library_cutoffs,
     parse_audio_sample,
     rank_predictions,
     sample_audio,
     select_predictions,
+    select_salient,
 )
 
 SAMPLE_RATE = 16_000
@@ -120,3 +122,48 @@ def test_parse_audio_sample_accepts_every_documented_strategy() -> None:
 def test_parse_audio_sample_rejects_an_unknown_strategy() -> None:
     with pytest.raises(ValueError, match="unknown audio sample 'half'"):
         parse_audio_sample("half")
+
+
+def _library(tracks: int) -> list[list[Prediction]]:
+    """`Bass` is loud on every track; `Space` is quiet everywhere and strong on a few."""
+    return [
+        [
+            Prediction("Bass", 0.5 + index / 1000),
+            Prediction("Synthesizer", 0.45),
+            Prediction("Space", 0.35 if index < 5 else 0.01),
+            Prediction("Drums", 0.3),
+        ]
+        for index in range(tracks)
+    ]
+
+
+def test_a_label_loud_on_every_track_is_shown_only_where_it_stands_out() -> None:
+    rows = _library(25)
+    cutoffs = library_cutoffs(rows)
+
+    shown = [{item.label for item in select_salient(row, cutoffs=cutoffs, top=5)} for row in rows]
+
+    # Top 40% of 25 tracks is 10: the ten loudest Bass tracks keep it, the rest drop it.
+    assert sum("Bass" in labels for labels in shown) == 10
+    assert all("Bass" in labels for labels in shown[-10:])
+
+
+def test_a_quiet_label_is_shown_where_it_ranks_high_for_the_track() -> None:
+    rows = _library(25)
+    cutoffs = library_cutoffs(rows)
+
+    # Space is near zero on most tracks, so the library ranks the five where it is
+    # strong, and on those it is the track's third label.
+    assert "Space" in {item.label for item in select_salient(rows[0], cutoffs=cutoffs, top=5)}
+    assert "Space" not in {item.label for item in select_salient(rows[20], cutoffs=cutoffs, top=5)}
+
+
+def test_a_small_library_is_not_ranked() -> None:
+    assert library_cutoffs(_library(19)) == {}
+    assert library_cutoffs(_library(20))
+
+
+def test_salient_selection_never_shows_more_than_three_labels() -> None:
+    rows = [[Prediction(f"L{n}", 0.5) for n in range(10)] for _ in range(20)]
+    selected = select_salient(rows[0], cutoffs=library_cutoffs(rows), top=5)
+    assert len(selected) == 3
