@@ -437,6 +437,19 @@ inference finishes, completed results remain reviewable, and unprocessed tracks
 remain selected. Failures are isolated during analysis. A run returns non-zero
 if any input fails.
 
+Audio failures persist in the local metadata database, keyed by path, size,
+mtime, and a setup digest of the SetTag version, model ids, and evidence
+configuration, so any of those changing earns a fresh try. Each attempt is
+recorded before it runs and settled after, which attributes an analyzer crash,
+including one that takes SetTag down, to the file being read. Only failures that
+belong to the file count: an error reported for it, or the analyzer dying while
+reading it. Run-wide errors (a missing model, a worker that will not start, a
+worker stopped by quitting) restore the previous record. After two consecutive
+failures the scan leaves the track out of the default selection, like a sample,
+but it stays selectable; selecting it is the request to retry. Unattended runs
+skip its audio analysis unless `--retry-failed` is given. Bookkeeping is
+failure-absorbing and never fails the track it describes.
+
 Preflight verifies for every included track:
 
 - the source exists and its audio digest matches; a v4 plan predates the

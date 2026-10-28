@@ -1,12 +1,14 @@
 """The details panel, rendered without an app."""
 
+from dataclasses import replace
 from pathlib import Path
 
 from test_tui import _analysis_batch, _metadata_track, _silent_wav
 
+from settag.state import AudioFailure
 from settag.tui.entries import TrackEntry
 from settag.tui.inspector import display_path, metadata_inspector, review_inspector
-from settag.tui.table import RowContext
+from settag.tui.table import RowContext, entry_analysis
 from settag.workflow import AnalysisFailure
 
 CONTEXT = RowContext(tasks=("genre",), review_top=5, score_cutoff=0.10)
@@ -53,3 +55,16 @@ def test_paths_under_home_are_shortened() -> None:
     assert display_path(Path.home() / "Music") == str(Path("~") / "Music")
     assert display_path(Path.home()) == "~"
     assert display_path(Path("/Volumes/USB")) == "/Volumes/USB"
+
+
+def test_library_details_explain_a_file_that_keeps_failing(tmp_path: Path) -> None:
+    path = tmp_path / "track.wav"
+    _silent_wav(path)
+    failure = AudioFailure("DecodeError: corrupt frame", 3, "2026-10-27T10:00:00Z")
+    entry = TrackEntry(path=path, metadata=replace(_metadata_track(path), audio_failure=failure))
+
+    lines = metadata_inspector(entry, selected_for_enrichment=False, context=CONTEXT)
+
+    assert "Audio analysis failed the last 3 times" in lines
+    assert "  DecodeError: corrupt frame" in lines
+    assert entry_analysis(entry, CONTEXT) == "Keeps failing · 3 tries"

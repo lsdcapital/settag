@@ -318,6 +318,7 @@ def _run_default(args: argparse.Namespace) -> int:
             top=args.top,
             threshold=args.threshold,
             offline=offline,
+            skip_failing=not args.retry_failed,
         )(
             paths,
             lambda index, total, path: LOGGER.info(

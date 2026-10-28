@@ -448,3 +448,68 @@ def test_workbench_relocates_a_schema_one_row(tmp_path: Path) -> None:
     original.rename(renamed)
 
     assert store.relocate([renamed]) == {original.resolve(): renamed.resolve()}
+
+
+def _failure_file(tmp_path: Path) -> Path:
+    path = tmp_path / "failing.wav"
+    path.write_bytes(b"not really audio")
+    return path
+
+
+def test_audio_failures_count_consecutive_attempts(tmp_path: Path) -> None:
+    store = WorkbenchStore(tmp_path / "state.sqlite3")
+    path = _failure_file(tmp_path)
+
+    for attempt in (1, 2):
+        store.begin_audio_attempt(path, "setup")
+        store.audio_attempt_failed(path, "DecodeError: corrupt frame")
+        failure = store.audio_failures((path,), "setup")[path.resolve()]
+        assert failure.attempts == attempt
+        assert failure.error == "DecodeError: corrupt frame"
+        assert failure.keeps_failing is (attempt == 2)
+
+    store.begin_audio_attempt(path, "setup")
+    store.audio_attempt_succeeded(path)
+    assert store.audio_failures((path,), "setup") == {}
+
+
+def test_an_attempt_that_never_ends_is_held_against_the_file(tmp_path: Path) -> None:
+    """A native crash takes SetTag down before it can say which file it was reading."""
+    store = WorkbenchStore(tmp_path / "state.sqlite3")
+    path = _failure_file(tmp_path)
+
+    store.begin_audio_attempt(path, "setup")
+
+    failure = WorkbenchStore(tmp_path / "state.sqlite3").audio_failures((path,), "setup")
+    assert failure[path.resolve()].error == "SetTag stopped while analysing this file"
+    assert failure[path.resolve()].attempts == 1
+
+
+def test_an_edited_file_or_new_setup_gets_a_fresh_try(tmp_path: Path) -> None:
+    store = WorkbenchStore(tmp_path / "state.sqlite3")
+    path = _failure_file(tmp_path)
+    for _ in range(2):
+        store.begin_audio_attempt(path, "setup")
+        store.audio_attempt_failed(path, "DecodeError: corrupt frame")
+
+    assert store.audio_failures((path,), "other setup") == {}
+    path.write_bytes(b"re-encoded audio")
+    assert store.audio_failures((path,), "setup") == {}
+    assert store.begin_audio_attempt(path, "setup") is None
+
+
+def test_an_abandoned_attempt_restores_the_previous_record(tmp_path: Path) -> None:
+    store = WorkbenchStore(tmp_path / "state.sqlite3")
+    path = _failure_file(tmp_path)
+    store.begin_audio_attempt(path, "setup")
+    store.audio_attempt_failed(path, "DecodeError: corrupt frame")
+    before = store.audio_failures((path,), "setup")[path.resolve()]
+
+    previous = store.begin_audio_attempt(path, "setup")
+    store.abandon_audio_attempt(path, previous, "setup")
+    assert store.audio_failures((path,), "setup")[path.resolve()] == before
+
+    other = tmp_path / "other.wav"
+    other.write_bytes(b"fine")
+    store.abandon_audio_attempt(other, store.begin_audio_attempt(other, "setup"), "setup")
+    assert store.audio_failures((other,), "setup") == {}

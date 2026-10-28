@@ -12,8 +12,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Literal
 
+from settag import __version__
 from settag.freshness import EnrichmentState, current_catalog_evidence, enrichment_record
-from settag.hashing import sha256_audio, sha256_file
+from settag.hashing import sha256_audio, sha256_file, sha256_json
 from settag.plans import (
     PlanError,
     PlannedWrite,
@@ -47,6 +48,38 @@ class WorkbenchEntry:
     plan: PlannedWrite
     status: CacheStatus
     reason: str | None = None
+
+
+# A file whose audio analysis has failed this many times in a row, on the same file and
+# setup, is no longer selected for enrichment by default. One failure is not enough: a
+# quit or a one-off decoder hiccup should not hide a track.
+AUDIO_RETRY_LIMIT = 2
+# Recorded before each attempt and replaced once it ends, so an analyzer crash that takes
+# SetTag down with it still leaves the file it was reading on record.
+INTERRUPTED_AUDIO = "SetTag stopped while analysing this file"
+
+
+@dataclass(frozen=True)
+class AudioFailure:
+    """Audio analysis that failed on one file, kept across sessions."""
+
+    error: str
+    attempts: int
+    failed_at: str
+
+    @property
+    def keeps_failing(self) -> bool:
+        return self.attempts >= AUDIO_RETRY_LIMIT
+
+
+def audio_setup_sha256(model_ids: Mapping[AnalysisTask, str], config_sha256: str) -> str:
+    """What a recorded failure was produced under; any change earns the file a fresh try.
+
+    The SetTag version is part of it because a release may fix the failure.
+    """
+    return sha256_json(
+        {"version": __version__, "models": dict(sorted(model_ids.items())), "config": config_sha256}
+    )
 
 
 def default_state_db() -> Path:
@@ -206,6 +239,103 @@ class WorkbenchStore:
                     plan.source_size,
                 ),
             )
+
+    def audio_failures(self, paths: Sequence[Path], setup_sha256: str) -> dict[Path, AudioFailure]:
+        """Recorded failures that still describe these files as they are now."""
+        if not paths:
+            return {}
+        found: dict[Path, AudioFailure] = {}
+        with closing(self._connect()) as connection:
+            if connection.execute("SELECT 1 FROM audio_failures LIMIT 1").fetchone() is None:
+                return {}
+            for path in paths:
+                resolved = path.expanduser().resolve()
+                failure = self._audio_failure(connection, resolved, setup_sha256)
+                if failure is not None:
+                    found[resolved] = failure
+        return found
+
+    def begin_audio_attempt(self, path: Path, setup_sha256: str) -> AudioFailure | None:
+        """Count an attempt before it runs; returns the record it replaced.
+
+        Pass that back to `abandon_audio_attempt` when the attempt never got as far as
+        the file, so a missing model or a cancel is not held against it.
+        """
+        resolved = path.expanduser().resolve()
+        stat = resolved.stat()
+        with closing(self._connect()) as connection, connection:
+            previous = self._audio_failure(connection, resolved, setup_sha256)
+            connection.execute(
+                "INSERT OR REPLACE INTO audio_failures VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (
+                    str(resolved),
+                    stat.st_size,
+                    stat.st_mtime_ns,
+                    setup_sha256,
+                    INTERRUPTED_AUDIO,
+                    (previous.attempts if previous is not None else 0) + 1,
+                    _utc_now(),
+                ),
+            )
+        return previous
+
+    def audio_attempt_failed(self, path: Path, error: str) -> None:
+        with closing(self._connect()) as connection, connection:
+            connection.execute(
+                "UPDATE audio_failures SET error = ? WHERE path = ?",
+                (error, str(path.expanduser().resolve())),
+            )
+
+    def audio_attempt_succeeded(self, path: Path) -> None:
+        with closing(self._connect()) as connection, connection:
+            connection.execute(
+                "DELETE FROM audio_failures WHERE path = ?", (str(path.expanduser().resolve()),)
+            )
+
+    def abandon_audio_attempt(
+        self, path: Path, previous: AudioFailure | None, setup_sha256: str
+    ) -> None:
+        if previous is None:
+            self.audio_attempt_succeeded(path)
+            return
+        resolved = path.expanduser().resolve()
+        stat = resolved.stat()
+        with closing(self._connect()) as connection, connection:
+            connection.execute(
+                "INSERT OR REPLACE INTO audio_failures VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (
+                    str(resolved),
+                    stat.st_size,
+                    stat.st_mtime_ns,
+                    setup_sha256,
+                    previous.error,
+                    previous.attempts,
+                    previous.failed_at,
+                ),
+            )
+
+    @staticmethod
+    def _audio_failure(
+        connection: sqlite3.Connection, path: Path, setup_sha256: str
+    ) -> AudioFailure | None:
+        row = connection.execute(
+            "SELECT size, mtime_ns, setup_sha256, error, attempts, failed_at "
+            "FROM audio_failures WHERE path = ?",
+            (str(path),),
+        ).fetchone()
+        if row is None:
+            return None
+        try:
+            stat = path.stat()
+        except OSError:
+            return None
+        if (row["size"], row["mtime_ns"], row["setup_sha256"]) != (
+            stat.st_size,
+            stat.st_mtime_ns,
+            setup_sha256,
+        ):
+            return None
+        return AudioFailure(str(row["error"]), int(row["attempts"]), str(row["failed_at"]))
 
     def delete(self, paths: Sequence[Path]) -> None:
         if not paths:
@@ -469,6 +599,15 @@ class WorkbenchStore:
                 "CREATE TABLE IF NOT EXISTS enrichment_files ("
                 "path TEXT PRIMARY KEY, size INTEGER NOT NULL, mtime_ns INTEGER NOT NULL, "
                 "audio_sha256 TEXT NOT NULL)"
+            )
+            # Added without a schema bump: a SetTag that predates the table never reads
+            # it, so an older build can still open this database after a downgrade.
+            # Path and stat key it, so a moved or edited file simply gets a fresh try.
+            connection.execute(
+                "CREATE TABLE IF NOT EXISTS audio_failures ("
+                "path TEXT PRIMARY KEY, size INTEGER NOT NULL, mtime_ns INTEGER NOT NULL, "
+                "setup_sha256 TEXT NOT NULL, error TEXT NOT NULL, attempts INTEGER NOT NULL, "
+                "failed_at TEXT NOT NULL)"
             )
             if version < STATE_SCHEMA_VERSION:
                 connection.execute(f"PRAGMA user_version = {STATE_SCHEMA_VERSION}")

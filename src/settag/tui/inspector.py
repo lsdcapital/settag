@@ -111,6 +111,7 @@ def metadata_inspector(
                 if entry.analysis_error is not None
                 else []
             ),
+            *_audio_failure_lines(entry),
             (
                 "Selected for enrichment."
                 if selected_for_enrichment
@@ -122,6 +123,22 @@ def metadata_inspector(
         ]
     )
     return lines
+
+
+def _audio_failure_lines(entry: TrackEntry) -> list[str]:
+    """Why a file that keeps failing is no longer selected, and how to try again."""
+    if not entry.audio_keeps_failing:
+        return []
+    assert entry.metadata is not None
+    assert entry.metadata.audio_failure is not None
+    failure = entry.metadata.audio_failure
+    return [
+        f"Audio analysis failed the last {failure.attempts} times",
+        f"  {failure.error}",
+        f"  Last tried {failure.failed_at[:10]}. Left out of the default selection;",
+        "  select it to try again.",
+        "",
+    ]
 
 
 def _full_analyzed_at(entry: TrackEntry, tasks: Sequence[AnalysisTask]) -> str:

@@ -80,7 +80,19 @@ class TrackEntry:
         return not self.metadata.is_sample
 
     @property
+    def audio_keeps_failing(self) -> bool:
+        """A recorded run of audio failures that this session has not yet retried."""
+        return (
+            self.metadata is not None
+            and self.metadata.audio_keeps_failing
+            and (self.plan is None or self.plan_cached)
+            and self.analysis_error is None
+        )
+
+    @property
     def needs_analysis(self) -> bool:
+        if self.audio_keeps_failing:
+            return False
         if self.plan is not None:
             return self.plan.enrichment_status != "current"
         return self.metadata is not None and self.can_analyze and self.metadata.needs_analysis

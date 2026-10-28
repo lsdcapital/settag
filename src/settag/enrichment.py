@@ -6,9 +6,10 @@ import json
 import os
 import time
 from collections.abc import Callable, Mapping, Sequence
+from contextlib import suppress
 from dataclasses import asdict, replace
 from pathlib import Path
-from typing import Protocol
+from typing import Protocol, TypeVar
 
 from settag.beatport import (
     Candidate,
@@ -24,7 +25,7 @@ from settag.hashing import sha256_file, sha256_json
 from settag.plans import PlannedWrite, friendly_change, stage_default_file_genre
 from settag.policy import select_predictions
 from settag.records import ProvenanceStatus, read_task_provenance_status
-from settag.state import WorkbenchStore
+from settag.state import AudioFailure, WorkbenchError, WorkbenchStore, audio_setup_sha256
 from settag.tags import (
     OWNED_DESCRIPTIONS,
     owned_tag_store,
@@ -37,6 +38,7 @@ from settag.tasks import AnalysisTask
 from settag.workflow import (
     AnalysisBatch,
     AnalysisFailure,
+    AudioAnalysisCrashed,
     CancelCallback,
     ProgressCallback,
     inspect_track,
@@ -147,6 +149,9 @@ def enrichment_plan(
     return item, {**row, **evidence, "changes": list(item.readable_changes)}
 
 
+_T = TypeVar("_T")
+
+
 class EnrichmentLoader:
     """One source-independent operation for the app and unattended runs.
 
@@ -166,6 +171,7 @@ class EnrichmentLoader:
         cached_audio: Callable[[Path], PlannedWrite | None] | None = None,
         state_store: WorkbenchStore | None = None,
         offline: bool = False,
+        skip_failing: bool = False,
     ) -> None:
         self.audio_loader = audio_loader
         # Offline still answers from pages cached by earlier runs; it only never asks
@@ -180,6 +186,15 @@ class EnrichmentLoader:
         self.stopped_reason = ""
         self.cached_audio = cached_audio
         self.state_store = state_store if state_store is not None else WorkbenchStore()
+        # Unattended runs pass every scanned path, so they skip a file whose audio keeps
+        # failing. The app needs no skip: the library leaves such files unselected, and
+        # selecting one anyway is the request to try again.
+        self.skip_failing = skip_failing
+        self._audio_setup = (
+            audio_setup_sha256(expected_model_ids, str(expected_config["sha256"]))
+            if expected_model_ids is not None and expected_config is not None
+            else None
+        )
 
     def begin_batch(self) -> None:
         self.stopped_reason = ""
@@ -215,14 +230,16 @@ class EnrichmentLoader:
         )
         item = self._current_audio(path)
         if item is None:
-            try:
-                batch = self.audio_loader((path,), lambda *_args: None, should_cancel)
-                item = next(iter(batch.planned), None)
-                notes.extend(f"Audio analysis: {f.description}" for f in batch.failures)
-                if batch.cancelled and item is None:
+            known = self._known_audio_failure(path)
+            if self.skip_failing and known is not None and known.keeps_failing:
+                notes.append(
+                    f"Audio analysis skipped: it failed the last {known.attempts} times "
+                    f"({known.error}); run with --retry-failed to try again"
+                )
+            else:
+                item, cancelled = self._analyze_audio(path, should_cancel, notes)
+                if cancelled:
                     return None
-            except Exception as error:
-                notes.append(f"Audio analysis unavailable: {error}")
         audio_complete = item is not None
         if should_cancel():
             return self._finish(
@@ -316,6 +333,53 @@ class EnrichmentLoader:
             )
             raise ValueError("; ".join(notes) or "No enrichment source returned a result")
         return self._finish(item, audio_complete, catalog_info, notes, history=history)
+
+    def _analyze_audio(
+        self, path: Path, should_cancel: CancelCallback, notes: list[str]
+    ) -> tuple[PlannedWrite | None, bool]:
+        """Run audio analysis once, keeping the file's failure record in step with it.
+
+        Only a failure that belongs to this file counts: one the analyzer reported for
+        it, or an analyzer that died reading it. An error raised for the whole run (a
+        missing model, a worker that will not start) is not held against any file.
+        """
+        previous = self._record_audio(lambda store, setup: store.begin_audio_attempt(path, setup))
+        try:
+            batch = self.audio_loader((path,), lambda *_args: None, should_cancel)
+        except AudioAnalysisCrashed as error:
+            self._record_audio(lambda store, _setup: store.audio_attempt_failed(path, str(error)))
+            notes.append(f"Audio analysis unavailable: {error}")
+            return None, False
+        except Exception as error:
+            self._abandon_audio(path, previous)
+            notes.append(f"Audio analysis unavailable: {error}")
+            return None, False
+        item = next(iter(batch.planned), None)
+        notes.extend(f"Audio analysis: {f.description}" for f in batch.failures)
+        if item is not None:
+            self._record_audio(lambda store, _setup: store.audio_attempt_succeeded(path))
+        elif batch.failures:
+            error = batch.failures[0].description
+            self._record_audio(lambda store, _setup: store.audio_attempt_failed(path, error))
+        else:
+            self._abandon_audio(path, previous)
+        return item, batch.cancelled and item is None
+
+    def _known_audio_failure(self, path: Path) -> AudioFailure | None:
+        return self._record_audio(
+            lambda store, setup: store.audio_failures((path,), setup).get(path.resolve())
+        )
+
+    def _abandon_audio(self, path: Path, previous: AudioFailure | None) -> None:
+        self._record_audio(lambda store, setup: store.abandon_audio_attempt(path, previous, setup))
+
+    def _record_audio(self, action: Callable[[WorkbenchStore, str], _T]) -> _T | None:
+        """Failure bookkeeping never fails the track it describes."""
+        if self._audio_setup is None:
+            return None
+        with suppress(WorkbenchError, OSError):
+            return action(self.state_store, self._audio_setup)
+        return None
 
     def _finish(
         self,

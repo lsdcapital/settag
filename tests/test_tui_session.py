@@ -11,6 +11,7 @@ from pathlib import Path
 from test_tui import _analysis_batch, _metadata_track, _silent_wav
 
 from settag.journal import WriteRecord
+from settag.state import AudioFailure
 from settag.tui.entries import TrackEntry
 from settag.tui.session import ReviewSession, WriteToggle
 from settag.workflow import AnalysisFailure
@@ -186,3 +187,28 @@ def test_a_reverted_track_leaves_review_and_reports_the_cleared_plan(tmp_path: P
     assert session.entries[0].metadata is not None
     assert session.entries[0].metadata.status == "not_analyzed"
     assert session.review_indices == set()
+
+
+def test_a_file_that_keeps_failing_is_left_out_but_can_be_retried(tmp_path: Path) -> None:
+    session = ReviewSession(("genre",))
+    failing = tmp_path / "a.wav"
+    fresh = tmp_path / "b.wav"
+    for path in (failing, fresh):
+        _silent_wav(path)
+    failure = AudioFailure("DecodeError: corrupt frame", 2, "2026-10-27T10:00:00Z")
+    session.load(
+        [
+            TrackEntry(
+                path=failing, metadata=replace(_metadata_track(failing), audio_failure=failure)
+            ),
+            TrackEntry(path=fresh, metadata=_metadata_track(fresh)),
+        ]
+    )
+
+    assert session.analysis_selected == {1}
+    assert session.entries[0].can_analyze
+
+    session.toggle_analysis(0)
+    session.begin_analysis((0,))
+    session.accept_result(0, _plan(session, 0), None, completed=1)
+    assert not session.entries[0].audio_keeps_failing

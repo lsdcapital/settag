@@ -6,9 +6,14 @@ from pathlib import Path
 from threading import Event, Thread
 from types import SimpleNamespace
 
+import pytest
 from textual.widgets import Static
 
-from settag.analysis_worker import AnalysisWorkerError, SubprocessAnalysisLoader
+from settag.analysis_worker import (
+    AnalysisWorkerCrashed,
+    AnalysisWorkerError,
+    SubprocessAnalysisLoader,
+)
 from settag.policy import Prediction
 from settag.tags import OWNED_DESCRIPTIONS, GenreState
 from settag.tui import SetTagApp
@@ -254,3 +259,35 @@ def test_close_stops_a_worker_stuck_on_one_track(tmp_path: Path) -> None:
     assert not thread.is_alive()
     assert len(outcome) == 1
     assert isinstance(outcome[0], AnalysisWorkerError)
+    # Stopped by the quit, not by the track: nothing is held against the file.
+    assert not isinstance(outcome[0], AnalysisWorkerCrashed)
+
+
+class _CrashingAnalyzer(_FakeAnalyzer):
+    def analyze(self, path: Path) -> list[Prediction]:
+        os._exit(1)
+
+
+def _crashing_analyzer_factory(
+    model_dir: Path,
+    tasks: tuple[str, ...],
+    sample: str,
+) -> _CrashingAnalyzer:
+    return _CrashingAnalyzer()
+
+
+def test_a_worker_that_dies_on_a_track_reports_a_crash_for_that_track(tmp_path: Path) -> None:
+    path = tmp_path / "track.wav"
+    _silent_wav(path)
+    with (
+        SubprocessAnalysisLoader(
+            tmp_path,
+            ("genre",),
+            top=5,
+            threshold=0.10,
+            analyzer_factory=_crashing_analyzer_factory,
+            poll_interval=0.01,
+        ) as loader,
+        pytest.raises(AnalysisWorkerCrashed, match="exit code 1"),
+    ):
+        loader((path,), lambda *_args: None, lambda: False)

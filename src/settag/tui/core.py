@@ -589,6 +589,9 @@ class SetTagAppCore(App[TuiOutcome]):
             needs = sum(entry.needs_analysis for entry in self.entries)
             # ui-count: tracks whose tags could not be read into this view
             errors = sum(entry.metadata_error is not None for entry in self.entries)
+            # ui-count: rows left unselected because their audio keeps failing
+            failing = sum(entry.audio_keeps_failing for entry in self.entries)
+            failing_text = f"  ·  {failing} keep failing" if failing else ""
             # ui-count: the review selection built up in this session
             ready = len(self.review_indices)
             ready_text = f"  ·  {ready} ready to review" if ready else ""
@@ -596,6 +599,7 @@ class SetTagAppCore(App[TuiOutcome]):
                 # ui-count: every row this view has loaded
                 f"{len(self.entries)} tracks"
                 f"  ·  {needs} need enrichment"
+                f"{failing_text}"
                 f"{ready_text}"
                 f"  ·  {errors} metadata error{'s' if errors != 1 else ''}"
             )

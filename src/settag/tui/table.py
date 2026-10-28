@@ -178,6 +178,10 @@ def entry_analysis(entry: TrackEntry, _context: RowContext) -> str:
     if entry.metadata is not None and entry.metadata.is_sample:
         duration = entry.metadata.duration_seconds
         return f"Sample · {round(duration)}s" if duration is not None else "Sample"
+    if entry.audio_keeps_failing:
+        assert entry.metadata is not None
+        assert entry.metadata.audio_failure is not None
+        return f"Keeps failing · {entry.metadata.audio_failure.attempts} tries"
 
     if entry.plan is not None:
         state = (

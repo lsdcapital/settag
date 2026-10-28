@@ -786,6 +786,14 @@ offline = true
 Offline runs still use catalog pages cached by earlier runs; tracks without one
 are marked **Partial** until an online run checks them. Source
 failures are shown in review while useful results from other sources are retained.
+
+Audio analysis failures are remembered in the local metadata database, including
+an analyzer crash, which is pinned to the file it was reading. A file whose audio
+has failed the last two times shows **Keeps failing** in the library and is left out
+of the default selection; select it to try again. Plain `--no-tui` runs skip such
+files' audio analysis (the catalog check still runs) unless `--retry-failed` is
+given. Editing the file, or changing SetTag, its models, or the evidence settings,
+gives it a fresh try. A missing model or a quit is not counted against any file.
 SetPath does not yet use the additional catalog evidence in ranking.
 
 The combined freshness contract is `settag.enrichment/v2`, stored in the local

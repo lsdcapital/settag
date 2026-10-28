@@ -18,10 +18,16 @@ from settag.cli import main
 from settag.cli.args import build_parser
 from settag.enrichment import EnrichmentLoader, enrichment_plan, genre_evidence, track_identity
 from settag.plans import load_plan, planned_write_record
-from settag.state import WorkbenchStore
+from settag.state import WorkbenchStore, audio_setup_sha256
 from settag.tags import owned_tag_store, read_genre_state, read_owned_values
 from settag.tui import SetTagApp
-from settag.workflow import AnalysisBatch, MetadataBatch, MetadataTrack
+from settag.workflow import (
+    AnalysisBatch,
+    AnalysisFailure,
+    AudioAnalysisCrashed,
+    MetadataBatch,
+    MetadataTrack,
+)
 
 TRACK = TrackIdentity("Opus", ("Eric Prydz",), 2.0)
 RELEASE = Candidate(
@@ -312,3 +318,106 @@ def test_tui_one_action_reviews_catalog_when_audio_unavailable(tmp_path, size):
             assert not read_owned_values(path)["SETTAG_BEATPORT"]
 
     asyncio.run(exercise())
+
+
+def _failing_loader(
+    calls: list[Path],
+    *,
+    error: BaseException | None = None,
+    failure: str | None = "corrupt frame",
+):
+    def load(paths, *_args):
+        calls.extend(paths)
+        if error is not None:
+            raise error
+        return AnalysisBatch(
+            (), tuple(AnalysisFailure(p, "DecodeError", failure) for p in paths if failure)
+        )
+
+    return load
+
+
+def _setup_loader(audio_loader, store: WorkbenchStore, **kwargs) -> EnrichmentLoader:
+    return EnrichmentLoader(
+        audio_loader,
+        provider=Provider(),
+        expected_model_ids={"genre": "model/v1"},
+        expected_config={"sha256": "config"},
+        state_store=store,
+        **kwargs,
+    )
+
+
+def _recorded(store: WorkbenchStore, path: Path):
+    return store.audio_failures((path,), audio_setup_sha256({"genre": "model/v1"}, "config")).get(
+        path.resolve()
+    )
+
+
+def test_unattended_runs_skip_a_file_whose_audio_keeps_failing(tmp_path):
+    path = audio_file(tmp_path / "a.wav")
+    store = WorkbenchStore(tmp_path / "state.sqlite3")
+    calls: list[Path] = []
+    loader = _setup_loader(_failing_loader(calls), store, skip_failing=True)
+
+    for _ in range(2):
+        loader((path,), lambda *_args: None, lambda: False)
+    assert len(calls) == 2
+    assert _recorded(store, path).keeps_failing
+
+    batch = loader((path,), lambda *_args: None, lambda: False)
+    assert len(calls) == 2
+    assert "--retry-failed" in batch.planned[0].notices[0]
+    # Beatport still runs, so the catalog half of enrichment is not lost.
+    assert batch.planned[0].desired["SETTAG_BEATPORT"]
+
+
+def test_the_app_retries_a_failing_file_it_was_asked_for(tmp_path):
+    path = audio_file(tmp_path / "a.wav")
+    store = WorkbenchStore(tmp_path / "state.sqlite3")
+    calls: list[Path] = []
+    loader = _setup_loader(_failing_loader(calls), store)
+
+    for _ in range(3):
+        loader((path,), lambda *_args: None, lambda: False)
+
+    assert len(calls) == 3
+    assert _recorded(store, path).attempts == 3
+
+
+def test_a_run_wide_audio_error_is_not_held_against_the_file(tmp_path):
+    path = audio_file(tmp_path / "a.wav")
+    store = WorkbenchStore(tmp_path / "state.sqlite3")
+    calls: list[Path] = []
+    _setup_loader(_failing_loader(calls), store)((path,), lambda *_args: None, lambda: False)
+    before = _recorded(store, path)
+
+    missing = _failing_loader(calls, error=RuntimeError("Model not installed"))
+    _setup_loader(missing, store)((path,), lambda *_args: None, lambda: False)
+
+    assert _recorded(store, path) == before
+
+
+def test_an_analyzer_crash_is_held_against_the_file(tmp_path):
+    path = audio_file(tmp_path / "a.wav")
+    store = WorkbenchStore(tmp_path / "state.sqlite3")
+    crash = _failing_loader([], error=AudioAnalysisCrashed("worker exit code -11"))
+
+    batch = _setup_loader(crash, store)((path,), lambda *_args: None, lambda: False)
+
+    assert "worker exit code -11" in batch.planned[0].notices[0]
+    assert _recorded(store, path).error == "worker exit code -11"
+
+
+def test_successful_audio_clears_the_failure_record(tmp_path):
+    path = audio_file(tmp_path / "a.wav")
+    store = WorkbenchStore(tmp_path / "state.sqlite3")
+    _setup_loader(_failing_loader([]), store)((path,), lambda *_args: None, lambda: False)
+    plan, _ = enrichment_plan(path, Provider())
+    assert plan is not None
+
+    _setup_loader(lambda paths, *_args: AnalysisBatch((plan,), ()), store)(
+        (path,), lambda *_args: None, lambda: False
+    )
+
+    assert _recorded(store, path) is None

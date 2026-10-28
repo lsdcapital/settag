@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from collections.abc import Callable, Mapping, Sequence
 from contextlib import suppress
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Literal, Protocol, runtime_checkable
 
@@ -37,7 +37,7 @@ from settag.records import (
     source_record,
     utc_now,
 )
-from settag.state import WorkbenchStore
+from settag.state import AudioFailure, WorkbenchStore, audio_setup_sha256
 from settag.tags import (
     OWNED_DESCRIPTIONS,
     GenreState,
@@ -179,10 +179,20 @@ class MetadataTrack:
     duration_seconds: float | None = None
     catalog_identity_sha256: str | None = None
     enrichment: EnrichmentState | None = None
+    audio_failure: AudioFailure | None = None
 
     @property
     def evidence_view(self) -> OwnedValues:
         return self.enrichment.evidence_view(self.owned) if self.enrichment else self.owned
+
+    @property
+    def audio_keeps_failing(self) -> bool:
+        """Audio analysis failed on this file, as it is now, every recent time it ran.
+
+        Left out of the default selection like a sample, but still selectable: unlike a
+        sample, nothing proves the next attempt will fail too.
+        """
+        return self.audio_failure is not None and self.audio_failure.keeps_failing
 
     @property
     def catalog_current(self) -> bool:
@@ -206,7 +216,7 @@ class MetadataTrack:
 
     @property
     def needs_analysis(self) -> bool:
-        if self.is_sample:
+        if self.is_sample or self.audio_keeps_failing:
             return False
         return self.enrichment_status != "current" and self.cache_status != "ready"
 
@@ -410,6 +420,15 @@ class TrackTooShortError(ValueError):
     """
 
 
+class AudioAnalysisCrashed(RuntimeError):
+    """The analyzer died while reading one track.
+
+    Unlike other loader errors, which mean analysis is unavailable for every track
+    (a missing model, a worker that will not start), this one belongs to the file
+    being read, so it counts against that file.
+    """
+
+
 class PartialWriteError(RuntimeError):
     def __init__(self, completed: int, total: int, cause: BaseException) -> None:
         self.completed = completed
@@ -582,6 +601,7 @@ def inspect_paths(
     state_store: WorkbenchStore | None = None,
 ) -> MetadataBatch:
     expected_models = checked_expected_models(expected_model_ids)
+    state = state_store if state_store is not None else WorkbenchStore()
     tracks: list[MetadataTrack] = []
     failures: list[AnalysisFailure] = []
     total = len(paths)
@@ -593,7 +613,7 @@ def inspect_paths(
                     expected_model_ids=expected_models,
                     expected_config_sha256=expected_config_sha256,
                     expected_config=expected_config,
-                    state_store=state_store,
+                    state_store=state,
                 )
             )
         except Exception as error:
@@ -607,6 +627,17 @@ def inspect_paths(
         finally:
             if on_progress is not None:
                 on_progress(index, total, path)
+    # One lookup for the whole scan. A library that has never failed costs one query.
+    audio_failures = state.audio_failures(
+        [track.path for track in tracks],
+        audio_setup_sha256(expected_models, expected_config_sha256),
+    )
+    tracks = [
+        replace(track, audio_failure=failure)
+        if (failure := audio_failures.get(track.path.expanduser().resolve())) is not None
+        else track
+        for track in tracks
+    ]
     return MetadataBatch(tracks=tuple(tracks), failures=tuple(failures))
 
 

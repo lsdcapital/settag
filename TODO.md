@@ -26,7 +26,7 @@ Findings from the September 2026 code review, in priority order.
   A second Q during analysis now quits immediately, and closing the loader terminates a stuck worker. Esc still stops only between tracks.
 - [x] 13. A background analysis result overwrites a plan the user is reviewing/editing; a late write then deletes the fresh workbench row.
 - [x] 14. One persistently failing track blocks all writes; no way to dismiss it.
-  Space on a failed track now dismisses it from review; the error stays visible in the library. Failures are not persisted, so a file that always fails is identified per session (or with `settag analyze PATH --output out.jsonl`, which records settag.error/v1 rows).
+  Space on a failed track now dismisses it from review; the error stays visible in the library. Audio failures now persist across sessions: after two in a row the library shows **Keeps failing** and leaves the track unselected, and `--no-tui` runs skip it unless `--retry-failed` is given.
 - [x] 15. B (library) resets the analysis selection, contrary to DESIGN.md.
 - [x] 16. Hygiene reports "Nothing was changed" if the post-write rescan fails; partial-failure rescan is outside any `try`.
 - [x] 17. Genre edit persists synchronously on the event loop (can block up to the SQLite timeout).

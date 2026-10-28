@@ -15,6 +15,7 @@ from settag.policy import AudioSample
 from settag.tasks import AnalysisTask, ordered_tasks
 from settag.workflow import (
     AnalysisBatch,
+    AudioAnalysisCrashed,
     CancelCallback,
     ProgressCallback,
     analyze_paths,
@@ -38,6 +39,10 @@ class ProcessContext(Protocol):
 
 class AnalysisWorkerError(RuntimeError):
     pass
+
+
+class AnalysisWorkerCrashed(AnalysisWorkerError, AudioAnalysisCrashed):
+    """The worker died while it held a track, so the failure belongs to that track."""
 
 
 @dataclass(frozen=True)
@@ -171,6 +176,9 @@ class SubprocessAnalysisLoader:
         self._process: BaseProcess | None = None
         self._lock = Lock()
         self._closed = False
+        # Set when close() stops a worker mid-track. The track did nothing wrong, so its
+        # request fails as a plain worker error rather than a crash held against it.
+        self._stopping = False
 
     def __call__(
         self,
@@ -223,6 +231,7 @@ class SubprocessAnalysisLoader:
         # quitting mid-analysis cannot hang here.
         if not self._lock.acquire(timeout=self._shutdown_timeout):
             process = self._process
+            self._stopping = True
             if process is not None:
                 with suppress(ValueError, OSError):
                     process.terminate()
@@ -332,10 +341,16 @@ class SubprocessAnalysisLoader:
         process: BaseProcess,
         error: BaseException | None = None,
     ) -> None:
+        # The pipe can break a moment before the process is reaped, which would report
+        # "exit code None" for a crash; a brief wait recovers the real code (-11 for a
+        # segfault). A worker that is still running after it is discarded as before.
+        process.join(self._shutdown_timeout)
         exit_code = process.exitcode
         self._discard_worker(terminate=process.is_alive())
+        if self._stopping:
+            raise AnalysisWorkerError("Analyzer worker was stopped while SetTag closed")
         detail = f": {error}" if error is not None else ""
-        raise AnalysisWorkerError(
+        raise AnalysisWorkerCrashed(
             f"Analyzer worker stopped unexpectedly (exit code {exit_code}){detail}"
         )
 

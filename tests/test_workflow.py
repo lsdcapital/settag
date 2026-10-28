@@ -17,6 +17,7 @@ from settag.plans import (
 )
 from settag.policy import Prediction
 from settag.records import config_record
+from settag.state import WorkbenchStore, audio_setup_sha256
 from settag.tags import (
     OWNED_DESCRIPTIONS,
     PROVENANCE_SCHEMA,
@@ -724,3 +725,30 @@ def test_undo_rechecks_each_file_after_confirmation(tmp_path: Path) -> None:
         apply_undo(entries, on_progress=edit_next)
     assert caught.value.completed == 1
     assert read_owned_values(paths[1]) == changed
+
+
+def test_the_scan_leaves_a_file_whose_audio_keeps_failing_unselected(tmp_path: Path) -> None:
+    path = tmp_path / "track.wav"
+    _silent_wav(path)
+    store = WorkbenchStore(tmp_path / "state.sqlite3")
+    setup = audio_setup_sha256({"genre": "model/v1"}, "config/current")
+
+    def scan():
+        return inspect_paths(
+            (path,),
+            expected_model_ids={"genre": "model/v1"},
+            expected_config_sha256="config/current",
+            state_store=store,
+        ).tracks[0]
+
+    store.begin_audio_attempt(path, setup)
+    store.audio_attempt_failed(path, "DecodeError: corrupt frame")
+    once = scan()
+    assert once.audio_failure is not None
+    assert once.needs_analysis
+
+    store.begin_audio_attempt(path, setup)
+    store.audio_attempt_failed(path, "DecodeError: corrupt frame")
+    twice = scan()
+    assert twice.audio_keeps_failing
+    assert not twice.needs_analysis

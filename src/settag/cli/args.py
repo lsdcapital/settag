@@ -70,6 +70,14 @@ def build_parser() -> argparse.ArgumentParser:
         help="Print a plain dry-run summary instead of opening the app.",
     )
     run.add_argument(
+        "--retry-failed",
+        action="store_true",
+        help=(
+            "With --no-tui, analyse files whose audio failed the last two times too; "
+            "they are skipped by default. The app leaves them unselected instead."
+        ),
+    )
+    run.add_argument(
         "--state-db",
         type=Path,
         default=default_state_db(),
