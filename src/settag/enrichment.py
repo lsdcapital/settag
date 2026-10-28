@@ -29,6 +29,7 @@ from settag.state import AudioFailure, WorkbenchError, WorkbenchStore, audio_set
 from settag.tags import (
     OWNED_DESCRIPTIONS,
     owned_tag_store,
+    read_duration_seconds,
     read_task_provenance,
     task_evidence_from_owned,
     track_identity,
@@ -42,6 +43,7 @@ from settag.workflow import (
     CancelCallback,
     ProgressCallback,
     inspect_track,
+    is_sample_length,
 )
 
 
@@ -207,17 +209,30 @@ class EnrichmentLoader:
     ) -> AnalysisBatch:
         planned: list[PlannedWrite] = []
         failures: list[AnalysisFailure] = []
+        samples: list[Path] = []
         for index, path in enumerate(paths, 1):
             if should_cancel():
                 break
             try:
-                item = self._track(path, should_cancel)
-                if item is not None:
-                    planned.append(item)
+                if self._is_sample(path):
+                    # The app's scan never offers a sample for analysis; an unattended
+                    # run passes every scanned path, so it is passed over here rather
+                    # than failed by the analyzer and held against the file.
+                    samples.append(path)
+                else:
+                    item = self._track(path, should_cancel)
+                    if item is not None:
+                        planned.append(item)
             except Exception as error:
                 failures.append(AnalysisFailure(path, type(error).__name__, str(error)))
             on_progress(index, len(paths), path)
-        return AnalysisBatch(tuple(planned), tuple(failures), cancelled=should_cancel())
+        return AnalysisBatch(
+            tuple(planned), tuple(failures), cancelled=should_cancel(), samples=tuple(samples)
+        )
+
+    def _is_sample(self, path: Path) -> bool:
+        tasks = self.expected_model_ids or {}
+        return is_sample_length(read_duration_seconds(path), tasks)
 
     def _track(self, path: Path, should_cancel: CancelCallback) -> PlannedWrite | None:
         notes: list[str] = []

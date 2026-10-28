@@ -337,15 +337,25 @@ def _failing_loader(
     return load
 
 
+# The catalog release for a `track_file`, which the duration check would reject as
+# a different edit of a two-second RELEASE.
+TRACK_RELEASE = replace(RELEASE, duration_seconds=35.0)
+
+
 def _setup_loader(audio_loader, store: WorkbenchStore, **kwargs) -> EnrichmentLoader:
     return EnrichmentLoader(
         audio_loader,
-        provider=Provider(),
+        provider=Provider((TRACK_RELEASE,)),
         expected_model_ids={"genre": "model/v1"},
         expected_config={"sha256": "config"},
         state_store=store,
         **kwargs,
     )
+
+
+def track_file(path: Path) -> Path:
+    """Long enough for the genre model's window, so the loader treats it as a track."""
+    return audio_file(path, seconds=35)
 
 
 def _recorded(store: WorkbenchStore, path: Path):
@@ -355,7 +365,7 @@ def _recorded(store: WorkbenchStore, path: Path):
 
 
 def test_unattended_runs_skip_a_file_whose_audio_keeps_failing(tmp_path):
-    path = audio_file(tmp_path / "a.wav")
+    path = track_file(tmp_path / "a.wav")
     store = WorkbenchStore(tmp_path / "state.sqlite3")
     calls: list[Path] = []
     loader = _setup_loader(_failing_loader(calls), store, skip_failing=True)
@@ -373,7 +383,7 @@ def test_unattended_runs_skip_a_file_whose_audio_keeps_failing(tmp_path):
 
 
 def test_the_app_retries_a_failing_file_it_was_asked_for(tmp_path):
-    path = audio_file(tmp_path / "a.wav")
+    path = track_file(tmp_path / "a.wav")
     store = WorkbenchStore(tmp_path / "state.sqlite3")
     calls: list[Path] = []
     loader = _setup_loader(_failing_loader(calls), store)
@@ -386,7 +396,7 @@ def test_the_app_retries_a_failing_file_it_was_asked_for(tmp_path):
 
 
 def test_a_run_wide_audio_error_is_not_held_against_the_file(tmp_path):
-    path = audio_file(tmp_path / "a.wav")
+    path = track_file(tmp_path / "a.wav")
     store = WorkbenchStore(tmp_path / "state.sqlite3")
     calls: list[Path] = []
     _setup_loader(_failing_loader(calls), store)((path,), lambda *_args: None, lambda: False)
@@ -399,7 +409,7 @@ def test_a_run_wide_audio_error_is_not_held_against_the_file(tmp_path):
 
 
 def test_an_analyzer_crash_is_held_against_the_file(tmp_path):
-    path = audio_file(tmp_path / "a.wav")
+    path = track_file(tmp_path / "a.wav")
     store = WorkbenchStore(tmp_path / "state.sqlite3")
     crash = _failing_loader([], error=AudioAnalysisCrashed("worker exit code -11"))
 
@@ -410,10 +420,10 @@ def test_an_analyzer_crash_is_held_against_the_file(tmp_path):
 
 
 def test_successful_audio_clears_the_failure_record(tmp_path):
-    path = audio_file(tmp_path / "a.wav")
+    path = track_file(tmp_path / "a.wav")
     store = WorkbenchStore(tmp_path / "state.sqlite3")
     _setup_loader(_failing_loader([]), store)((path,), lambda *_args: None, lambda: False)
-    plan, _ = enrichment_plan(path, Provider())
+    plan, _ = enrichment_plan(path, Provider((TRACK_RELEASE,)))
     assert plan is not None
 
     _setup_loader(lambda paths, *_args: AnalysisBatch((plan,), ()), store)(
@@ -424,7 +434,7 @@ def test_successful_audio_clears_the_failure_record(tmp_path):
 
 
 def test_quitting_mid_track_is_not_held_against_the_file(tmp_path):
-    path = audio_file(tmp_path / "a.wav")
+    path = track_file(tmp_path / "a.wav")
     store = WorkbenchStore(tmp_path / "state.sqlite3")
 
     with pytest.raises(KeyboardInterrupt):
@@ -433,3 +443,20 @@ def test_quitting_mid_track_is_not_held_against_the_file(tmp_path):
         )
 
     assert _recorded(store, path) is None
+
+
+def test_a_sample_is_passed_over_rather_than_failed(tmp_path):
+    sample = audio_file(tmp_path / "sample.wav")
+    track = track_file(tmp_path / "track.wav")
+    store = WorkbenchStore(tmp_path / "state.sqlite3")
+    calls: list[Path] = []
+
+    batch = _setup_loader(_failing_loader(calls), store, skip_failing=True)(
+        (sample, track), lambda *_args: None, lambda: False
+    )
+
+    assert batch.samples == (sample,)
+    assert calls == [track]
+    assert [item.path for item in batch.planned] == [track.resolve()]
+    assert not batch.failures
+    assert _recorded(store, sample) is None

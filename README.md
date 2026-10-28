@@ -814,6 +814,10 @@ files' audio analysis (the catalog check still runs) unless `--retry-failed` is
 given. Editing the file, or changing SetTag, its models, or the evidence settings,
 gives it a fresh try. A missing model or a quit is not counted against any file.
 
+A sample, a clip shorter than the 30 s the genre model reads, is not a failure.
+The library marks it **Sample** and never offers it for analysis, and `--no-tui`
+runs list it under "Samples skipped" rather than as an error.
+
 A track that takes far longer than analysis needs (two minutes plus one second per
 second of audio; real analysis runs at a few percent of that) is stopped, counted
 as a failure, and the run moves on with a fresh analyzer. The app and `--no-tui`

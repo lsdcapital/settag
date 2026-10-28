@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from contextlib import suppress
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -147,6 +147,8 @@ class AnalysisBatch:
     planned: tuple[PlannedWrite, ...]
     failures: tuple[AnalysisFailure, ...]
     cancelled: bool = False
+    # Clips too short for the genre model, passed over rather than failed.
+    samples: tuple[Path, ...] = ()
 
     @property
     def current_count(self) -> int:
@@ -163,6 +165,10 @@ class AnalysisBatch:
     @property
     def failure_count(self) -> int:
         return len(self.failures)
+
+    @property
+    def sample_count(self) -> int:
+        return len(self.samples)
 
 
 @dataclass(frozen=True)
@@ -641,6 +647,15 @@ def inspect_paths(
     return MetadataBatch(tracks=tuple(tracks), failures=tuple(failures))
 
 
+def is_sample_length(duration: float | None, tasks: Iterable[AnalysisTask]) -> bool:
+    """Whether audio this long is a sample: too short for the genre model to read.
+
+    An unknown length is not a sample, so a container that reports none is still
+    analysed rather than silently left out.
+    """
+    return "genre" in tasks and duration is not None and duration < MIN_GENRE_SECONDS
+
+
 def inspect_track(
     path: Path,
     *,
@@ -653,7 +668,7 @@ def inspect_track(
     genre_state, owned, duration, identity_hash = read_track_metadata(path)
     state = state_store if state_store is not None else WorkbenchStore()
     enrichment = state.load_enrichment(path, owned=owned, identity_sha256=identity_hash)
-    if "genre" in expected_models and duration is not None and duration < MIN_GENRE_SECONDS:
+    if is_sample_length(duration, expected_models):
         # Checked before anything else: what the tags say does not matter when the
         # audio is too short for the model to read.
         return MetadataTrack(

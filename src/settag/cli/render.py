@@ -19,7 +19,7 @@ from typing import TextIO
 from settag.hygiene import SCAN_LABELS, HygieneBatch
 from settag.journal import BatchRecorder, JournalBatch, WriteJournal
 from settag.plans import PlannedWrite
-from settag.policy import Prediction
+from settag.policy import MIN_GENRE_SECONDS, Prediction
 from settag.review_evidence import describe_evidence
 from settag.tags import GenreState, read_task_provenance, task_evidence_from_owned
 from settag.tasks import TASK_FIELDS, TASK_ORDER, AnalysisTask
@@ -56,6 +56,7 @@ def _print_plain_batch(source: Path, batch: AnalysisBatch) -> None:
     print(f"  Would write:         {summary.write_count}", file=sys.stderr)
     print(f"  Already current:     {summary.unchanged_count}", file=sys.stderr)
     print(f"  Without file genre:  {summary.empty_file_genres}", file=sys.stderr)
+    print(f"  Samples skipped:     {batch.sample_count}", file=sys.stderr)
     print(f"  Errors:              {batch.failure_count}", file=sys.stderr)
 
     for item in planned:
@@ -75,6 +76,16 @@ def _print_plain_batch(source: Path, batch: AnalysisBatch) -> None:
             *review.notices,
         ):
             print(f"  {line}", file=sys.stderr)
+
+    if batch.samples:
+        print(file=sys.stderr)
+        print(
+            f"Samples, shorter than the {MIN_GENRE_SECONDS}s the genre model reads; "
+            "nothing to analyse:",
+            file=sys.stderr,
+        )
+        for path in batch.samples:
+            print(f"  {path}", file=sys.stderr)
 
     for failure in batch.failures:
         print(file=sys.stderr)

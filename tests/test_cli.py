@@ -677,6 +677,28 @@ def test_no_tui_forces_the_plain_dry_run(
     assert WAVE(path).tags is None
 
 
+def test_plain_run_passes_over_a_sample_without_an_error(
+    tmp_path: Path,
+    monkeypatch,
+    capsys,
+) -> None:
+    path = tmp_path / "sample.wav"
+    _silent_wav(path, seconds=10)
+
+    def construct_analyzer(_model_dir, **_options):
+        raise AssertionError("a sample must never reach the analyzer")
+
+    monkeypatch.setattr("settag.cli.commands.EssentiaGenreAnalyzer", construct_analyzer)
+
+    result = main(["run", str(path), "--no-tui", "--tasks", "genre", "--offline"])
+    stderr = capsys.readouterr().err
+
+    assert result == 0
+    assert "Samples skipped:     1" in stderr
+    assert "Errors:              0" in stderr
+    assert "Samples, shorter than the 30s the genre model reads" in stderr
+
+
 def test_interactive_default_reads_metadata_without_constructing_analyzer(
     tmp_path: Path,
     monkeypatch,
