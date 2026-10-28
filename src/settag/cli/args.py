@@ -15,7 +15,7 @@ from settag.journal import DEFAULT_JOURNAL_DB
 from settag.model_store import DEFAULT_MODEL_DIR
 from settag.policy import MIDDLE_PATCHES, SPACED_PATCHES, AudioSample, parse_audio_sample
 from settag.state import DEFAULT_STATE_DB, default_state_db
-from settag.tasks import AnalysisTask, parse_tasks
+from settag.tasks import DEFAULT_TASKS, AnalysisTask, parse_tasks
 
 COMMANDS = frozenset(
     {"run", "models", "analyze", "inspect", "hygiene", "preview", "apply", "undo", "enrich"}
@@ -274,9 +274,11 @@ def _add_analysis_options(parser: argparse.ArgumentParser) -> None:
 def _add_tasks(
     parser: argparse.ArgumentParser,
     *,
-    default: tuple[AnalysisTask, ...] | None = ("genre",),
+    default: tuple[AnalysisTask, ...] | None = DEFAULT_TASKS,
 ) -> None:
-    default_text = "genre" if default == ("genre",) else "config, then genre"
+    default_text = ",".join(DEFAULT_TASKS)
+    if default is None:
+        default_text = f"config, then {default_text}"
     parser.add_argument(
         "--tasks",
         type=_analysis_tasks,

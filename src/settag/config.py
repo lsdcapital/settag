@@ -12,7 +12,7 @@ else:
     import tomli as tomllib
 
 from settag.policy import AUDIO_SAMPLES, AudioSample
-from settag.tasks import AnalysisTask, ordered_tasks
+from settag.tasks import DEFAULT_TASKS, AnalysisTask, ordered_tasks
 
 
 class ConfigError(ValueError):
@@ -21,7 +21,7 @@ class ConfigError(ValueError):
 
 @dataclass(frozen=True)
 class SetTagConfig:
-    tasks: tuple[AnalysisTask, ...] = ("genre",)
+    tasks: tuple[AnalysisTask, ...] = DEFAULT_TASKS
     genre_sample: AudioSample = "middle"
     catalog_offline: bool = False
 
@@ -53,7 +53,7 @@ def load_config(path: Path = DEFAULT_CONFIG_PATH) -> SetTagConfig:
     analysis = value.get("analysis", {})
     if not isinstance(analysis, dict):
         raise ConfigError(f"{resolved}: [analysis] must be a TOML table")
-    raw_tasks: Any = analysis.get("tasks", ["genre"])
+    raw_tasks: Any = analysis.get("tasks", list(SetTagConfig.tasks))
     if (
         not isinstance(raw_tasks, list)
         or not raw_tasks

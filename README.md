@@ -71,8 +71,9 @@ wheels for either, on any release.
 The analysis backend is a large download — roughly 100 MB on macOS and 290 MB
 on Linux — and the models are fetched separately on top of that.
 
-Genre is the default and the only model loaded unless tasks are requested
-explicitly:
+The default tasks are genre, mood/theme, and mood-aggressive. The two mood tasks
+share one Discogs-EffNet embedding pass, an 18 MB model that adds about 1.2s a
+track beside MAEST's 348 MB and 15.5s. Instrument is opt-in:
 
 ```sh
 settag models download --tasks genre,mood-theme,instrument,mood-aggressive
@@ -80,8 +81,8 @@ settag analyze "/path/to/music" --tasks genre,mood-theme,instrument,mood-aggress
 ```
 
 `mood-aggressive` is a small two-class head (`Aggressive`, `Not Aggressive`) on
-the same EffNet embedding pass as mood/theme and instrument, so adding it to an
-EffNet run costs almost nothing.
+the same EffNet embedding pass as mood/theme and instrument, so it costs almost
+nothing on top of them.
 
 The interactive app reads its default tasks from
 `~/.config/settag/config.toml`:
@@ -107,7 +108,7 @@ settag "/path/to/music" --tasks mood-aggressive
 
 Set `SETTAG_CONFIG` or pass `--config /path/to/config.toml` to use another
 config file. Task precedence is `--tasks`, then the config file, then the
-`genre` default. The config file is read only for options the flags left
+`genre,mood-theme,mood-aggressive` default. The config file is read only for options the flags left
 unset.
 
 ### How much audio the genre model reads

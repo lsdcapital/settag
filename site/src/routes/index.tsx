@@ -107,8 +107,8 @@ function Home() {
             <div>
               <h2 className="block__title">What it runs</h2>
               <p className="block__body">
-                MAEST for genre by default. Discogs-EffNet heads add mood, theme, and instrument
-                evidence when you ask for them.
+                MAEST for genre and Discogs-EffNet heads for mood and aggression by default.
+                Instrument evidence is there when you ask for it.
               </p>
               <p className="block__body">
                 Inference happens on your machine. Model files download once into{" "}
@@ -135,8 +135,9 @@ function Home() {
               <li>
                 <code className="steps__line">$ settag models download</code>
                 <span className="steps__gloss">
-                  Fetches the genre model. Add <code>--tasks genre,mood-theme,instrument</code> for
-                  the rest.
+                  Fetches the genre and mood models. Add{" "}
+                  <code>--tasks genre,mood-theme,instrument,mood-aggressive</code> for instrument
+                  too.
                 </span>
               </li>
               <li>
@@ -148,8 +149,9 @@ function Home() {
               </li>
             </ol>
             <p className="block__body">
-              Genre is the default. After downloading the optional models, launch with{" "}
-              <code>--tasks genre,mood-theme,instrument</code> to use all three tasks.
+              Genre, mood/theme, and aggression run by default. After downloading the instrument
+              model, launch with <code>--tasks genre,mood-theme,instrument,mood-aggressive</code> to
+              use all four tasks.
             </p>
             <p className="block__body">
               Already installed? Run <code>uv tool upgrade settag</code>, then{" "}

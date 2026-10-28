@@ -7,6 +7,10 @@ AnalysisTask = Literal["genre", "mood-theme", "instrument", "mood-aggressive"]
 
 TASK_ORDER: tuple[AnalysisTask, ...] = ("genre", "mood-theme", "instrument", "mood-aggressive")
 TASK_SET = frozenset(TASK_ORDER)
+# What runs when neither a flag nor the config names tasks. Both mood tasks share one
+# Discogs-EffNet pass (18 MB, ~1.2 s a track) beside MAEST's 348 MB, so they cost little
+# on top of genre. Instrument stays opt-in.
+DEFAULT_TASKS: tuple[AnalysisTask, ...] = ("genre", "mood-theme", "mood-aggressive")
 
 TASK_FIELDS: dict[AnalysisTask, tuple[str, str]] = {
     "genre": ("SETTAG_GENRE", "SETTAG_GENRE_SCORES"),

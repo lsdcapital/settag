@@ -541,8 +541,9 @@ Whether one task's provenance is out of date is decided in exactly one place,
 both consume its `ProvenanceStatus` and phrase the result their own way; neither
 re-derives it. A structural test enforces that the comparison stays there.
 
-`genre` is the default task and loads only MAEST. Explicit `mood-theme`,
-`instrument`, and `mood-aggressive` tasks share one Discogs-EffNet embedding pass
+The default tasks are `genre`, `mood-theme`, and `mood-aggressive`
+(`tasks.DEFAULT_TASKS`); `instrument` is opt-in. `genre` loads MAEST. `mood-theme`,
+`instrument`, and `mood-aggressive` share one Discogs-EffNet embedding pass
 and use their own heads. Genre evidence is exclusively MAEST-derived. EffNet output cannot write
 the SetTag or conventional genre fields.
 

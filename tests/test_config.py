@@ -5,8 +5,10 @@ import pytest
 from settag.config import ConfigError, SetTagConfig, load_config
 
 
-def test_missing_config_uses_genre_default(tmp_path: Path) -> None:
-    assert load_config(tmp_path / "missing.toml") == SetTagConfig(tasks=("genre",))
+def test_missing_config_uses_genre_and_mood_default(tmp_path: Path) -> None:
+    assert load_config(tmp_path / "missing.toml") == SetTagConfig(
+        tasks=("genre", "mood-theme", "mood-aggressive")
+    )
 
 
 def test_config_loads_analysis_tasks_in_canonical_order(tmp_path: Path) -> None:
@@ -19,7 +21,7 @@ def test_config_loads_analysis_tasks_in_canonical_order(tmp_path: Path) -> None:
     assert load_config(path).tasks == ("genre", "mood-theme", "instrument")
 
 
-def test_config_accepts_the_opt_in_mood_aggressive_task(tmp_path: Path) -> None:
+def test_config_accepts_the_mood_aggressive_task(tmp_path: Path) -> None:
     path = tmp_path / "config.toml"
     path.write_text(
         '[analysis]\ntasks = ["mood-aggressive", "genre", "instrument"]\n',
@@ -27,7 +29,6 @@ def test_config_accepts_the_opt_in_mood_aggressive_task(tmp_path: Path) -> None:
     )
 
     assert load_config(path).tasks == ("genre", "instrument", "mood-aggressive")
-    assert "mood-aggressive" not in SetTagConfig().tasks
 
 
 @pytest.mark.parametrize(

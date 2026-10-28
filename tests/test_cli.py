@@ -428,10 +428,10 @@ def test_mood_aggressive_task_is_selected_explicitly_on_the_cli(
     assert WAVE(path).tags is None
 
 
-def test_mood_aggressive_is_not_a_default_task() -> None:
+def test_genre_and_both_mood_tasks_are_the_default() -> None:
     args = build_parser().parse_args(["analyze", "track.wav"])
 
-    assert args.tasks == ("genre",)
+    assert args.tasks == ("genre", "mood-theme", "mood-aggressive")
 
 
 def test_default_file_genre_never_replaces_an_existing_value(
@@ -1024,7 +1024,7 @@ def test_compact_plan_is_human_readable_and_applies_after_one_confirmation(
         lambda _model_dir, **_options: FakeAnalyzer(),
     )
 
-    analyzed = main(["analyze", str(path), "--plan", str(plan_path)])
+    analyzed = main(["analyze", str(path), "--tasks", "genre", "--plan", str(plan_path)])
     analyze_stderr = capsys.readouterr().err
     plan_text = plan_path.read_text(encoding="utf-8")
     plan = json.loads(plan_text)
@@ -1095,7 +1095,7 @@ def test_preview_renders_a_saved_plan_without_external_json_tools_or_writing(
         lambda _model_dir, **_options: FakeAnalyzer(),
     )
 
-    assert main(["analyze", str(path), "--plan", str(plan_path)]) == 0
+    assert main(["analyze", str(path), "--tasks", "genre", "--plan", str(plan_path)]) == 0
     capsys.readouterr()
 
     result = main(["preview", str(plan_path)])
@@ -1250,7 +1250,7 @@ def test_batch_apply_rejects_a_partial_plan_with_analysis_errors(
         lambda _model_dir, **_options: PartiallyFailingAnalyzer(),
     )
 
-    analyzed = main(["analyze", str(tmp_path), "--plan", str(plan_path)])
+    analyzed = main(["analyze", str(tmp_path), "--tasks", "genre", "--plan", str(plan_path)])
     capsys.readouterr()
     schemas = [
         json.loads(line)["schema"] for line in plan_path.read_text(encoding="utf-8").splitlines()
@@ -1457,7 +1457,7 @@ def test_analyze_records_the_sample_it_ran_under(tmp_path: Path, monkeypatch) ->
         lambda _model_dir, **_options: SampledFakeAnalyzer(),
     )
 
-    assert main(["analyze", str(path), "--output", str(output_path)]) == 0
+    assert main(["analyze", str(path), "--tasks", "genre", "--output", str(output_path)]) == 0
 
     record = json.loads(output_path.read_text(encoding="utf-8").splitlines()[0])
     assert record["config"]["evidence"]["genre_sample"] == "spaced"
@@ -1610,7 +1610,19 @@ def test_an_unopenable_output_leaves_no_empty_embeddings_file(tmp_path: Path, mo
 
 
 def test_genre_only_embedding_export_is_rejected_before_loading(tmp_path: Path) -> None:
-    assert main(["analyze", str(tmp_path), "--embeddings", str(tmp_path / "out.jsonl")]) == 2
+    assert (
+        main(
+            [
+                "analyze",
+                str(tmp_path),
+                "--tasks",
+                "genre",
+                "--embeddings",
+                str(tmp_path / "out.jsonl"),
+            ]
+        )
+        == 2
+    )
 
 
 @pytest.mark.parametrize("scan", ["metadata", "duplicates", "all"])
