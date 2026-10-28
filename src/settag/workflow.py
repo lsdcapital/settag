@@ -88,6 +88,8 @@ class TaskAnalyzer(Protocol):
     def analyze_tasks(
         self,
         path: Path,
+        tasks: Sequence[AnalysisTask] | None = None,
+        /,
     ) -> Mapping[AnalysisTask, Sequence[Prediction]]: ...
 
 
@@ -186,6 +188,14 @@ class MetadataTrack:
     catalog_identity_sha256: str | None = None
     enrichment: EnrichmentState | None = None
     audio_failure: AudioFailure | None = None
+    #: For a ``stale`` track, the configured tasks whose analysis is missing or out of
+    #: date. Only these need to run again; the rest are current and are kept.
+    stale_tasks: tuple[AnalysisTask, ...] = ()
+
+    @property
+    def tasks_to_analyze(self) -> tuple[AnalysisTask, ...] | None:
+        """What re-analysis has to run: the stale tasks, or None for every configured one."""
+        return self.stale_tasks if self.status == "stale" and self.stale_tasks else None
 
     @property
     def evidence_view(self) -> OwnedValues:
@@ -449,11 +459,13 @@ def prepare_track(
     analyzer: Analyzer,
     top: int,
     threshold: float,
+    tasks: Sequence[AnalysisTask] | None = None,
 ) -> PreparedTrack:
+    """Analyze one file. ``tasks`` limits the run; the file keeps every other task's tags."""
     source = source_record(path)
     # Declared by the analyzer rather than assumed, so a test double that ignores
     # audio, or a task set without the genre model, imposes no minimum.
-    minimum = getattr(analyzer, "min_seconds", None)
+    minimum = getattr(analyzer, "min_seconds", None) if tasks is None or "genre" in tasks else None
     if minimum is not None:
         duration = read_duration_seconds(path)
         if duration is not None and duration < minimum:
@@ -463,7 +475,7 @@ def prepare_track(
             )
     analyzed_at = utc_now()
     current_owned = read_owned_values(path)
-    task_predictions, manifests = _analyze_tasks(analyzer, path)
+    task_predictions, manifests = _analyze_tasks(analyzer, path, tasks)
     config = config_record(
         top=top,
         threshold=threshold,
@@ -496,7 +508,9 @@ def prepare_track(
     stored = task_evidence_from_owned(desired)
     evidence = list(stored.get("genre", ()))
     predictions = task_predictions.get("genre", evidence)
-    selected = task_selected.get("genre", [])
+    # From the stored evidence rather than this run's, so a run that kept genre as it was
+    # still suggests a genre for a file without one.
+    selected = select_predictions(evidence, threshold=threshold, top=top)
     genre_state = read_genre_state(path)
     tag_plan = plan_owned_tags(path, desired)
     return PreparedTrack(
@@ -520,12 +534,13 @@ def prepare_track(
 def _analyze_tasks(
     analyzer: Analyzer,
     path: Path,
+    tasks: Sequence[AnalysisTask] | None = None,
 ) -> tuple[
     dict[AnalysisTask, list[Prediction]],
     dict[AnalysisTask, dict[str, object]],
 ]:
     if isinstance(analyzer, TaskAnalyzer):
-        raw = analyzer.analyze_tasks(path)
+        raw = analyzer.analyze_tasks(path, tasks)
         if not isinstance(raw, Mapping):
             raise RuntimeError("Task analyzer returned an invalid result")
         results = {task: list(raw[task]) for task in ordered_tasks(raw)}
@@ -537,6 +552,8 @@ def _analyze_tasks(
             selected_manifests[task] = dict(manifest)
         return results, selected_manifests
 
+    if tasks is not None and set(tasks) != {"genre"}:
+        raise ValueError(f"A genre analyzer cannot run {', '.join(ordered_tasks(tasks))}")
     predictions = analyzer.analyze(path)
     spec = analyzer.spec
     model_id = getattr(spec, "id", None)
@@ -563,6 +580,7 @@ def analyze_paths(
     threshold: float,
     on_progress: ProgressCallback | None = None,
     should_cancel: CancelCallback | None = None,
+    tasks: Sequence[AnalysisTask] | None = None,
 ) -> AnalysisBatch:
     planned: list[PlannedWrite] = []
     failures: list[AnalysisFailure] = []
@@ -576,6 +594,7 @@ def analyze_paths(
                 analyzer=analyzer,
                 top=top,
                 threshold=threshold,
+                tasks=tasks,
             )
             planned.append(planned_write_for_track(track))
         except Exception as error:
@@ -707,6 +726,7 @@ def inspect_track(
     provenance_invalid = False
     provenance_missing = False
     provenance_stale = False
+    stale_tasks: list[AnalysisTask] = []
     analyzed_at_values: list[str] = []
     for task, expected_model_id in expected_models.items():
         reading = read_task_provenance_status(
@@ -718,6 +738,8 @@ def inspect_track(
         )
         if reading.analyzed_at is not None:
             analyzed_at_values.append(reading.analyzed_at)
+        if reading.status is not ProvenanceStatus.CURRENT:
+            stale_tasks.append(task)
         if reading.status is ProvenanceStatus.MISSING:
             provenance_missing = True
         elif reading.status is ProvenanceStatus.UNREADABLE:
@@ -749,6 +771,7 @@ def inspect_track(
         duration_seconds=duration,
         catalog_identity_sha256=identity_hash,
         enrichment=enrichment,
+        stale_tasks=ordered_tasks(stale_tasks),
     )
 
 

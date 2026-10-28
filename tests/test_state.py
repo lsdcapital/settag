@@ -2,6 +2,7 @@ import json
 import shutil
 import sqlite3
 import wave
+from collections.abc import Sequence
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -36,6 +37,7 @@ class FakeInstrumentAnalyzer:
     def analyze_tasks(
         self,
         path: Path,
+        tasks: Sequence[AnalysisTask] | None = None,
     ) -> dict[AnalysisTask, list[Prediction]]:
         return {"instrument": [Prediction("synthesizer", 0.81)]}
 

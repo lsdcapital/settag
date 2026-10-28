@@ -68,6 +68,7 @@ class FakeTaskAnalyzer:
     def analyze_tasks(
         self,
         path: Path,
+        tasks: Sequence[AnalysisTask] | None = None,
     ) -> dict[AnalysisTask, list[Prediction]]:
         return {
             "genre": [

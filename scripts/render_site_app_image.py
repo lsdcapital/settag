@@ -84,6 +84,7 @@ class DemoAnalyzer:
     def analyze_tasks(
         self,
         path: Path,
+        _tasks: Sequence[AnalysisTask] | None = None,
     ) -> Mapping[AnalysisTask, Sequence[Prediction]]:
         return DEMO_RESULTS[path.name]
 

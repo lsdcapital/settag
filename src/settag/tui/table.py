@@ -25,7 +25,7 @@ from settag.policy import (
 )
 from settag.tags import OwnedValues, task_evidence_from_owned
 from settag.tasks import AnalysisTask
-from settag.tui.entries import TrackEntry, latest_analyzed_at, suggested_label
+from settag.tui.entries import TASK_LABELS, TrackEntry, latest_analyzed_at, suggested_label
 
 
 @dataclass(frozen=True)
@@ -186,7 +186,22 @@ def entry_analyzed_at(entry: TrackEntry, context: RowContext) -> str:
     return value[:10] if value else "—"
 
 
-def entry_analysis(entry: TrackEntry, _context: RowContext) -> str:
+def reanalysis_tasks(entry: TrackEntry, context: RowContext) -> tuple[AnalysisTask, ...]:
+    """The tasks enrichment will run again for a stale track, when not all of them.
+
+    Empty when every configured task runs, which needs no naming.
+    """
+    if entry.metadata is None or entry.metadata.status != "stale":
+        return ()
+    stale = entry.metadata.tasks_to_analyze
+    return () if stale is None or set(stale) >= set(context.tasks) else stale
+
+
+def task_names(tasks: Sequence[AnalysisTask]) -> str:
+    return ", ".join(TASK_LABELS[task] for task in tasks)
+
+
+def entry_analysis(entry: TrackEntry, context: RowContext) -> str:
     if entry.metadata_error is not None:
         return "Metadata error"
     if entry.analysis_error is not None:
@@ -215,6 +230,8 @@ def entry_analysis(entry: TrackEntry, _context: RowContext) -> str:
             state = "Needs enrichment"
         elif entry.metadata.status == "not_analyzed":
             return "Never"
+        elif partial := reanalysis_tasks(entry, context):
+            return f"Reanalyze · {task_names(partial)}"
         else:
             state = {
                 "current": {

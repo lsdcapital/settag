@@ -1,4 +1,5 @@
 import wave
+from collections.abc import Sequence
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
@@ -430,7 +431,9 @@ class FakeMultiTaskAnalyzer:
         for task in ("genre", "instrument")
     }
 
-    def analyze_tasks(self, path: Path) -> dict[AnalysisTask, list[Prediction]]:
+    def analyze_tasks(
+        self, path: Path, tasks: Sequence[AnalysisTask] | None = None
+    ) -> dict[AnalysisTask, list[Prediction]]:
         return {
             "genre": [Prediction("Electronic---House", 0.72)],
             "instrument": [

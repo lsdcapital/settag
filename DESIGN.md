@@ -547,7 +547,15 @@ and use their own heads. Genre evidence is exclusively MAEST-derived. EffNet out
 the SetTag or conventional genre fields.
 
 Task updates are independent. A partial run replaces only the requested task
-records and preserves valid evidence and provenance for other tasks. Audio
+records and preserves valid evidence and provenance for other tasks. Enrichment
+uses this on its own: the metadata scan records which configured tasks are
+missing or stale (`MetadataTrack.stale_tasks`), and `EnrichmentLoader` asks the
+worker for just those, so a newly configured task or one changed model costs one
+pass of that task rather than a full reanalysis. The worker loads every configured
+model once and runs the requested subset per file; MAEST is skipped entirely when
+genre is current. A file never analysed, or with a record that cannot say which
+tasks are good, runs every task. The library labels a partial reanalysis with
+the tasks it will run (`Reanalyze · Aggression`). Audio
 metadata stores the top 60 ranked results for each task without applying the
 review cutoff. `EVIDENCE_LIMIT` in `policy.py` is the single source of that
 bound and records why it is 60 rather than a shortlist.

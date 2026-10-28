@@ -91,6 +91,11 @@ The interactive app reads its default tasks from
 tasks = ["genre", "mood-theme", "instrument", "mood-aggressive"]
 ```
 
+Adding a task here does not mean analysing the library again from scratch.
+Tracks analysed before show **Reanalyze · Aggression** (or whichever tasks are
+missing or out of date), and enrichment runs only those tasks, keeping the
+file's other results. The same applies when one task's model or settings change.
+
 The config file is optional. `--tasks` overrides it for one TUI run:
 
 ```sh

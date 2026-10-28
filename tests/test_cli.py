@@ -3,6 +3,7 @@ import logging
 import os
 import sys
 import wave
+from collections.abc import Sequence
 from io import StringIO
 from pathlib import Path
 from types import SimpleNamespace
@@ -66,7 +67,7 @@ class InProcessAnalysisLoader:
     def start(self) -> None:
         pass
 
-    def __call__(self, paths, on_progress, should_cancel) -> AnalysisBatch:
+    def __call__(self, paths, on_progress, should_cancel, tasks=None) -> AnalysisBatch:
         if self.analyzer is None:
             self.analyzer = (
                 commands.EssentiaGenreAnalyzer(self.model_dir, sample=self.sample)
@@ -80,6 +81,7 @@ class InProcessAnalysisLoader:
             threshold=self.threshold,
             on_progress=on_progress,
             should_cancel=should_cancel,
+            tasks=tasks,
         )
 
     def close(self) -> None:
@@ -136,6 +138,7 @@ class FakeInstrumentAnalyzer:
     def analyze_tasks(
         self,
         path: Path,
+        tasks: Sequence[AnalysisTask] | None = None,
     ) -> dict[AnalysisTask, list[Prediction]]:
         return {
             "instrument": [
@@ -155,6 +158,7 @@ class FakeMultiTaskAnalyzer:
     def analyze_tasks(
         self,
         path: Path,
+        tasks: Sequence[AnalysisTask] | None = None,
     ) -> dict[AnalysisTask, list[Prediction]]:
         return {
             "genre": [Prediction("Electronic---Deep House", 0.72)],
@@ -382,6 +386,7 @@ class FakeMoodAggressiveAnalyzer:
     def analyze_tasks(
         self,
         path: Path,
+        tasks: Sequence[AnalysisTask] | None = None,
     ) -> dict[AnalysisTask, list[Prediction]]:
         return {
             "mood-aggressive": [
@@ -775,7 +780,7 @@ def test_interactive_run_uses_configured_tasks_and_task_analyzer(
             nonlocal loader_started
             loader_started = True
 
-        def __call__(self, paths, on_progress, should_cancel) -> AnalysisBatch:
+        def __call__(self, paths, on_progress, should_cancel, tasks=None) -> AnalysisBatch:
             return analyze_paths(
                 paths,
                 analyzer=self.analyzer,
@@ -783,6 +788,7 @@ def test_interactive_run_uses_configured_tasks_and_task_analyzer(
                 threshold=self.threshold,
                 on_progress=on_progress,
                 should_cancel=should_cancel,
+                tasks=tasks,
             )
 
         def close(self) -> None:

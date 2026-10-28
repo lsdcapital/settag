@@ -16,7 +16,7 @@ from settag.tags import OwnedValues, read_task_provenance, task_evidence_from_ow
 from settag.tasks import AnalysisTask
 from settag.tui.entries import TASK_LABELS, TrackEntry, latest_analyzed_at, suggested_label
 from settag.tui.review import review_track
-from settag.tui.table import RowContext
+from settag.tui.table import RowContext, reanalysis_tasks, task_names
 
 
 def display_path(path: Path) -> str:
@@ -73,6 +73,12 @@ def metadata_inspector(
             StoredEvidence(display_owned, metadata.genre_state.standard, selected)
         )
     state = entry.plan.enrichment_status if entry.plan is not None else metadata.enrichment_status
+    partial = reanalysis_tasks(entry, context) if entry.plan is None else ()
+    out_of_date = (
+        [f"Out of date: {task_names(partial)} · only these run again; the rest are kept"]
+        if partial
+        else []
+    )
     lines.extend(
         [
             f"Recommendation: {review.recommendation}",
@@ -83,6 +89,7 @@ def metadata_inspector(
             *(f"  {detail}" for detail in review.catalog_details),
             "",
             f"Enrichment: {state.replace('_', ' ').capitalize()}",
+            *out_of_date,
             *review.notices,
             "",
             "Audio models · predictions",

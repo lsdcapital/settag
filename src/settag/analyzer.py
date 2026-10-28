@@ -229,29 +229,37 @@ class EssentiaEffnetAnalyzer:
             )
         self._tensorflow_startup_pending = True
 
-    def analyze_tasks(self, path: Path) -> dict[AnalysisTask, list[Prediction]]:
+    def analyze_tasks(
+        self, path: Path, tasks: Sequence[AnalysisTask] | None = None
+    ) -> dict[AnalysisTask, list[Prediction]]:
+        selected = _subset(self.tasks, tasks)
         if self._tensorflow_startup_pending:
             with _filter_tensorflow_startup_stderr():
-                predictions = self._analyze_tasks(path)
+                predictions = self._analyze_tasks(path, selected)
             self._tensorflow_startup_pending = False
             return predictions
-        return self._analyze_tasks(path)
+        return self._analyze_tasks(path, selected)
 
-    def _analyze_tasks(self, path: Path) -> dict[AnalysisTask, list[Prediction]]:
+    def _analyze_tasks(
+        self, path: Path, tasks: tuple[AnalysisTask, ...]
+    ) -> dict[AnalysisTask, list[Prediction]]:
         audio = self._loader_type(
             filename=str(path),
             sampleRate=self._sample_rate,
             resampleQuality=4,
         )()
-        return self._predict_audio(audio)
+        return self._predict_audio(audio, tasks)
 
-    def _predict_audio(self, audio: Any) -> dict[AnalysisTask, list[Prediction]]:
+    def _predict_audio(
+        self, audio: Any, tasks: tuple[AnalysisTask, ...]
+    ) -> dict[AnalysisTask, list[Prediction]]:
         self.embedding = None
         embeddings = self._embedding_model(audio)
         if self.export_embeddings:
             self.embedding = pooled_embedding(embeddings, self._embedding_spec)
         results: dict[AnalysisTask, list[Prediction]] = {}
-        for task, (model, labels, _) in self._heads.items():
+        for task in tasks:
+            model, labels, _ = self._heads[task]
             raw = np.asarray(model(embeddings), dtype=float)
             if raw.size % len(labels) != 0:
                 raise AnalyzerError(
@@ -320,25 +328,33 @@ class EssentiaTaskAnalyzer:
     def embedding(self) -> dict[str, object] | None:
         return self._effnet.embedding if self._effnet is not None else None
 
-    def analyze_tasks(self, path: Path) -> dict[AnalysisTask, list[Prediction]]:
-        if self._genre is not None and self._effnet is not None:
+    def analyze_tasks(
+        self, path: Path, tasks: Sequence[AnalysisTask] | None = None
+    ) -> dict[AnalysisTask, list[Prediction]]:
+        """Run the requested tasks, or every loaded one; each file decodes its audio once."""
+        selected = _subset(self.tasks, tasks)
+        genre = self._genre if "genre" in selected else None
+        effnet_tasks = tuple(task for task in selected if task != "genre")
+        if genre is not None and effnet_tasks:
             if self._tensorflow_startup_pending:
                 with _filter_tensorflow_startup_stderr():
-                    predictions = self._analyze_shared_audio(path)
+                    predictions = self._analyze_shared_audio(path, effnet_tasks)
                 self._tensorflow_startup_pending = False
                 return predictions
-            return self._analyze_shared_audio(path)
+            return self._analyze_shared_audio(path, effnet_tasks)
 
         results: dict[AnalysisTask, list[Prediction]] = {}
-        if self._genre is not None:
-            results["genre"] = self._genre.analyze(path)
-        if self._effnet is not None:
-            results.update(self._effnet.analyze_tasks(path))
+        if genre is not None:
+            results["genre"] = genre.analyze(path)
+        if effnet_tasks:
+            assert self._effnet is not None
+            results.update(self._effnet.analyze_tasks(path, effnet_tasks))
         return results
 
     def _analyze_shared_audio(
         self,
         path: Path,
+        effnet_tasks: tuple[AnalysisTask, ...],
     ) -> dict[AnalysisTask, list[Prediction]]:
         assert self._genre is not None
         assert self._effnet is not None
@@ -351,8 +367,23 @@ class EssentiaTaskAnalyzer:
         )()
         return {
             "genre": self._genre._predict_audio(audio),
-            **self._effnet._predict_audio(audio),
+            **self._effnet._predict_audio(audio, effnet_tasks),
         }
+
+
+def _subset(
+    loaded: tuple[AnalysisTask, ...], requested: Sequence[AnalysisTask] | None
+) -> tuple[AnalysisTask, ...]:
+    """The requested tasks in run order; all loaded ones when none are named."""
+    if requested is None:
+        return loaded
+    selected = ordered_tasks(requested)
+    missing = [task for task in selected if task not in loaded]
+    if missing or not selected:
+        raise ValueError(
+            f"Analyzer cannot run {', '.join(missing) or 'no tasks'}; it loaded {', '.join(loaded)}"
+        )
+    return selected
 
 
 @contextmanager

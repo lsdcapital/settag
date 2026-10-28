@@ -77,6 +77,8 @@ class _AnalyzeRequest:
     path: Path
     top: int
     threshold: float
+    #: A subset of the worker's tasks to run on this file; None runs all of them.
+    tasks: tuple[AnalysisTask, ...] | None = None
 
 
 @dataclass(frozen=True)
@@ -136,6 +138,7 @@ def _analysis_worker_main(
                         analyzer=analyzer,
                         top=request.top,
                         threshold=request.threshold,
+                        tasks=request.tasks,
                     )
                     response = _AnalysisResult(batch)
                 except Exception as error:
@@ -214,7 +217,15 @@ class SubprocessAnalysisLoader:
         paths: Sequence[Path],
         on_progress: ProgressCallback,
         should_cancel: CancelCallback,
+        tasks: Sequence[AnalysisTask] | None = None,
     ) -> AnalysisBatch:
+        """Analyze ``paths`` with ``tasks``, a subset of the worker's, or all of them."""
+        requested = None if tasks is None else ordered_tasks(tasks)
+        if requested is not None and (not requested or not set(requested) <= set(self.tasks)):
+            raise AnalysisWorkerError(
+                f"Analyzer worker cannot run {', '.join(requested) or 'no tasks'}; "
+                f"it was started for {', '.join(self.tasks)}"
+            )
         planned = []
         failures = []
         selected_paths = tuple(paths)
@@ -230,7 +241,7 @@ class SubprocessAnalysisLoader:
                     cancelled = True
                     break
 
-                response = self._analyze(path)
+                response = self._analyze(path, requested)
                 if isinstance(response, _AnalysisError):
                     raise AnalysisWorkerError(f"{response.error_type}: {response.message}")
 
@@ -332,7 +343,9 @@ class SubprocessAnalysisLoader:
         self._connection = parent_connection
         self._process = process
 
-    def _analyze(self, path: Path) -> _AnalysisResult | _AnalysisError:
+    def _analyze(
+        self, path: Path, tasks: tuple[AnalysisTask, ...] | None
+    ) -> _AnalysisResult | _AnalysisError:
         connection = self._connection
         process = self._process
         assert connection is not None
@@ -344,6 +357,7 @@ class SubprocessAnalysisLoader:
                     path=path.expanduser().resolve(),
                     top=self.top,
                     threshold=self.threshold,
+                    tasks=tasks,
                 )
             )
         except (BrokenPipeError, EOFError, OSError) as error:

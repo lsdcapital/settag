@@ -47,6 +47,19 @@ from settag.workflow import (
 )
 
 
+class AudioLoader(Protocol):
+    """Analyzes files with ``tasks``, a subset of those it was set up for, or all of them."""
+
+    def __call__(
+        self,
+        paths: Sequence[Path],
+        on_progress: ProgressCallback,
+        should_cancel: CancelCallback,
+        tasks: Sequence[AnalysisTask] | None = None,
+        /,
+    ) -> AnalysisBatch: ...
+
+
 class EnrichmentCancelled(Exception):
     pass
 
@@ -163,7 +176,7 @@ class EnrichmentLoader:
 
     def __init__(
         self,
-        audio_loader: Callable[[Sequence[Path], ProgressCallback, CancelCallback], AnalysisBatch],
+        audio_loader: AudioLoader,
         *,
         provider: EnrichmentProvider | None = None,
         expected_model_ids: Mapping[AnalysisTask, str] | None = None,
@@ -243,7 +256,7 @@ class EnrichmentLoader:
         history = self.state_store.load_enrichment(
             path, owned=file_owned, identity_sha256=identity_hash
         )
-        item = self._current_audio(path)
+        item, stale_tasks = self._current_audio(path)
         if item is None:
             known = self._known_audio_failure(path)
             if self.skip_failing and known is not None and known.keeps_failing:
@@ -252,7 +265,7 @@ class EnrichmentLoader:
                     f"({known.error}); run with --retry-failed to try again"
                 )
             else:
-                item, cancelled = self._analyze_audio(path, should_cancel, notes)
+                item, cancelled = self._analyze_audio(path, should_cancel, notes, stale_tasks)
                 if cancelled:
                     return None
         audio_complete = item is not None
@@ -350,9 +363,15 @@ class EnrichmentLoader:
         return self._finish(item, audio_complete, catalog_info, notes, history=history)
 
     def _analyze_audio(
-        self, path: Path, should_cancel: CancelCallback, notes: list[str]
+        self,
+        path: Path,
+        should_cancel: CancelCallback,
+        notes: list[str],
+        tasks: tuple[AnalysisTask, ...] | None,
     ) -> tuple[PlannedWrite | None, bool]:
         """Run audio analysis once, keeping the file's failure record in step with it.
+
+        ``tasks`` limits the run to what is out of date; the file keeps the rest.
 
         Only a failure that belongs to this file counts: one the analyzer reported for
         it, or an analyzer that died reading it. An error raised for the whole run (a
@@ -360,7 +379,7 @@ class EnrichmentLoader:
         """
         previous = self._record_audio(lambda store, setup: store.begin_audio_attempt(path, setup))
         try:
-            batch = self.audio_loader((path,), lambda *_args: None, should_cancel)
+            batch = self.audio_loader((path,), lambda *_args: None, should_cancel, tasks)
         except AudioAnalysisCrashed as error:
             self._record_audio(lambda store, _setup: store.audio_attempt_failed(path, str(error)))
             notes.append(f"Audio analysis unavailable: {error}")
@@ -441,9 +460,16 @@ class EnrichmentLoader:
             )
         )
 
-    def _current_audio(self, path: Path) -> PlannedWrite | None:
+    def _current_audio(
+        self, path: Path
+    ) -> tuple[PlannedWrite | None, tuple[AnalysisTask, ...] | None]:
+        """Current audio evidence as a plan, or None and the tasks that must run again.
+
+        No tasks means every configured one: the file was never analyzed, or its record
+        cannot say which of its tasks are still good.
+        """
         if self.expected_model_ids is None or self.expected_config is None:
-            return None
+            return None, None
         metadata = inspect_track(
             path,
             expected_model_ids=self.expected_model_ids,
@@ -465,9 +491,9 @@ class EnrichmentLoader:
                 is ProvenanceStatus.CURRENT
                 for task, model in self.expected_model_ids.items()
             ):
-                return replace(cached, source_owned_sha256=sha256_json(metadata.owned))
+                return replace(cached, source_owned_sha256=sha256_json(metadata.owned)), None
         if metadata.status != "current":
-            return None
+            return None, metadata.tasks_to_analyze
         before = path.stat()
         evidence = task_evidence_from_owned(metadata.owned).get("genre", ())
         return PlannedWrite(
@@ -482,7 +508,7 @@ class EnrichmentLoader:
             metadata_format=owned_tag_store(path).format_name,
             owned_changes=(),
             source_owned_sha256=sha256_json(metadata.owned),
-        )
+        ), None
 
 
 def default_cache_dir() -> Path:
