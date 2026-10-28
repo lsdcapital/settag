@@ -52,12 +52,9 @@ from settag.state import WorkbenchStore
 from settag.tags import read_genre_state, read_owned_values
 from settag.tui import HygieneApp, SetTagApp
 from settag.workflow import (
-    AnalysisBatch,
-    CancelCallback,
     MetadataBatch,
     PartialWriteError,
     PreparedWrite,
-    analyze_paths,
     apply_prepared,
     apply_undo,
     inspect_paths,
@@ -138,28 +135,6 @@ def _run_default(args: argparse.Namespace) -> int:
         return 0
 
     model_dir = args.model_dir.expanduser().resolve()
-    analyzer: EssentiaGenreAnalyzer | EssentiaTaskAnalyzer | None = None
-
-    def load_analysis_in_process(
-        selected_paths: Sequence[Path],
-        on_progress,
-        should_cancel: CancelCallback,
-    ) -> AnalysisBatch:
-        nonlocal analyzer
-        if analyzer is None:
-            analyzer = (
-                EssentiaGenreAnalyzer(model_dir, sample=sample)
-                if tasks == ("genre",)
-                else EssentiaTaskAnalyzer(model_dir, tasks, sample=sample)
-            )
-        return analyze_paths(
-            selected_paths,
-            analyzer=analyzer,
-            top=args.top,
-            threshold=args.threshold,
-            on_progress=on_progress,
-            should_cancel=should_cancel,
-        )
 
     interactive = sys.stdin.isatty() and sys.stdout.isatty()
     if interactive and not args.no_tui:
@@ -307,28 +282,33 @@ def _run_default(args: argparse.Namespace) -> int:
         print(outcome.message, file=sys.stderr)
         return outcome.status
 
+    # The same worker process as the app, so an unattended run gets its time budget
+    # and survives a native crash: the failing file is recorded and the run moves on.
     try:
-        batch = EnrichmentLoader(
-            load_analysis_in_process,
-            state_store=WorkbenchStore(args.state_db),
-            expected_model_ids={task: MODEL_SPECS_BY_TASK[task].id for task in tasks},
-            expected_config=config_record(
-                top=args.top, threshold=args.threshold, tasks=tasks, genre_sample=sample
-            ),
-            top=args.top,
-            threshold=args.threshold,
-            offline=offline,
-            skip_failing=not args.retry_failed,
-        )(
-            paths,
-            lambda index, total, path: LOGGER.info(
-                "[%d/%d] %s",
-                index,
-                total,
-                path,
-            ),
-            lambda: False,
-        )
+        with SubprocessAnalysisLoader(
+            model_dir, tasks, top=args.top, threshold=args.threshold, sample=sample
+        ) as audio_loader:
+            batch = EnrichmentLoader(
+                audio_loader,
+                state_store=WorkbenchStore(args.state_db),
+                expected_model_ids={task: MODEL_SPECS_BY_TASK[task].id for task in tasks},
+                expected_config=config_record(
+                    top=args.top, threshold=args.threshold, tasks=tasks, genre_sample=sample
+                ),
+                top=args.top,
+                threshold=args.threshold,
+                offline=offline,
+                skip_failing=not args.retry_failed,
+            )(
+                paths,
+                lambda index, total, path: LOGGER.info(
+                    "[%d/%d] %s",
+                    index,
+                    total,
+                    path,
+                ),
+                lambda: False,
+            )
     except Exception as error:
         print(str(error), file=sys.stderr)
         return 2

@@ -17,6 +17,7 @@ from settag.beatport import PublicPageProvider
 from settag.catalog import DISCOGS519_MAEST
 from settag.cli import (
     _analyze_one,
+    commands,
     main,
 )
 from settag.cli.args import build_parser
@@ -31,7 +32,7 @@ from settag.plans import (
     stage_file_genre,
     standard_genre_from_model_label,
 )
-from settag.policy import Prediction
+from settag.policy import AudioSample, Prediction
 from settag.state import WorkbenchStore
 from settag.tags import PROVENANCE_SCHEMA, apply_metadata_tags, task_evidence_from_owned
 from settag.tasks import AnalysisTask
@@ -44,6 +45,56 @@ from settag.workflow import (
     preflight_plan,
     prepare_track,
 )
+
+
+class InProcessAnalysisLoader:
+    """The CLI's analysis worker, run in the test process.
+
+    A spawned worker re-imports SetTag, so it never sees a test's fake analyzer. This
+    builds the analyzer from the same names the CLI module exposes, looked up when the
+    first track runs, so a test that patches them sees its fake used. The real worker
+    is covered in test_analysis_worker.
+    """
+
+    def __init__(
+        self, model_dir, tasks, *, top, threshold, sample: AudioSample = "full", **_options
+    ) -> None:
+        self.model_dir, self.tasks, self.sample = model_dir, tasks, sample
+        self.top, self.threshold = top, threshold
+        self.analyzer = None
+
+    def start(self) -> None:
+        pass
+
+    def __call__(self, paths, on_progress, should_cancel) -> AnalysisBatch:
+        if self.analyzer is None:
+            self.analyzer = (
+                commands.EssentiaGenreAnalyzer(self.model_dir, sample=self.sample)
+                if self.tasks == ("genre",)
+                else commands.EssentiaTaskAnalyzer(self.model_dir, self.tasks, sample=self.sample)
+            )
+        return analyze_paths(
+            paths,
+            analyzer=self.analyzer,
+            top=self.top,
+            threshold=self.threshold,
+            on_progress=on_progress,
+            should_cancel=should_cancel,
+        )
+
+    def close(self) -> None:
+        pass
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_args) -> None:
+        pass
+
+
+@pytest.fixture(autouse=True)
+def in_process_analysis(monkeypatch) -> None:
+    monkeypatch.setattr("settag.cli.commands.SubprocessAnalysisLoader", InProcessAnalysisLoader)
 
 
 class FakeAnalyzer:

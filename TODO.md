@@ -23,7 +23,7 @@ Findings from the September 2026 code review, in priority order.
 
 - [x] 11. An unhandled worker exception leaves `busy`/`analysis_running` set and the app can't be quit. Add `on_worker_state_changed` recovery and a force-quit.
 - [x] 12. Hung analysis can't be cancelled: the worker waits on the pipe with no timeout or cancel check.
-  A second Q during analysis now quits immediately, and closing the loader terminates a stuck worker. Esc still stops only between tracks. A track past its time budget (120 s + 1 s per second of audio) is now stopped and recorded as failed, and the batch continues; plain `--no-tui` runs have no budget yet.
+  A second Q during analysis now quits immediately, and closing the loader terminates a stuck worker. Esc still stops only between tracks. A track past its time budget (120 s + 1 s per second of audio) is now stopped and recorded as failed, and the batch continues. Plain `--no-tui` runs now use the same worker, so they get the budget and survive a native crash.
 - [x] 13. A background analysis result overwrites a plan the user is reviewing/editing; a late write then deletes the fresh workbench row.
 - [x] 14. One persistently failing track blocks all writes; no way to dismiss it.
   Space on a failed track now dismisses it from review; the error stays visible in the library. Audio failures now persist across sessions: after two in a row the library shows **Keeps failing** and leaves the track unselected, and `--no-tui` runs skip it unless `--retry-failed` is given.

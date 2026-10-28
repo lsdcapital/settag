@@ -435,10 +435,12 @@ review policy beside the score cutoff.
 Interactive cancellation is cooperative between tracks: the in-flight native
 inference finishes, completed results remain reviewable, and unprocessed tracks
 remain selected. Failures are isolated during analysis. A run returns non-zero
-if any input fails. In the app, each track has a time budget of 120 s plus 1 s per
-second of audio, about 25x the slowest measured run; past it the worker is
-stopped, the track is recorded as failed, and the next track starts a fresh
-worker. Plain runs analyse in-process and have no budget.
+if any input fails. The app and plain `run` both analyse in one spawned worker
+process. Each track has a time budget of 120 s plus 1 s per second of audio,
+about 25x the slowest measured run; past it, or if the worker dies, the track is
+recorded as failed and the next track starts a fresh worker. The raw `analyze`
+export still runs in-process, since it reads the analyzer's embedding and
+backend version directly.
 
 Audio failures persist in the local metadata database, keyed by path, size,
 mtime, and a setup digest of the SetTag version, model ids, and evidence

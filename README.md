@@ -802,10 +802,11 @@ files' audio analysis (the catalog check still runs) unless `--retry-failed` is
 given. Editing the file, or changing SetTag, its models, or the evidence settings,
 gives it a fresh try. A missing model or a quit is not counted against any file.
 
-In the app, a track that takes far longer than analysis needs (two minutes plus one
-second per second of audio; real analysis runs at a few percent of that) is
-stopped, counted as a failure, and the batch moves on with a fresh analyzer. Plain
-`--no-tui` runs analyse in-process and have no time limit yet.
+A track that takes far longer than analysis needs (two minutes plus one second per
+second of audio; real analysis runs at a few percent of that) is stopped, counted
+as a failure, and the run moves on with a fresh analyzer. The app and `--no-tui`
+runs analyse in a separate worker process, so an analyzer crash costs one track,
+not the run. The `analyze` export command still analyses in-process.
 SetPath does not yet use the additional catalog evidence in ranking.
 
 The combined freshness contract is `settag.enrichment/v2`, stored in the local
