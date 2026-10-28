@@ -136,7 +136,7 @@ class EssentiaGenreAnalyzer:
     def _predict_audio(self, audio: Any) -> list[Prediction]:
         # Sampling happens here rather than in `_analyze` so the shared-decode path
         # can hand the same full array to both models: MAEST narrows it, EffNet does
-        # not. MAEST is the only expensive one, and the mood/instrument taxonomies
+        # not. MAEST is the only expensive one, and the EffNet taxonomies
         # want whole-track averaging (see the EVIDENCE_LIMIT note in `policy`).
         embeddings = self._embedding_model(
             sample_audio(audio, strategy=self.sample, sample_rate=self.spec.sample_rate)
@@ -164,7 +164,7 @@ class EssentiaEffnetAnalyzer:
     ) -> None:
         selected = tuple(task for task in ordered_tasks(tasks) if task != "genre")
         if not selected:
-            raise ValueError("EffNet analyzer requires mood-theme or instrument")
+            raise ValueError("EffNet analyzer requires mood-theme, instrument, or mood-aggressive")
         require_task_models(model_dir, selected)
         self.model_dir = model_dir
         self.tasks = selected
@@ -285,7 +285,9 @@ class EssentiaTaskAnalyzer:
         effnet_tasks = tuple(task for task in self.tasks if task != "genre")
         self._effnet = EssentiaEffnetAnalyzer(model_dir, effnet_tasks) if effnet_tasks else None
         if export_embeddings and self._effnet is None:
-            raise ValueError("Embedding export requires mood-theme or instrument analysis")
+            raise ValueError(
+                "Embedding export requires mood-theme, instrument, or mood-aggressive analysis"
+            )
         if self._effnet is not None:
             self._effnet.export_embeddings = export_embeddings
         manifests: dict[AnalysisTask, dict[str, object]] = {}

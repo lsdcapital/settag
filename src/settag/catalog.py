@@ -160,8 +160,50 @@ DISCOGS_EFFNET_INSTRUMENT = ModelSpec(
     ),
 )
 
+# A two-class softmax head, unlike the multi-label sigmoid heads above: its two scores
+# sum to one per patch, and so to one after averaging too. Both are stored, because a
+# consumer ranking tracks by aggression needs the `Aggressive` score on calm tracks too.
+DISCOGS_EFFNET_MOOD_AGGRESSIVE = ModelSpec(
+    id="essentia/mood-aggressive-discogs-effnet/v1",
+    license="CC BY-NC-ND 4.0",
+    vocabulary="mood-aggressive",
+    embedding_output="PartitionedCall:1",
+    classifier_input="model/Placeholder",
+    classifier_output="model/Softmax",
+    sample_rate=16_000,
+    files=(
+        ModelFile(
+            role="embedding",
+            filename="discogs-effnet-bs64-1.pb",
+            url=f"{BASE_URL}/feature-extractors/discogs-effnet/discogs-effnet-bs64-1.pb",
+            sha256="3ed9af50d5367c0b9c795b294b00e7599e4943244f4cbd376869f3bfc87721b1",
+        ),
+        ModelFile(
+            role="embedding_metadata",
+            filename="discogs-effnet-bs64-1.json",
+            url=f"{BASE_URL}/feature-extractors/discogs-effnet/discogs-effnet-bs64-1.json",
+            sha256="a35003202384735c33154e20264267f9941705218a7b93202b655a1d408d4ff6",
+        ),
+        ModelFile(
+            role="classifier",
+            filename="mood_aggressive-discogs-effnet-1.pb",
+            url=f"{BASE_URL}/classification-heads/mood_aggressive/"
+            "mood_aggressive-discogs-effnet-1.pb",
+            sha256="7705284e3a67f23f04d3f2fd75e18a82c0e70db8875b7b6f7061f2432de80858",
+        ),
+        ModelFile(
+            role="classifier_metadata",
+            filename="mood_aggressive-discogs-effnet-1.json",
+            url=f"{BASE_URL}/classification-heads/mood_aggressive/"
+            "mood_aggressive-discogs-effnet-1.json",
+            sha256="81773e95d78db1b93283d73b2d06344d1ff79685b57d9428a40d47fdfcf537b8",
+        ),
+    ),
+)
+
 MODEL_SPECS_BY_TASK = {
     "genre": DISCOGS519_MAEST,
     "mood-theme": DISCOGS_EFFNET_MOOD_THEME,
     "instrument": DISCOGS_EFFNET_INSTRUMENT,
+    "mood-aggressive": DISCOGS_EFFNET_MOOD_AGGRESSIVE,
 }

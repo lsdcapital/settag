@@ -363,7 +363,10 @@ def _run_analyze(args: argparse.Namespace) -> int:
         return 2
 
     if args.embeddings and args.tasks == ("genre",):
-        print("settag: --embeddings requires --tasks mood-theme or instrument", file=sys.stderr)
+        print(
+            "settag: --embeddings requires --tasks mood-theme, instrument, or mood-aggressive",
+            file=sys.stderr,
+        )
         return 2
     destinations = [
         p.expanduser().resolve() for p in (args.output, args.plan, args.embeddings) if p

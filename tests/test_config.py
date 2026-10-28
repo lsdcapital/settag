@@ -19,6 +19,17 @@ def test_config_loads_analysis_tasks_in_canonical_order(tmp_path: Path) -> None:
     assert load_config(path).tasks == ("genre", "mood-theme", "instrument")
 
 
+def test_config_accepts_the_opt_in_mood_aggressive_task(tmp_path: Path) -> None:
+    path = tmp_path / "config.toml"
+    path.write_text(
+        '[analysis]\ntasks = ["mood-aggressive", "genre", "instrument"]\n',
+        encoding="utf-8",
+    )
+
+    assert load_config(path).tasks == ("genre", "instrument", "mood-aggressive")
+    assert "mood-aggressive" not in SetTagConfig().tasks
+
+
 @pytest.mark.parametrize(
     "contents",
     [

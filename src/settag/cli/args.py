@@ -131,7 +131,7 @@ def build_parser() -> argparse.ArgumentParser:
         type=Path,
         help=(
             "Export optional pooled audio embeddings to a new JSONL file "
-            "(requires mood-theme or instrument)."
+            "(requires mood-theme, instrument, or mood-aggressive)."
         ),
     )
 
@@ -283,7 +283,7 @@ def _add_tasks(
         default=default,
         metavar="TASKS",
         help=(
-            "Comma-separated analysis tasks: genre,mood-theme,instrument "
+            "Comma-separated analysis tasks: genre,mood-theme,instrument,mood-aggressive "
             f"(default: {default_text})."
         ),
     )
@@ -311,8 +311,8 @@ def _add_genre_sample(
         help=(
             "How much audio the genre model reads: full (whole track), "
             f"middle ({MIDDLE_PATCHES}x30s from the centre), or spaced "
-            f"({SPACED_PATCHES}x30s spread across it). Mood/theme and instrument "
-            f"always read the whole track (default: {default_text})."
+            f"({SPACED_PATCHES}x30s spread across it). Mood/theme, instrument, and "
+            f"mood-aggressive always read the whole track (default: {default_text})."
         ),
     )
 

@@ -21,6 +21,7 @@ from settag.state import WorkbenchStore, audio_setup_sha256
 from settag.tags import (
     OWNED_DESCRIPTIONS,
     PROVENANCE_SCHEMA,
+    TagChange,
     apply_metadata_tags,
     build_task_owned_values,
     owned_tag_store,
@@ -683,6 +684,33 @@ def test_saved_plan_rejects_metadata_edits_with_identical_preview(
     with pytest.raises(RuntimeError, match="SetTag metadata changed"):
         preflight_plan([plan])
     assert read_owned_values(path) == changed
+
+
+def test_plan_written_before_mood_aggressive_still_loads(tmp_path: Path) -> None:
+    """A cached plan predating the task's fields reads them as absent, not as corrupt."""
+    path = tmp_path / "track.wav"
+    _silent_wav(path)
+    record = planned_write_record(_plan(path))
+    metadata = record["metadata"]
+    assert isinstance(metadata, dict)
+    fields = metadata["fields"]
+    assert isinstance(fields, dict)
+    fields.pop("SETTAG_MOOD_AGGRESSIVE")
+    fields.pop("SETTAG_MOOD_AGGRESSIVE_SCORES")
+
+    plan = planned_write_from_record(record)
+
+    assert plan.desired["SETTAG_MOOD_AGGRESSIVE"] is None
+    assert plan.desired["SETTAG_MOOD_AGGRESSIVE_SCORES"] is None
+
+
+def test_mood_aggressive_changes_are_described_like_the_other_effnet_tasks() -> None:
+    assert friendly_change(TagChange("TXXX:SETTAG_MOOD_AGGRESSIVE", None, ["A", "B"])) == (
+        "Aggression labels: 0 → 2"
+    )
+    assert friendly_change(
+        TagChange("----:com.lsdcapital.settag:MOOD_AGGRESSIVE_SCORES", None, ["[]"])
+    ) == ("Aggression ranked score data: add")
 
 
 def test_old_plan_requires_original_file_when_exact_metadata_is_unknown(tmp_path: Path) -> None:

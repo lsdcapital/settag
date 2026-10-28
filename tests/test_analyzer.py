@@ -12,6 +12,7 @@ from settag.analyzer import EssentiaTaskAnalyzer, _filter_tensorflow_startup_std
 from settag.catalog import (
     DISCOGS519_MAEST,
     DISCOGS_EFFNET_INSTRUMENT,
+    DISCOGS_EFFNET_MOOD_AGGRESSIVE,
     DISCOGS_EFFNET_MOOD_THEME,
 )
 
@@ -189,3 +190,97 @@ def test_task_analyzer_decodes_once_and_shares_effnet_embedding(
         assert analyzer.embedding["patch_count"] == 2
     else:
         assert analyzer.embedding is None
+
+
+def test_mood_aggressive_head_shares_the_effnet_pass_and_keeps_both_labels(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    """The softmax head reads its prediction output from metadata, like the others.
+
+    Both labels survive, the low one included: a consumer ranking by aggression needs
+    the `Aggressive` score on calm tracks as much as on loud ones.
+    """
+    DISCOGS_EFFNET_INSTRUMENT.path(tmp_path, "classifier_metadata").write_text(
+        json.dumps({"classes": ["drummachine", "synthesizer"]}),
+        encoding="utf-8",
+    )
+    DISCOGS_EFFNET_MOOD_AGGRESSIVE.path(tmp_path, "classifier_metadata").write_text(
+        json.dumps(
+            {
+                "classes": ["aggressive", "not_aggressive"],
+                "schema": {
+                    "inputs": [{"name": "model/Placeholder"}],
+                    "outputs": [
+                        {"name": "model/Softmax", "output_purpose": "predictions"},
+                        {"name": "model/dense/BiasAdd", "output_purpose": ""},
+                    ],
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    calls = {"effnet": 0, "instrument": 0, "mood-aggressive": 0}
+    outputs: dict[str, str] = {}
+
+    class MonoLoader:
+        def __init__(self, **_kwargs: Any) -> None:
+            pass
+
+        def __call__(self) -> np.ndarray:
+            return np.asarray([0.0, 0.1])
+
+    class TensorflowPredictEffnetDiscogs:
+        def __init__(self, **_kwargs: Any) -> None:
+            pass
+
+        def __call__(self, _audio: np.ndarray) -> np.ndarray:
+            calls["effnet"] += 1
+            return np.asarray([[10.0], [20.0]])
+
+    class TensorflowPredict2D:
+        def __init__(self, *, graphFilename: str, output: str) -> None:
+            name = Path(graphFilename).name
+            self.task = "mood-aggressive" if name.startswith("mood_aggressive") else "instrument"
+            outputs[self.task] = output
+
+        def __call__(self, embeddings: np.ndarray) -> np.ndarray:
+            assert embeddings.tolist() == [[10.0], [20.0]]
+            calls[self.task] += 1
+            if self.task == "mood-aggressive":
+                return np.asarray([[0.1, 0.9], [0.3, 0.7]])
+            return np.asarray([[0.4, 0.8], [0.6, 1.0]])
+
+    essentia = ModuleType("essentia")
+    vars(essentia).update({"log": SimpleNamespace(infoActive=True, warningActive=True)})
+    standard = ModuleType("essentia.standard")
+    vars(standard).update(
+        {
+            "MonoLoader": MonoLoader,
+            "TensorflowPredict2D": TensorflowPredict2D,
+            "TensorflowPredictEffnetDiscogs": TensorflowPredictEffnetDiscogs,
+        }
+    )
+    monkeypatch.setitem(sys.modules, "essentia", essentia)
+    monkeypatch.setitem(sys.modules, "essentia.standard", standard)
+    monkeypatch.setattr("settag.analyzer.require_task_models", lambda *_args: None)
+    monkeypatch.setattr(
+        "settag.analyzer.installed_task_manifests",
+        lambda _directory, tasks: {task: {"id": f"{task}/v1"} for task in tasks},
+    )
+
+    analyzer = EssentiaTaskAnalyzer(tmp_path, ("mood-aggressive", "instrument"))
+    result = analyzer.analyze_tasks(tmp_path / "track.wav")
+
+    assert analyzer.tasks == ("instrument", "mood-aggressive")
+    assert calls == {"effnet": 1, "instrument": 1, "mood-aggressive": 1}
+    assert outputs == {"instrument": "model/Sigmoid", "mood-aggressive": "model/Softmax"}
+    assert [item.label for item in result["mood-aggressive"]] == [
+        "Not Aggressive",
+        "Aggressive",
+    ]
+    np.testing.assert_allclose(
+        [item.score for item in result["mood-aggressive"]],
+        [0.8, 0.2],
+    )
+    assert set(analyzer.model_manifests) == {"instrument", "mood-aggressive"}

@@ -417,7 +417,8 @@ The Textual thread worker waits only on IPC so native inference cannot block
 terminal rendering or input. The plain workflow constructs the model
 immediately in its own process.
 When MAEST and EffNet tasks are selected together, one 16 kHz decode feeds both
-stacks; mood/theme and instrument share a single EffNet embedding pass. Every
+stacks; mood/theme, instrument, and mood-aggressive share a single EffNet
+embedding pass. Every
 required model artifact is verified against its pinned SHA-256 before the
 analyzer is constructed.
 
@@ -494,6 +495,9 @@ The owned logical fields are:
 - `SETTAG_MOOD_THEME_SCORES`: compact JSON with the same labels, order, and scores
 - `SETTAG_INSTRUMENT`: bounded EffNet instrument labels in ranked order
 - `SETTAG_INSTRUMENT_SCORES`: compact JSON with the same labels, order, and scores
+- `SETTAG_MOOD_AGGRESSIVE`: both EffNet mood-aggressive labels (`Aggressive`,
+  `Not Aggressive`) in ranked order
+- `SETTAG_MOOD_AGGRESSIVE_SCORES`: compact JSON with the same labels, order, and scores
 - `SETTAG_VERSION`: SetTag version
 - `SETTAG_MODEL`: model-pair identifier
 - `SETTAG_ANALYZED_AT`: UTC analysis time
@@ -504,7 +508,7 @@ The owned logical fields are:
 
 Each task's model manifest carries `vocabulary`, the name of the taxonomy its
 labels are drawn from (`discogs519`, `mtg-jamendo-moodtheme`,
-`mtg-jamendo-instrument`). It is declared rather than inferred: only the
+`mtg-jamendo-instrument`, `mood-aggressive`). It is declared rather than inferred: only the
 producer knows which taxonomy it ran, field names do not change when a head is
 swapped, and two taxonomies sharing a label spelling are not the same label.
 `ModelSpec` owns the value so it moves with the head it describes. Consumers
@@ -537,9 +541,9 @@ Whether one task's provenance is out of date is decided in exactly one place,
 both consume its `ProvenanceStatus` and phrase the result their own way; neither
 re-derives it. A structural test enforces that the comparison stays there.
 
-`genre` is the default task and loads only MAEST. Explicit `mood-theme` and
-`instrument` tasks share one Discogs-EffNet embedding pass and use their own
-heads. Genre evidence is exclusively MAEST-derived. EffNet output cannot write
+`genre` is the default task and loads only MAEST. Explicit `mood-theme`,
+`instrument`, and `mood-aggressive` tasks share one Discogs-EffNet embedding pass
+and use their own heads. Genre evidence is exclusively MAEST-derived. EffNet output cannot write
 the SetTag or conventional genre fields.
 
 Task updates are independent. A partial run replaces only the requested task
@@ -548,13 +552,14 @@ metadata stores the top 60 ranked results for each task without applying the
 review cutoff. `EVIDENCE_LIMIT` in `policy.py` is the single source of that
 bound and records why it is 60 rather than a shortlist.
 
-Scores are mean sigmoid activations across audio patches. They are suitable
+Scores are mean sigmoid activations across audio patches; `mood-aggressive` is a
+two-class softmax head, so its two mean scores sum to one. They are suitable
 for ranking and applying a score cutoff but are not demonstrated calibrated
 confidence or probabilities.
 
-Review ranks mood/theme and instrument labels against the library instead of the
-score cutoff: a label is shown when it is in the track's top three and the track
-is in the library's top 40% for it. Label scales differ several-fold (on an
+Review ranks mood/theme, instrument, and mood-aggressive labels against the
+library instead of the score cutoff: a label is shown when it is in the track's
+top three and the track is in the library's top 40% for it. Label scales differ several-fold (on an
 888-track library `Bass` averaged 0.518 and `Space` 0.054), so a single cutoff
 admits only the loud labels. The rule matches SetPath's, the main consumer of the
 same evidence, and was checked to select identically on that library. The library

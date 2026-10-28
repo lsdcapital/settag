@@ -24,7 +24,23 @@ def test_every_task_declares_its_label_taxonomy() -> None:
         "genre": "discogs519",
         "mood-theme": "mtg-jamendo-moodtheme",
         "instrument": "mtg-jamendo-instrument",
+        "mood-aggressive": "mood-aggressive",
     }
+
+
+def test_mood_aggressive_reuses_the_effnet_embedding_files() -> None:
+    """One EffNet download and one embedding pass serve every EffNet head."""
+    instrument = MODEL_SPECS_BY_TASK["instrument"]
+    aggressive = MODEL_SPECS_BY_TASK["mood-aggressive"]
+
+    for role in ("embedding", "embedding_metadata"):
+        assert aggressive.file(role) == instrument.file(role)
+    assert aggressive.embedding_output == instrument.embedding_output
+    assert aggressive.id == "essentia/mood-aggressive-discogs-effnet/v1"
+    assert aggressive.classifier_output == "model/Softmax"
+    assert aggressive.file("classifier").url.endswith(
+        "/classification-heads/mood_aggressive/mood_aggressive-discogs-effnet-1.pb"
+    )
 
 
 def test_default_model_dir_respects_xdg_cache_home(

@@ -65,7 +65,7 @@ def load_config(path: Path = DEFAULT_CONFIG_PATH) -> SetTagConfig:
     selected = ordered_tasks(requested)
     unknown = sorted(set(requested) - set(selected))
     if unknown:
-        choices = "genre, mood-theme, instrument"
+        choices = "genre, mood-theme, instrument, mood-aggressive"
         raise ConfigError(
             f"{resolved}: unknown analysis task(s): {', '.join(unknown)}; choose from {choices}"
         )

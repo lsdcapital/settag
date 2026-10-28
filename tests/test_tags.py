@@ -38,6 +38,7 @@ from settag.tags import (
     plan_standard_genres,
     read_genre_state,
     read_owned_values,
+    task_evidence_from_owned,
 )
 from settag.tasks import AnalysisTask
 
@@ -347,6 +348,84 @@ def test_task_bundle_round_trips_across_supported_containers(
     assert serialized_provenance is not None
     task_provenance = json.loads(serialized_provenance[0])
     assert set(task_provenance["tasks"]) == {"mood-theme", "instrument"}
+    assert read_genre_state(path).standard == ("Existing genre",)
+
+
+def _native_values(path: Path, description: str) -> list[str]:
+    """Read one SetTag field straight from the container, bypassing SetTag's stores."""
+    suffix = path.suffix.casefold()
+    if suffix == ".wav":
+        audio = WAVE(path)
+        assert audio.tags is not None
+        return list(audio.tags[f"TXXX:{description}"].text)
+    if suffix == ".flac":
+        return list(FLAC(path)[description])
+    audio = MP4(path)
+    assert audio.tags is not None
+    name = description.removeprefix("SETTAG_")
+    return [bytes(item).decode("utf-8") for item in audio.tags[f"----:{MP4_MEAN}:{name}"]]
+
+
+@pytest.mark.parametrize("fixture", [None, "tagged.flac", "tagged.m4a"])
+def test_mood_aggressive_round_trips_both_labels_in_one_order(
+    tmp_path: Path,
+    fixture: str | None,
+) -> None:
+    """Both labels reach the file, the low `Aggressive` score included.
+
+    A consumer ranking by aggression needs that score on calm tracks too, and pairs
+    the labels field with the scores JSON by position, so both must list the same
+    labels in the same order.
+    """
+    if fixture is None:
+        path = tmp_path / "track.wav"
+        _tagged_wav(path)
+    else:
+        path = _copy_fixture(fixture, tmp_path)
+    evidence: dict[AnalysisTask, list[Prediction]] = {
+        "mood-aggressive": [
+            Prediction("Not Aggressive", 0.93),
+            Prediction("Aggressive", 0.07),
+        ],
+    }
+    provenance: dict[AnalysisTask, dict[str, object]] = {
+        "mood-aggressive": {
+            "model": {
+                "schema": "settag.models/v1",
+                "id": "essentia/mood-aggressive-discogs-effnet/v1",
+                "vocabulary": "mood-aggressive",
+                "files": {},
+            },
+            "analyzed_at": "2026-10-28T12:00:00Z",
+            "config": {
+                "evidence": {"limit": 60, "tasks": ["mood-aggressive"]},
+                "selection": {"top": 5, "score_cutoff": 0.1},
+                "sha256": "c" * 64,
+            },
+        }
+    }
+
+    desired = build_task_owned_values(read_owned_values(path), evidence, provenance)
+    apply_metadata_tags(path, desired)
+
+    labels = _native_values(path, "SETTAG_MOOD_AGGRESSIVE")
+    scores = _native_values(path, "SETTAG_MOOD_AGGRESSIVE_SCORES")
+    assert labels == ["Not Aggressive", "Aggressive"]
+    assert len(scores) == 1
+    assert json.loads(scores[0]) == [
+        {"label": "Not Aggressive", "score": 0.93},
+        {"label": "Aggressive", "score": 0.07},
+    ]
+    stored = read_owned_values(path)
+    assert task_evidence_from_owned(stored)["mood-aggressive"] == tuple(evidence["mood-aggressive"])
+    serialized_provenance = stored["SETTAG_PROVENANCE"]
+    assert serialized_provenance is not None
+    record = json.loads(serialized_provenance[0])
+    assert record["schema"] == PROVENANCE_SCHEMA
+    task = record["tasks"]["mood-aggressive"]
+    assert task["model"]["id"] == "essentia/mood-aggressive-discogs-effnet/v1"
+    assert task["model"]["vocabulary"] == "mood-aggressive"
+    assert task["analyzed_at"] == "2026-10-28T12:00:00Z"
     assert read_genre_state(path).standard == ("Existing genre",)
 
 

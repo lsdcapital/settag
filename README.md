@@ -1,8 +1,9 @@
 # settag
 
 SetTag is a terminal-first analysis assistant for DJ music libraries. It uses
-MAEST for genre and optional Discogs-EffNet heads for mood/theme and instrument
-evidence, then lets you stage and verify metadata changes before writing.
+MAEST for genre and optional Discogs-EffNet heads for mood/theme, instrument,
+and aggressive-mood evidence, then lets you stage and verify metadata changes
+before writing.
 
 The default experience is a Textual app. The same executable also provides a
 plain, non-TUI CLI for scripts, redirected output, saved plans, and CI.
@@ -47,7 +48,7 @@ settag --version
 
 For pipx installations, use `pipx upgrade settag` instead. If analysis reports
 missing models after an upgrade, run `settag models download` again (include
-`--tasks genre,mood-theme,instrument` if you use all three tasks).
+`--tasks genre,mood-theme,instrument,mood-aggressive` if you use all four tasks).
 
 Published versions are available on [PyPI](https://pypi.org/project/settag/)
 and [GitHub Releases](https://github.com/lsdcapital/settag/releases/latest).
@@ -74,16 +75,20 @@ Genre is the default and the only model loaded unless tasks are requested
 explicitly:
 
 ```sh
-settag models download --tasks genre,mood-theme,instrument
-settag analyze "/path/to/music" --tasks genre,mood-theme,instrument
+settag models download --tasks genre,mood-theme,instrument,mood-aggressive
+settag analyze "/path/to/music" --tasks genre,mood-theme,instrument,mood-aggressive
 ```
+
+`mood-aggressive` is a small two-class head (`Aggressive`, `Not Aggressive`) on
+the same EffNet embedding pass as mood/theme and instrument, so adding it to an
+EffNet run costs almost nothing.
 
 The interactive app reads its default tasks from
 `~/.config/settag/config.toml`:
 
 ```toml
 [analysis]
-tasks = ["genre", "mood-theme", "instrument"]
+tasks = ["genre", "mood-theme", "instrument", "mood-aggressive"]
 ```
 
 The config file is optional. `--tasks` overrides it for one TUI run:
@@ -92,6 +97,7 @@ The config file is optional. `--tasks` overrides it for one TUI run:
 settag "/path/to/music" --tasks instrument
 settag "/path/to/music" --tasks mood-theme,instrument
 settag "/path/to/music" --tasks genre,mood-theme,instrument
+settag "/path/to/music" --tasks mood-aggressive
 ```
 
 Set `SETTAG_CONFIG` or pass `--config /path/to/config.toml` to use another
@@ -103,8 +109,9 @@ unset.
 
 The genre model, MAEST, embeds one 30-second patch at a time and dominates the
 run: 15.5s against EffNet's 1.2s on a 482-second track. `--genre-sample`
-chooses how many of those patches it reads. Mood/theme and instrument always read the whole
-track, because they are cheap and their taxonomies want whole-track averaging.
+chooses how many of those patches it reads. The EffNet tasks (mood/theme,
+instrument, mood-aggressive) always read the whole track, because they are cheap
+and their taxonomies want whole-track averaging.
 
 | `--genre-sample` | reads | relative speed |
 | --- | --- | --- |
@@ -365,12 +372,13 @@ settag "/path/to/music" --top 5 --score-cutoff 0.10
 
 `--threshold` remains an alias for `--score-cutoff`.
 
-In the app, the score cutoff applies to genre. Mood/theme and instrument scores
-differ several-fold between labels, so a single cutoff puts `Bass` and
-`Synthesizer` on nearly every track. Once at least 20 tracks are analysed, the app
-instead shows a mood/theme or instrument label when it is in the track's top three
-and the track is in the library's top 40% for that label. SetPath applies the same
-rule to the same scores, so both show the same labels. Files always keep every score.
+In the app, the score cutoff applies to genre. Mood/theme, instrument, and
+mood-aggressive scores differ several-fold between labels, so a single cutoff
+puts `Bass` and `Synthesizer` on nearly every track. Once at least 20 tracks are
+analysed, the app instead shows a mood/theme, instrument, or mood-aggressive
+label when it is in the track's top three and the track is in the library's top
+40% for that label. SetPath applies the same rule to the same scores, so both
+show the same labels. Files always keep every score.
 
 ## Metadata hygiene
 
@@ -647,15 +655,18 @@ The pinned production models are:
   - `discogs-effnet-bs64-1`
   - `mtg_jamendo_moodtheme-discogs-effnet-1`
   - `mtg_jamendo_instrument-discogs-effnet-1`
+  - `mood_aggressive-discogs-effnet-1`
 
 When genre and EffNet tasks are requested together, one 16 kHz audio decode
-feeds both model stacks. Mood/theme and instrument always reuse one EffNet
-embedding pass.
+feeds both model stacks. Mood/theme, instrument, and mood-aggressive always
+reuse one EffNet embedding pass.
 
 Each score is the mean class-wise sigmoid activation across analyzed audio
 patches. It is useful for ranking and applying a score cutoff, but it is not
 demonstrated to be calibrated confidence or probability. Scores do not need to
-sum to `1`.
+sum to `1`. The exception is `mood-aggressive`, a two-class softmax head: its
+`Aggressive` and `Not Aggressive` scores are mean softmax outputs and sum to
+`1`. Both are always stored.
 
 The review cutoff controls review markings and suggestions only. It does not
 remove scores from the bounded evidence bundle:
@@ -722,8 +733,8 @@ downloaded:
 
 ```sh
 uv run pytest -m models
-uv run settag models status --tasks genre,mood-theme,instrument
-uv run settag analyze "/path/to/track.flac" --tasks genre,mood-theme,instrument
+uv run settag models status --tasks genre,mood-theme,instrument,mood-aggressive
+uv run settag analyze "/path/to/track.flac" --tasks genre,mood-theme,instrument,mood-aggressive
 ```
 
 Architecture and safety contracts are documented in [DESIGN.md](DESIGN.md).
@@ -740,7 +751,8 @@ settag models download --tasks mood-theme,instrument
 settag analyze "/path/to/music" --tasks mood-theme,instrument --embeddings embeddings.jsonl
 ```
 
-The export reuses the same EffNet embedding pass as those tasks. Genre-only runs
+The export reuses the same EffNet embedding pass as those tasks; `mood-aggressive`
+alone also enables it. Genre-only runs
 cannot export it; no extra model is silently enabled. The output must be a new
 file. Completed tracks are flushed individually, and any track failures produce
 a nonzero exit status and diagnostics on stderr. The file contains successful

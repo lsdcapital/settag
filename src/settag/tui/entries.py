@@ -51,6 +51,7 @@ TASK_LABELS: dict[AnalysisTask, str] = {
     "genre": "Genre",
     "mood-theme": "Mood/theme",
     "instrument": "Instrument",
+    "mood-aggressive": "Aggression",
 }
 
 

@@ -33,6 +33,17 @@ PLAN_ERROR_SCHEMA = "settag.plan-error/v1"
 # rejecting it would throw away every analysis a user had already paid for.
 # Anything that needs the digest recomputes it from the file.
 READABLE_PLAN_SCHEMAS = frozenset({"settag.plan/v4", "settag.plan/v5", PLAN_SCHEMA})
+# Owned fields added after plans were already being written, the workbench cache among
+# them. A record without them predates the field and reads it as absent, rather than
+# being rejected as an incomplete field set and costing the analysis it holds.
+FIELDS_ADDED_AFTER_PLANS = frozenset(
+    {
+        "SETTAG_BEATPORT",
+        "SETTAG_ENRICHMENT",
+        "SETTAG_MOOD_AGGRESSIVE",
+        "SETTAG_MOOD_AGGRESSIVE_SCORES",
+    }
+)
 REFRESH_ONLY_CHANGE_PREFIXES = ("Analysis time:", "Task provenance:")
 BOOKKEEPING_CHANGE_PREFIXES = (
     *REFRESH_ONLY_CHANGE_PREFIXES,
@@ -431,9 +442,7 @@ def _planned_write(
     metadata = _mapping(record.get("metadata"), f"{location}.metadata")
     fields = _mapping(metadata.get("fields"), f"{location}.metadata.fields")
     unknown = sorted(set(fields) - set(OWNED_DESCRIPTIONS))
-    missing = sorted(
-        set(OWNED_DESCRIPTIONS) - set(fields) - {"SETTAG_BEATPORT", "SETTAG_ENRICHMENT"}
-    )
+    missing = sorted(set(OWNED_DESCRIPTIONS) - set(fields) - FIELDS_ADDED_AFTER_PLANS)
     if unknown or missing:
         raise PlanError(f"{location}.metadata.fields: expected the complete SetTag field set")
     desired = {
@@ -569,11 +578,15 @@ def friendly_change(change: TagChange) -> str:
     if logical == "SETTAG_GENRE_SCORES":
         action = "add" if change.before is None else "remove" if change.after is None else "update"
         return f"Ranked score data: {action}"
-    if logical in {"SETTAG_MOOD_THEME", "SETTAG_INSTRUMENT"}:
-        name = "Mood/theme" if logical == "SETTAG_MOOD_THEME" else "Instrument"
-        return f"{name} labels: {before_count} → {after_count}"
-    if logical in {"SETTAG_MOOD_THEME_SCORES", "SETTAG_INSTRUMENT_SCORES"}:
-        name = "Mood/theme" if "MOOD_THEME" in logical else "Instrument"
+    effnet_names = {
+        "SETTAG_MOOD_THEME": "Mood/theme",
+        "SETTAG_INSTRUMENT": "Instrument",
+        "SETTAG_MOOD_AGGRESSIVE": "Aggression",
+    }
+    if logical in effnet_names:
+        return f"{effnet_names[logical]} labels: {before_count} → {after_count}"
+    if logical.removesuffix("_SCORES") in effnet_names:
+        name = effnet_names[logical.removesuffix("_SCORES")]
         action = "add" if change.before is None else "remove" if change.after is None else "update"
         return f"{name} ranked score data: {action}"
 

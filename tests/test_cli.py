@@ -368,6 +368,67 @@ def test_explicit_instrument_task_does_not_construct_genre_analyzer(
     assert WAVE(path).tags is None
 
 
+class FakeMoodAggressiveAnalyzer:
+    backend_version = "test"
+    model_manifests: dict[AnalysisTask, dict[str, object]] = {
+        "mood-aggressive": {
+            "schema": "settag.models/v1",
+            "id": "essentia/mood-aggressive-discogs-effnet/v1",
+            "vocabulary": "mood-aggressive",
+            "files": {},
+        },
+    }
+
+    def analyze_tasks(
+        self,
+        path: Path,
+    ) -> dict[AnalysisTask, list[Prediction]]:
+        return {
+            "mood-aggressive": [
+                Prediction("Not Aggressive", 0.96),
+                Prediction("Aggressive", 0.04),
+            ]
+        }
+
+
+def test_mood_aggressive_task_is_selected_explicitly_on_the_cli(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    path = tmp_path / "track.wav"
+    output = tmp_path / "analysis.jsonl"
+    _silent_wav(path)
+    constructed: list[tuple[AnalysisTask, ...]] = []
+
+    def unexpected_genre(_model_dir):
+        raise AssertionError("mood-aggressive analysis must not load MAEST")
+
+    def task_analyzer(_model_dir, tasks, **_options):
+        constructed.append(tuple(tasks))
+        return FakeMoodAggressiveAnalyzer()
+
+    monkeypatch.setattr("settag.cli.commands.EssentiaGenreAnalyzer", unexpected_genre)
+    monkeypatch.setattr("settag.cli.commands.EssentiaTaskAnalyzer", task_analyzer)
+
+    result = main(["analyze", str(path), "--tasks", "mood-aggressive", "--output", str(output)])
+
+    record = json.loads(output.read_text(encoding="utf-8"))
+    assert result == 0
+    assert constructed == [("mood-aggressive",)]
+    assert set(record["tasks"]) == {"mood-aggressive"}
+    assert [item["label"] for item in record["tasks"]["mood-aggressive"]["evidence"]] == [
+        "Not Aggressive",
+        "Aggressive",
+    ]
+    assert WAVE(path).tags is None
+
+
+def test_mood_aggressive_is_not_a_default_task() -> None:
+    args = build_parser().parse_args(["analyze", "track.wav"])
+
+    assert args.tasks == ("genre",)
+
+
 def test_default_file_genre_never_replaces_an_existing_value(
     tmp_path: Path,
 ) -> None:

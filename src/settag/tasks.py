@@ -3,15 +3,16 @@ from __future__ import annotations
 from collections.abc import Iterable, Mapping
 from typing import Literal
 
-AnalysisTask = Literal["genre", "mood-theme", "instrument"]
+AnalysisTask = Literal["genre", "mood-theme", "instrument", "mood-aggressive"]
 
-TASK_ORDER: tuple[AnalysisTask, ...] = ("genre", "mood-theme", "instrument")
+TASK_ORDER: tuple[AnalysisTask, ...] = ("genre", "mood-theme", "instrument", "mood-aggressive")
 TASK_SET = frozenset(TASK_ORDER)
 
 TASK_FIELDS: dict[AnalysisTask, tuple[str, str]] = {
     "genre": ("SETTAG_GENRE", "SETTAG_GENRE_SCORES"),
     "mood-theme": ("SETTAG_MOOD_THEME", "SETTAG_MOOD_THEME_SCORES"),
     "instrument": ("SETTAG_INSTRUMENT", "SETTAG_INSTRUMENT_SCORES"),
+    "mood-aggressive": ("SETTAG_MOOD_AGGRESSIVE", "SETTAG_MOOD_AGGRESSIVE_SCORES"),
 }
 
 

@@ -52,7 +52,7 @@ prerendered, static companion to the open-source repository and package.
 ## Capabilities and Constraints
 
 - Genre analysis uses MAEST by default. Optional Discogs-EffNet heads add
-  mood/theme and instrument evidence.
+  mood/theme, instrument, and aggressive-mood evidence.
 - Supported containers are MP3, AIFF, and WAV through ID3; FLAC through Vorbis
   comments; and M4A, M4B, and MP4 through MP4 atoms.
 - SetTag preserves unrelated metadata, stages conventional genre changes

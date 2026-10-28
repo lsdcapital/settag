@@ -15,10 +15,10 @@ from settag.tasks import AnalysisTask
 # `slow` were never written at all and `calm`/`soft`/`powerful`/`heavy` landed on 2-4% of
 # tracks, so any composite using them was computed against zeros.
 #
-# 60 covers the mood (56) and instrument (40) taxonomies completely and keeps the 519-class
-# genre taxonomy bounded, where a ranked shortlist is what its consumer wants. Cost is a few
-# KB per file. Changing this changes the evidence configuration digest, so previously
-# analysed tracks are correctly reported as stale.
+# 60 covers the mood (56), instrument (40), and mood-aggressive (2) taxonomies completely
+# and keeps the 519-class genre taxonomy bounded, where a ranked shortlist is what its
+# consumer wants. Cost is a few KB per file. Changing this changes the evidence
+# configuration digest, so previously analysed tracks are correctly reported as stale.
 EVIDENCE_LIMIT = 60
 
 
@@ -70,7 +70,7 @@ def select_predictions(
     return [item for item in predictions if item.score >= threshold][:top]
 
 
-# Mood/theme and instrument labels are picked against the library rather than an absolute
+# The EffNet tasks' labels are picked against the library rather than an absolute
 # score. EffNet head scales differ several-fold between labels (on an 888-track library
 # `Bass` averaged 0.518 and `Space` 0.054), so a single cutoff admits only the loud ones:
 # at 0.10 `Bass` and `Synthesizer` landed on 98-99% of tracks and told the reviewer
@@ -79,8 +79,9 @@ def select_predictions(
 # rank-based, so the rule needs no per-label tuning. It is the rule SetPath applies to the
 # same evidence (`prediction-salience.ts`), kept identical so both show the same labels;
 # change the two together. Genre keeps the absolute cutoff: its stored evidence is a
-# top-60 slice of 519 labels, so a library ranking of it would be censored.
-SALIENT_TASKS: frozenset[AnalysisTask] = frozenset({"mood-theme", "instrument"})
+# top-60 slice of 519 labels, so a library ranking of it would be censored. The two-label
+# mood-aggressive head always passes the per-track leg, so the library leg alone decides.
+SALIENT_TASKS: frozenset[AnalysisTask] = frozenset({"mood-theme", "instrument", "mood-aggressive"})
 TOP_LABELS_PER_TRACK = 3
 LIBRARY_FRACTION = 0.4
 # Below this many analysed tracks the library ranking is a handful of files, and the
