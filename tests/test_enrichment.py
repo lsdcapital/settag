@@ -421,3 +421,15 @@ def test_successful_audio_clears_the_failure_record(tmp_path):
     )
 
     assert _recorded(store, path) is None
+
+
+def test_quitting_mid_track_is_not_held_against_the_file(tmp_path):
+    path = audio_file(tmp_path / "a.wav")
+    store = WorkbenchStore(tmp_path / "state.sqlite3")
+
+    with pytest.raises(KeyboardInterrupt):
+        _setup_loader(_failing_loader([], error=KeyboardInterrupt()), store)(
+            (path,), lambda *_args: None, lambda: False
+        )
+
+    assert _recorded(store, path) is None

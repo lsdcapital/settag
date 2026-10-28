@@ -8,10 +8,12 @@ from multiprocessing.connection import Connection
 from multiprocessing.process import BaseProcess
 from pathlib import Path
 from threading import Lock
+from time import monotonic
 from typing import Any, Protocol, cast
 
 from settag.analyzer import EssentiaGenreAnalyzer, EssentiaTaskAnalyzer
 from settag.policy import AudioSample
+from settag.tags import read_duration_seconds
 from settag.tasks import AnalysisTask, ordered_tasks
 from settag.workflow import (
     AnalysisBatch,
@@ -43,6 +45,31 @@ class AnalysisWorkerError(RuntimeError):
 
 class AnalysisWorkerCrashed(AnalysisWorkerError, AudioAnalysisCrashed):
     """The worker died while it held a track, so the failure belongs to that track."""
+
+
+class AnalysisTimedOut(AnalysisWorkerCrashed):
+    """The worker held one track far longer than analysis takes, and was stopped."""
+
+
+# How long one track may take before its worker is stopped and the track is counted as
+# failed. Measured on an Apple-silicon Mac with all three tasks: 3.1 s for a 40 s track,
+# 22 s for a 600 s track with genre_sample=full (6.9 s with the default middle), and
+# 1.5 s more for the first track while the models load. Analysis is at most ~0.04x the
+# track's length, so a full second per second of audio, plus two minutes for decoding
+# and model loading, leaves a slow machine 25x headroom. A false timeout costs a track
+# two of its retries, so the budget stays generous; it exists to end a hang, not to
+# police a slow run.
+TIMEOUT_BASE_SECONDS = 120.0
+TIMEOUT_PER_AUDIO_SECOND = 1.0
+# For a file whose container reports no length.
+TIMEOUT_UNKNOWN_LENGTH_SECONDS = 900.0
+
+
+def track_timeout(path: Path) -> float:
+    duration = read_duration_seconds(path)
+    if duration is None:
+        return TIMEOUT_UNKNOWN_LENGTH_SECONDS
+    return TIMEOUT_BASE_SECONDS + TIMEOUT_PER_AUDIO_SECOND * duration
 
 
 @dataclass(frozen=True)
@@ -154,6 +181,7 @@ class SubprocessAnalysisLoader:
         context: ProcessContext | None = None,
         poll_interval: float = 0.05,
         shutdown_timeout: float = 5.0,
+        timeout_for: Callable[[Path], float] = track_timeout,
     ) -> None:
         selected = ordered_tasks(tasks)
         if not selected:
@@ -172,6 +200,7 @@ class SubprocessAnalysisLoader:
         self._context = context or cast(ProcessContext, get_context("spawn"))
         self._poll_interval = poll_interval
         self._shutdown_timeout = shutdown_timeout
+        self._timeout_for = timeout_for
         self._connection: Connection | None = None
         self._process: BaseProcess | None = None
         self._lock = Lock()
@@ -320,6 +349,8 @@ class SubprocessAnalysisLoader:
         except (BrokenPipeError, EOFError, OSError) as error:
             self._raise_worker_failure(process, error)
 
+        budget = self._timeout_for(path)
+        deadline = monotonic() + budget
         while True:
             try:
                 if connection.poll(self._poll_interval):
@@ -329,6 +360,13 @@ class SubprocessAnalysisLoader:
                 self._raise_worker_failure(process, error)
             if not process.is_alive():
                 self._raise_worker_failure(process)
+            if monotonic() > deadline:
+                # The next request starts a fresh worker, so one hung file costs the run
+                # its budget and a model reload, not the rest of the batch.
+                self._discard_worker(terminate=True)
+                raise AnalysisTimedOut(
+                    f"Analysis took longer than {budget:.0f}s on this file and was stopped"
+                )
 
         if not isinstance(response, (_AnalysisResult, _AnalysisError)):
             raise AnalysisWorkerError(

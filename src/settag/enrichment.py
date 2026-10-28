@@ -354,6 +354,10 @@ class EnrichmentLoader:
             self._abandon_audio(path, previous)
             notes.append(f"Audio analysis unavailable: {error}")
             return None, False
+        except KeyboardInterrupt:
+            # A quit, not the file's fault. Only a kill SetTag cannot catch stays on record.
+            self._abandon_audio(path, previous)
+            raise
         item = next(iter(batch.planned), None)
         notes.extend(f"Audio analysis: {f.description}" for f in batch.failures)
         if item is not None:

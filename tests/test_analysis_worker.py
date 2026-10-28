@@ -10,9 +10,13 @@ import pytest
 from textual.widgets import Static
 
 from settag.analysis_worker import (
+    TIMEOUT_BASE_SECONDS,
+    TIMEOUT_UNKNOWN_LENGTH_SECONDS,
+    AnalysisTimedOut,
     AnalysisWorkerCrashed,
     AnalysisWorkerError,
     SubprocessAnalysisLoader,
+    track_timeout,
 )
 from settag.policy import Prediction
 from settag.tags import OWNED_DESCRIPTIONS, GenreState
@@ -291,3 +295,55 @@ def test_a_worker_that_dies_on_a_track_reports_a_crash_for_that_track(tmp_path: 
         pytest.raises(AnalysisWorkerCrashed, match="exit code 1"),
     ):
         loader((path,), lambda *_args: None, lambda: False)
+
+
+class _HangOnNamedTrack(_FakeAnalyzer):
+    def analyze(self, path: Path) -> list[Prediction]:
+        while path.name == "hang.wav":
+            time.sleep(1)
+        return super().analyze(path)
+
+
+def _hang_on_named_track_factory(
+    model_dir: Path,
+    tasks: tuple[str, ...],
+    sample: str,
+) -> _HangOnNamedTrack:
+    return _HangOnNamedTrack()
+
+
+def test_a_hung_track_times_out_and_the_next_track_still_runs(tmp_path: Path) -> None:
+    hung = tmp_path / "hang.wav"
+    fine = tmp_path / "fine.wav"
+    for path in (hung, fine):
+        _silent_wav(path)
+    with SubprocessAnalysisLoader(
+        tmp_path,
+        ("genre",),
+        top=5,
+        threshold=0.10,
+        analyzer_factory=_hang_on_named_track_factory,
+        poll_interval=0.01,
+        timeout_for=lambda path: 2.0 if path.name == "hang.wav" else 60.0,
+    ) as loader:
+        started = time.monotonic()
+        with pytest.raises(AnalysisTimedOut, match="longer than 2s"):
+            loader((hung,), lambda *_args: None, lambda: False)
+        assert time.monotonic() - started < 30
+
+        batch = loader((fine,), lambda *_args: None, lambda: False)
+
+    assert [item.path.name for item in batch.planned] == ["fine.wav"]
+
+
+def test_the_time_limit_grows_with_the_track(tmp_path: Path) -> None:
+    short = tmp_path / "short.wav"
+    long = tmp_path / "long.wav"
+    _silent_wav(short, seconds=40)
+    _silent_wav(long, seconds=600)
+    unknown = tmp_path / "unknown.wav"
+    unknown.write_bytes(b"not audio")
+
+    assert track_timeout(short) == TIMEOUT_BASE_SECONDS + 40
+    assert track_timeout(long) == TIMEOUT_BASE_SECONDS + 600
+    assert track_timeout(unknown) == TIMEOUT_UNKNOWN_LENGTH_SECONDS
