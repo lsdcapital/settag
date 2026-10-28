@@ -135,8 +135,11 @@ def _audio_failure_lines(entry: TrackEntry) -> list[str]:
     return [
         f"Audio analysis failed the last {failure.attempts} times",
         f"  {failure.error}",
-        f"  Last tried {failure.failed_at[:10]}. Left out of the default selection;",
-        "  select it to try again.",
+        # One line: the panel wraps it, and a hand-broken line wraps again mid-phrase.
+        (
+            f"  Last tried {failure.failed_at[:10]}. Left out of the default selection; "
+            "select it to try again."
+        ),
         "",
     ]
 
@@ -203,7 +206,7 @@ def _task_candidate_sections(
             count = len(evidence)
             noun = "score" if count == 1 else "scores"
             ranked = context.ranks_against_library(task)
-            policy = " · top 3 here and top 40% of library" if ranked else ""
+            policy = " · top 3, library top 40%" if ranked else ""
             lines.append(f"{TASK_LABELS[task]} · {count} {noun}{policy}")
             lines.append(_candidate_line(context.select_for_review(evidence, task), ranked=ranked))
         elif task in provenance:
@@ -215,7 +218,9 @@ def _task_candidate_sections(
 
 def _candidate_policy(context: RowContext) -> str:
     cutoff = f"{context.score_cutoff:.3f}".removesuffix("0")
-    return f"cutoff ≥ {cutoff} · top {context.review_top}"
+    # Once mood/theme and instrument rank against the library, the cutoff is genre's alone.
+    scope = "genre " if any(context.ranks_against_library(task) for task in context.tasks) else ""
+    return f"{scope}cutoff ≥ {cutoff} · top {context.review_top}"
 
 
 def _candidate_line(selected: Sequence[Prediction], *, ranked: bool = False) -> str:

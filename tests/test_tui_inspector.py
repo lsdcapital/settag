@@ -90,3 +90,20 @@ def test_mood_candidates_rank_against_the_library_once_it_is_large_enough(
     assert [p.label for p in context.select_for_review(rows[-1], "genre")] == ["Deep"]
     assert context.ranks_against_library("mood-theme")
     assert not RowContext(("mood-theme",), 5, 0.10).ranks_against_library("mood-theme")
+
+
+def test_library_details_say_the_cutoff_is_genre_only_once_moods_rank(tmp_path: Path) -> None:
+    path = tmp_path / "track.wav"
+    _silent_wav(path)
+    rows = [[Prediction("Deep", n / 100)] for n in range(25)]
+    context = RowContext(
+        tasks=("genre", "mood-theme"),
+        review_top=5,
+        score_cutoff=0.10,
+        library_cutoffs={"mood-theme": library_cutoffs(rows)},
+    )
+    entry = TrackEntry(path=path, metadata=_metadata_track(path))
+
+    lines = metadata_inspector(entry, selected_for_enrichment=True, context=context)
+
+    assert "Candidates · genre cutoff ≥ 0.10 · top 5" in lines
