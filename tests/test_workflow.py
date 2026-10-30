@@ -501,7 +501,6 @@ def test_write_plan_describes_a_timestamp_only_reanalysis_as_one_refresh(
 
     assert plan.evidence_write_kind == "refreshed"
     assert plan.evidence_write_label == "Evidence refreshed"
-    assert plan.write_plan_label == "Refresh"
     assert summarize_planned([plan]).tracks[0].evidence == (
         "SetTag evidence: refresh · 1 ranked score"
     )

@@ -24,7 +24,7 @@ class SetTagApp(AnalysisFlow, WriteFlow, UndoFlow):
     ENABLE_COMMAND_PALETTE = False
     BINDINGS = [
         Binding("w", "write", "Write"),
-        Binding("r", "analyze", "Enrich"),
+        Binding("r", "analyze", "Analyze"),
         Binding("c", "refresh_catalog", "Refresh Beatport"),
         Binding("space", "toggle_track", "Toggle"),
         Binding("a", "toggle_all", "All/None"),
@@ -77,7 +77,7 @@ class SetTagApp(AnalysisFlow, WriteFlow, UndoFlow):
             # nothing to audio files, so a second Q may leave without waiting. That is the
             # only way out of a track the analyzer hangs on.
             if self._quit_during_analysis_requested:
-                self.exit(TuiOutcome(0, "Quit during enrichment. Finished tracks were kept."))
+                self.exit(TuiOutcome(0, "Quit during analysis. Finished tracks were kept."))
                 return
             self._quit_during_analysis_requested = True
             self.action_cancel_analysis()

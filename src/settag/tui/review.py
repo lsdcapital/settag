@@ -31,13 +31,13 @@ def review_track(index: int, entry: TrackEntry, selected: bool, context: RowCont
     if entry.analysis_error is not None:
         return ReviewNode(
             (index, "track"),
-            f"! {entry.path.name} · Enrichment failed",
+            f"! {entry.path.name} · Analysis failed",
             (ReviewNode((index, "error"), entry.analysis_error.description),),
             expanded=True,
         )
     plan = entry.plan
     if plan is None:
-        return ReviewNode((index, "track"), f"{entry.path.name} · No enrichment result")
+        return ReviewNode((index, "track"), f"{entry.path.name} · No result")
 
     inclusion = "" if selected else " · Excluded from write"
     marker = "[x]" if selected else "[ ]"

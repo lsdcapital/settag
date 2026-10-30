@@ -25,7 +25,7 @@ def test_library_details_open_with_a_summary_and_the_next_step(tmp_path: Path) -
     detail = lines.index(MORE_DETAIL)
     summary = lines[:detail]
     assert summary[0] == path.name
-    assert "Not analyzed yet" in summary
+    assert "Not analyzed" in summary
     assert "Enter  analyze this track (asks first)" in summary
     assert "Candidates · cutoff ≥ 0.10 · top 5" in lines[detail:]
     assert display_path(path.parent) == lines[-1]
@@ -38,7 +38,7 @@ def test_review_details_offer_to_dismiss_a_failed_track(tmp_path: Path) -> None:
 
     lines = review_inspector(entry, 0, checked=False, context=CONTEXT)
 
-    assert lines[:2] == ["Enrichment failed", "  DecodeError: corrupt frame"]
+    assert lines[:2] == ["Analysis failed", "  DecodeError: corrupt frame"]
     assert any("Press Space to dismiss" in line for line in lines)
 
 

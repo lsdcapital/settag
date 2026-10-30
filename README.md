@@ -93,7 +93,7 @@ tasks = ["genre", "mood-theme", "instrument", "mood-aggressive"]
 ```
 
 Adding a task here does not mean analysing the library again from scratch.
-Tracks analysed before show **Reanalyze · Intensity** (or whichever tasks are
+Tracks analysed before show **Out of date · Intensity** (or whichever tasks are
 missing or out of date), and enrichment runs only those tasks, keeping the
 file's other results. The same applies when one task's model or settings change.
 
@@ -174,46 +174,46 @@ focus and scroll the details pane; `Shift+Tab` returns to the list. With details
 open, the library looks like this:
 
 ```text
-  ✓  Track                         File genre              Enrichment
-     Brigado Crew - Sunrise.mp3    Melodic House & Techno   Ready
+  ✓  Track                        Your genre               Suggested   Status
+     Brigado Crew - Sunrise.mp3   Melodic House & Techno   ✓ matches   Ready to review
 
+ Brigado Crew - Sunrise.mp3
+
+ Genre: Melodic House & Techno · your tag matches (Beatport)
+ Mood/theme: deep · melodic
+
+ Ready to review · Beatport checked 26 Jul 2026
+ Enter  review the suggestion
+
+ ── More detail ──
  Recommendation: Keep Melodic House & Techno
- Based on: Beatport verified matches
- Current file tag: Melodic House & Techno
-
  Beatport · verified track match
-   Catalog genre: Melodic House & Techno
-   Supports keeping your existing genre.
-
- Audio models · predictions
-   This genre model cannot predict "Melodic House & Techno".
- Audio last analyzed: 2026-07-26T17:52:49Z
+ …
 ```
+
+The panel leads with the suggestion, your tag, the mood and other labels, the
+track's status, and what `Enter` does next. The evidence behind it follows,
+dimmed, under **More detail**.
 
 SetTag first scans existing metadata only. Nothing starts selected, so no work
 runs until you choose it: `Space` selects a track, `A` every track in the view,
-and `F` narrows the view to tracks that need enrichment (no analysis, incomplete
+and `F` narrows the view to tracks that need analysis (no analysis, incomplete
 metadata for a configured task, a changed task model/config, or missing Beatport
 evidence). The active task families are shown in the library context line.
-Select tracks, then press `R` to enrich the selected tracks with Beatport metadata and any needed audio analysis
-visible in the current filter. Selections in other filtered views are not
+Select tracks, then press `R` to analyze the selected tracks visible in the
+current filter: SetTag runs any audio analysis they need and checks Beatport. Selections in other filtered views are not
 included.
 
-The library separates **enrichment freshness** from **genre agreement**:
+The library has three columns besides the track:
 
-- **Enrichment: Current** means compatible audio and a completed catalog check for this track.
-  **Ready** means a result is awaiting review; **Partial** means a source is incomplete.
-  Audio-analysis dates are labeled separately in Details.
-- **File genre** is the tag currently stored in the file; staged edits appear in Review.
-- **Suggested genre** shows the mapped file-genre suggestion. A muted `✓` marks
-  an existing match; amber highlights a different or missing genre worth reviewing.
-
-For a model result of `Progressive House`, the file-genre suggestion is
-`Progressive House`. An existing matching genre shows a muted `✓ Progressive House`.
-An existing `House`, `Techno`, or an empty genre shows the suggestion in amber.
-Amber means "worth reviewing," not "incorrect." Details explain matches and
-staged edits. Stale results show **Reanalyze**, and results below the review
-cutoff show **No suggestion**.
+- **Your genre** is the tag currently stored in the file; staged edits appear in Review.
+- **Suggested** is only ever a genre. It is blank when SetTag has nothing to
+  suggest, a muted `✓ matches` when your tag already agrees, and amber when it
+  differs or your tag is empty. Amber means "worth reviewing," not "incorrect."
+- **Status** is the one place for a track's state: **Not analyzed**, **Ready to
+  review**, **Up to date**, **Out of date** (with the tasks that will run again),
+  **Needs analysis**, **Incomplete** (a source such as Beatport was unavailable),
+  **Failed**, **Keeps failing**, **Too short**, or **Unreadable**.
 
 Press `G` to cycle the genre filter: **All**, **Needs review**, **Missing genre**,
 and **Matches**. Needs review includes differing or missing genres with a usable
@@ -235,11 +235,11 @@ The library keys are:
 | `Space` | Select or unselect the current track for enrichment |
 | `A` | Toggle all eligible tracks in the current view on or off |
 | `I` | Show or hide details for the highlighted track |
-| `F` | Cycle All, Needs enrichment, Missing genre, and Analysis current views |
+| `F` | Cycle All, Needs analysis, Missing genre, and Up to date views |
 | `G` | Cycle All, Needs review, Missing genre, and Matches genre filters |
 | `V` | Open saved results that are ready to review, when available |
 | `Enter` | Open the highlighted track's result in review, or offer to analyze just that track |
-| `R` | Enrich the selected tracks |
+| `R` | Analyze the selected tracks: audio where needed, and a Beatport check |
 | `C` | Check the selected tracks against Beatport again, reusing current audio |
 | `Esc` | Stop after the track currently being analyzed |
 | `U` | Undo a previous write |
@@ -811,7 +811,7 @@ offline = true
 ```
 
 Offline runs still use catalog pages cached by earlier runs; tracks without one
-are marked **Partial** until an online run checks them. Source
+are marked **Incomplete** until an online run checks them. Source
 failures are shown in review while useful results from other sources are retained.
 
 Audio analysis failures are remembered in the local metadata database, including
@@ -836,11 +836,11 @@ SetPath does not yet use the additional catalog evidence in ranking.
 The combined freshness contract is `settag.enrichment/v2`, stored in the local
 metadata database. New enrichment runs do not create, update, or remove the
 legacy `SETTAG_ENRICHMENT` file tag. Scans import compatible legacy tags into the
-database; subsequent local observations take precedence. **Current** requires valid audio evidence and a completed catalog
+database; subsequent local observations take precedence. **Up to date** requires valid audio evidence and a completed catalog
 check for the current artist, title, duration, ISRC and Beatport ID. A check
 does not expire: Details shows when it ran, and `C` asks Beatport again for the
 selected tracks, skipping cached pages. A refresh that cannot reach Beatport keeps
 the check it was replacing. Editing that identity invalidates both cached matches and cached misses;
-older checks without an identity fingerprint are checked again. **Partial** indicates a source failure; **Needs
-enrichment** includes missing/older contracts and out-of-date audio. Upgrading the
+older checks without an identity fingerprint are checked again. **Incomplete** indicates a source failure; **Needs
+analysis** includes missing/older contracts and out-of-date audio. Upgrading the
 contract reuses compatible audio results.

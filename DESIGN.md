@@ -192,13 +192,13 @@ and write the completed snapshot while later tracks continue analyzing. An
 in-flight track has no plan and cannot enter a write. Track-level concurrency
 is deliberately avoided so background operation does not multiply model load.
 
-The dense table combines analysis validity and date into one `Analysis`
-column: `Never`, `Current · date`, `Reanalyze · date`,
-`Incomplete · date`, or `New · date`. The details panel retains the full
-status wording and timestamp. Freshness describes model/configuration validity,
-not agreement with the conventional genre. The adjacent `File genre` and
-`Suggested genre` columns show stored tags beside the mapped genre-only
-suggestion. Matches carry a muted checkmark; different or missing genres with
+The table has one state column, `Status`, in plain words: `Not analyzed`,
+`Ready to review`, `Up to date`, `Out of date · <tasks>`, `Needs analysis`,
+`Incomplete`, `Failed`, `Keeps failing`, `Too short`, or `Unreadable`. The
+details panel's summary uses the same words, so the two never disagree.
+Freshness describes model/configuration validity, not agreement with the
+conventional genre. The adjacent `Your genre` and `Suggested` columns show the
+stored tag beside a genre-only suggestion, blank when there is none. Matches carry a muted checkmark; different or missing genres with
 usable suggestions use amber, meaning review rather than error. The inspector
 retains exact comparisons, including multiple tags that contain a match.
 Stale/incomplete results cannot claim agreement. Genre relation is structured
@@ -558,7 +558,7 @@ pass of that task rather than a full reanalysis. The worker loads every configur
 model once and runs the requested subset per file; MAEST is skipped entirely when
 genre is current. A file never analysed, or with a record that cannot say which
 tasks are good, runs every task. The library labels a partial reanalysis with
-the tasks it will run (`Reanalyze · Intensity`). Audio
+the tasks it will run (`Out of date · Intensity`). Audio
 metadata stores the top 60 ranked results for each task without applying the
 review cutoff. `EVIDENCE_LIMIT` in `policy.py` is the single source of that
 bound and records why it is 60 rather than a shortlist.

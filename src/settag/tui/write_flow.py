@@ -74,9 +74,9 @@ class WriteFlow(SetTagAppCore):
         planned = self._selected_items()
         held = self.session.held_for_reanalysis()
         if held:
-            count = len(held)  # ui-count: selected rows still queued for re-enrichment
+            count = len(held)  # ui-count: selected rows still queued for a new analysis
             self.notify(
-                f"{count} track{'s are' if count != 1 else ' is'} still being re-enriched "
+                f"{count} track{'s are' if count != 1 else ' is'} still being analyzed again "
                 "and will not be written until the new result arrives.",
                 severity="warning",
             )

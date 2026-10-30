@@ -105,7 +105,7 @@ def test_background_completion_reports_partial_catalog_results(tmp_path):
             await pilot.press("r")
             await app.workers.wait_for_complete()
             await pilot.pause()
-            assert "1 current  ·  1 partial  ·  0 failed" in str(
+            assert "1 up to date  ·  1 incomplete  ·  0 failed" in str(
                 app.query_one("#status", Static).render()
             )
             assert str(app.query_one("#context", Static).render()) == "1 ready to review"

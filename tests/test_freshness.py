@@ -104,7 +104,7 @@ def test_old_audio_is_reused_then_a_refresh_replaces_the_catalog_check(tmp_path)
     assert initial.status == "current"  # Audio alone stays valid.
     assert initial.enrichment_status == "needs_enrichment"
     assert initial.needs_analysis
-    assert "Needs enrichment" in entry_analysis(
+    assert "Needs analysis" in entry_analysis(
         TrackEntry(path, metadata=initial),
         RowContext(tasks=("genre",), review_top=5, score_cutoff=0.1),
     )
@@ -209,7 +209,7 @@ def test_catalog_failure_is_partial_and_retry_recovers(tmp_path):
     metadata = scan(path, config)
     assert metadata.enrichment_status == "partial"
     assert metadata.needs_analysis
-    assert "Partial" in entry_analysis(
+    assert "Incomplete" in entry_analysis(
         TrackEntry(path, metadata=metadata),
         RowContext(tasks=("genre",), review_top=5, score_cutoff=0.1),
     )

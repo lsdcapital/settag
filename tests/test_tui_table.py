@@ -65,7 +65,7 @@ def test_row_shows_the_existing_genre_and_no_analysis_yet() -> None:
 
     cells = row_cells(entry, selected=False, context=CONTEXT)
 
-    assert cells == ("", "track.wav", "Techno", "Never", "Not analyzed", "—")
+    assert cells == ("", "track.wav", "Techno", "Not analyzed", "")
 
 
 def test_row_marks_selection() -> None:
@@ -87,16 +87,16 @@ def test_analysis_column_leads_with_the_error_that_matters() -> None:
     analysis_failed = TrackEntry(path=path, metadata=_track(path), analysis_error=failure)
     metadata_failed = TrackEntry(path=path, metadata=None, metadata_error=failure)
 
-    assert entry_analysis(analysis_failed, CONTEXT) == "Analysis error"
-    assert entry_analysis(metadata_failed, CONTEXT) == "Metadata error"
+    assert entry_analysis(analysis_failed, CONTEXT) == "Failed"
+    assert entry_analysis(metadata_failed, CONTEXT) == "Unreadable"
 
 
 def test_enrichment_column_does_not_mislabel_audio_date_as_enrichment_date() -> None:
     path = Path("/music/track.wav")
     states: tuple[tuple[MetadataStatus, str], ...] = (
-        ("current", "Current"),
-        ("stale", "Reanalyze"),
-        ("invalid", "Incomplete"),
+        ("current", "Up to date"),
+        ("stale", "Out of date"),
+        ("invalid", "Needs analysis"),
     )
 
     for status, label in states:
@@ -111,7 +111,7 @@ def test_predictions_below_the_cutoff_are_not_suggested() -> None:
     )
 
     assert primary_review_predictions(entry, CONTEXT) == []
-    assert row_cells(entry, selected=False, context=CONTEXT)[4] == "No suggestion"
+    assert row_cells(entry, selected=False, context=CONTEXT)[4] == ""
 
 
 def test_a_missing_genre_shows_the_mapped_file_suggestion() -> None:
@@ -135,28 +135,6 @@ def test_a_task_not_in_play_contributes_no_suggestion() -> None:
     instrument_only = RowContext(tasks=("instrument",), review_top=5, score_cutoff=0.10)
 
     assert primary_review_predictions(entry, instrument_only) == []
-
-
-def test_write_plan_column_names_a_timestamp_only_reanalysis_as_refresh() -> None:
-    track = _track(Path("/music/track.wav"), standard=("Afro House",))
-    plan = PlannedWrite(
-        path=track.path,
-        source_sha256="source",
-        source_size=1,
-        source_mtime_ns=1,
-        file_genre=track.genre_state.standard,
-        evidence=(),
-        selected=(),
-        desired=track.owned,
-        metadata_format="id3",
-        owned_changes=(
-            "Analysis time: 2026-07-28 → 2026-07-29",
-            "Task provenance: previous → current",
-        ),
-    )
-    entry = TrackEntry(path=track.path, metadata=track, plan=plan)
-
-    assert row_cells(entry, selected=True, context=CONTEXT)[5] == "Refresh"
 
 
 def test_visible_cells_follow_the_columns_that_fit() -> None:
@@ -194,7 +172,7 @@ def test_genre_agreement_is_independent_of_current_analysis(
     assert check.summary == expected
     assert check.model_genre == "Progressive House"
     assert check.suggested_genre == "Progressive House"
-    assert entry_analysis(entry, CONTEXT) == "Current"
+    assert entry_analysis(entry, CONTEXT) == "Up to date"
 
 
 def test_stale_analysis_does_not_claim_a_genre_match() -> None:
@@ -249,8 +227,8 @@ def test_a_staged_genre_is_not_reported_as_already_matching_the_file() -> None:
     ("current", "text", "style"),
     [
         (("House",), "Progressive House", GENRE_REVIEW_STYLE),
-        (("Progressive House",), "✓ Progressive House", GENRE_MATCH_STYLE),
-        (("Progressive House", "Techno"), "✓ Progressive House", GENRE_MATCH_STYLE),
+        (("Progressive House",), "✓ matches", GENRE_MATCH_STYLE),
+        (("Progressive House", "Techno"), "✓ matches", GENRE_MATCH_STYLE),
         (("Techno",), "Progressive House", GENRE_REVIEW_STYLE),
         ((), "Progressive House", GENRE_REVIEW_STYLE),
     ],

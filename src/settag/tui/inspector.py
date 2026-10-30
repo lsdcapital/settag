@@ -30,18 +30,6 @@ from settag.tui.table import (
     task_names,
 )
 
-#: The library's status words, as a sentence for someone who has not learned them.
-STATUS_SENTENCES = {
-    "Never": "Not analyzed yet",
-    "Current": "Up to date",
-    "Needs enrichment": "Needs a fresh check",
-    "Partial": "Beatport could not be reached last time",
-    "Ready": "Result ready to review",
-    "Reanalyze": "Out of date",
-    "Incomplete": "Stored results are incomplete",
-    "Analysis error": "The last analysis failed",
-}
-
 #: Separates the library panel's summary from the evidence behind it.
 MORE_DETAIL = "── More detail ──"
 
@@ -100,7 +88,6 @@ def metadata_inspector(entry: TrackEntry, *, context: RowContext) -> list[str]:
         review = describe_evidence(
             StoredEvidence(display_owned, metadata.genre_state.standard, selected)
         )
-    state = entry.plan.enrichment_status if entry.plan is not None else metadata.enrichment_status
     partial = reanalysis_tasks(entry, context) if entry.plan is None else ()
     out_of_date = (
         [f"Out of date: {task_names(partial)} · only these run again; the rest are kept"]
@@ -118,8 +105,7 @@ def metadata_inspector(entry: TrackEntry, *, context: RowContext) -> list[str]:
             "",
             review.catalog_title,
             *(f"  {detail}" for detail in review.catalog_details),
-            "",
-            f"Enrichment: {state.replace('_', ' ').capitalize()}",
+            *([""] if out_of_date or review.notices else []),
             *out_of_date,
             *review.notices,
             "",
@@ -142,7 +128,7 @@ def metadata_inspector(entry: TrackEntry, *, context: RowContext) -> list[str]:
             "",
             *(
                 [
-                    "Last enrichment attempt failed",
+                    "Last analysis failed",
                     f"  {entry.analysis_error.description}",
                     "",
                 ]
@@ -184,16 +170,8 @@ def _summary(entry: TrackEntry, context: RowContext, genre: str, owned: OwnedVal
         if words:
             labels.append(f"{TASK_LABELS[task]}: {' · '.join(words)}")
 
-    status = entry_analysis(entry, context)
-    word, _, detail = status.partition(" · ")
-    if word == "Reanalyze" and detail:
-        sentence = f"{detail} out of date"
-    elif word == "Sample":
-        sentence = "Too short to analyze"
-    elif word == "Keeps failing":
-        sentence = f"Analysis keeps failing ({detail})"
-    else:
-        sentence = STATUS_SENTENCES.get(status, status)
+    # The same words as the Status column, so the two never disagree.
+    sentence = entry_analysis(entry, context)
     if checked_on := catalog_checked_on(owned):
         sentence += f" · Beatport checked {checked_on}"
 
@@ -244,7 +222,7 @@ def review_inspector(
     if entry.analysis_error is not None:
         return [
             *lines,
-            "Enrichment failed",
+            "Analysis failed",
             f"  {entry.analysis_error.description}",
             "",
             "Press Space to dismiss it so the other tracks can be written,",
@@ -252,7 +230,7 @@ def review_inspector(
             *identity,
         ]
     if entry.plan is None:
-        return ["No enrichment result is available.", *identity]
+        return ["No result is available.", *identity]
 
     review = review_track(index, entry, checked, context)
 

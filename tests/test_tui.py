@@ -276,8 +276,8 @@ def test_tui_reads_metadata_before_loading_model_and_analyzes_only_selection(
             assert app.phase == "choose"
             assert app.analysis_selected == {0, 1}
             assert table.get_row_at(0)[0] == "✓"
-            assert table.get_row_at(0)[4] == "Never"
-            assert table.get_row_at(2)[4] == "Current"
+            assert table.get_row_at(0)[4] == "Not analyzed"
+            assert table.get_row_at(2)[4] == "Up to date"
             assert inspector_pane.display is False
             assert "Enter  analyze this track" in str(inspector.render())
             choose_actions = {
@@ -743,7 +743,7 @@ def test_genre_filters_combine_with_library_filters_and_keep_analysis_scoped(
             assert app.visible_indices == []
             assert app.query_one("#library-empty").display
             filters = str(app.query_one("#library-filters", Static).render())
-            assert "Library: Needs enrichment" in filters
+            assert "Library: Needs analysis" in filters
             assert "Genre: Matches" in filters
 
             await pilot.press("g")
@@ -828,7 +828,7 @@ def test_escape_cancels_after_current_track_and_keeps_remaining_selected(
             activity_file = app.query_one("#analysis-activity-file", Static)
             activity_progress = app.query_one("#analysis-progress", ProgressBar)
             assert activity.display is True
-            assert "Enriching in background" in str(activity_title.render())
+            assert "Analyzing in background" in str(activity_title.render())
             assert "track 1 of 2" in str(activity_title.render())
             assert "0 complete" in str(activity_title.render())
             assert first.name in str(activity_file.render())
@@ -902,7 +902,7 @@ def test_analysis_progress_advances_to_the_next_filename(tmp_path: Path) -> None
                 title = app.query_one("#analysis-activity-title", Static)
                 current_file = app.query_one("#analysis-activity-file", Static)
                 progress = app.query_one("#analysis-progress", ProgressBar)
-                assert "Enriching in background" in str(title.render())
+                assert "Analyzing in background" in str(title.render())
                 assert "track 2 of 2" in str(title.render())
                 assert "1 complete" in str(title.render())
                 assert second.name in str(current_file.render())
@@ -969,7 +969,7 @@ def test_completed_tracks_can_be_reviewed_and_written_during_analysis(
                 assert app.entries[0].plan is not None
                 assert app.entries[1].plan is None
                 status = app.query_one("#status", Static)
-                assert "Enrichment running in background" in str(status.render())
+                assert "Analyzing in background" in str(status.render())
                 assert "1 of 2 complete" in str(status.render())
 
                 await pilot.press("i")
@@ -1038,7 +1038,7 @@ def test_tui_score_cutoff_filters_suggestion_not_stored_evidence(
             table = app.query_one("#tracks", DataTable)
             inspector = app.query_one("#inspector", Static)
 
-            assert str(table.get_row_at(0)[3]) == "No suggestion"
+            assert str(table.get_row_at(0)[3]) == ""
             details = str(inspector.render())
             assert "Candidates · cutoff ≥ 0.80 · top 5" in details
             assert "Genre · 1 score" in details
@@ -1405,7 +1405,6 @@ def test_tui_track_columns_fit_terminal_and_expand_with_available_width(
                 "file_genre",
                 "suggested_genre",
                 "analysis",
-                "write_plan",
             ]
             assert table.max_scroll_x == 0
             track_column = next(
@@ -1413,12 +1412,13 @@ def test_tui_track_columns_fit_terminal_and_expand_with_available_width(
             )
             assert track_column.width > 8
 
+            # With three state columns folded into Status, the details panel beside
+            # the table no longer pushes any of them out at the narrowest side-by-side width.
             await pilot.press("i")
             await pilot.resize_terminal(100, 32)
             await pilot.pause()
             detail_keys = [column.key.value for column in table.ordered_columns]
-            assert len(detail_keys) < len(wide_keys)
-            assert {"selected", "track", "file_genre"} <= set(detail_keys)
+            assert detail_keys == wide_keys
             assert table.max_scroll_x == 0
 
     asyncio.run(exercise())
@@ -1457,10 +1457,10 @@ def test_tui_restores_cached_plan_in_library_and_opens_review_on_request(
             assert app.review_indices == {0}
             assert app.write_selected == {0}
             assert app.analysis_selected == set()
-            assert table.get_row_at(0)[4] == "Ready"
+            assert table.get_row_at(0)[4] == "Ready to review"
             assert "Restored 1 ready-to-review track" in str(status.render())
             assert "Press V to review" in str(status.render())
-            assert "Enrichment: Current" in str(inspector.render())
+            assert "Ready to review" in str(inspector.render())
             assert "Enter  review the suggestion" in str(inspector.render())
             active_actions = {
                 active.binding.action for active in app.screen.active_bindings.values()
@@ -1549,7 +1549,7 @@ def test_tui_requires_confirmation_then_writes_and_verifies(tmp_path: Path) -> N
             assert app.entries[0].metadata is not None
             assert app.entries[0].metadata.status == "current"
             assert app.entries[0].metadata.genre_state.standard == ("Progressive House",)
-            assert table.get_row_at(0)[4] == "Current"
+            assert table.get_row_at(0)[4] == "Up to date"
             assert "Done. 1 file written and verified." in str(status.render())
 
     asyncio.run(exercise())
@@ -1815,7 +1815,7 @@ def test_a_sample_is_shown_as_such_and_never_selected_for_analysis(
 
             table = app.query_one("#tracks", DataTable)
             row = table.get_row_at(1)
-            assert any("Sample · 26s" in str(cell) for cell in row), row
+            assert any("Too short · 26s" in str(cell) for cell in row), row
 
             # Select-all must not pick it up either. `a` toggles, so press it
             # twice to land back on "everything eligible is selected".
@@ -2081,7 +2081,7 @@ def test_a_second_q_quits_while_analysis_is_stuck_on_a_track(tmp_path: Path) -> 
     finally:
         release.set()
     assert app.return_value is not None
-    assert "Quit during enrichment" in app.return_value.message
+    assert "Quit during analysis" in app.return_value.message
 
 
 def test_an_uncaught_worker_error_still_lets_the_user_quit(

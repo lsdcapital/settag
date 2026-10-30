@@ -54,10 +54,9 @@ class ResponsiveTrackTable(DataTable):
 TRACK_TABLE_COLUMNS = (
     TrackTableColumn("selected", "", 0, 1, 1),
     TrackTableColumn("track", "Track", 1, 8, 1_000),
-    TrackTableColumn("file_genre", "File genre", 2, 10, 18),
-    TrackTableColumn("suggested_genre", "Suggested genre", 4, 16, 20),
-    TrackTableColumn("analysis", "Enrichment", 3, 12, 24),
-    TrackTableColumn("write_plan", "Write plan", 5, 16, 16),
+    TrackTableColumn("file_genre", "Your genre", 2, 10, 18),
+    TrackTableColumn("suggested_genre", "Suggested", 4, 10, 20),
+    TrackTableColumn("analysis", "Status", 3, 12, 24),
 )
 
 TRACK_TABLE_COLUMN_BY_KEY = {column.key: column for column in TRACK_TABLE_COLUMNS}
@@ -66,7 +65,6 @@ TRACK_TABLE_COLUMN_PRIORITY = (
     "file_genre",
     "suggested_genre",
     "analysis",
-    "write_plan",
 )
 
 
@@ -203,12 +201,12 @@ def task_names(tasks: Sequence[AnalysisTask]) -> str:
 
 def entry_analysis(entry: TrackEntry, context: RowContext) -> str:
     if entry.metadata_error is not None:
-        return "Metadata error"
+        return "Unreadable"
     if entry.analysis_error is not None:
-        return "Analysis error"
+        return "Failed"
     if entry.metadata is not None and entry.metadata.is_sample:
         duration = entry.metadata.duration_seconds
-        return f"Sample · {round(duration)}s" if duration is not None else "Sample"
+        return f"Too short · {round(duration)}s" if duration is not None else "Too short"
     if entry.audio_keeps_failing:
         assert entry.metadata is not None
         assert entry.metadata.audio_failure is not None
@@ -216,31 +214,31 @@ def entry_analysis(entry: TrackEntry, context: RowContext) -> str:
 
     if entry.plan is not None:
         state = (
-            "Partial"
+            "Incomplete"
             if entry.plan.enrichment_status == "partial"
-            else "Needs enrichment"
+            else "Needs analysis"
             if entry.plan_cached and entry.plan.enrichment_status != "current"
-            else "Ready"
+            else "Ready to review"
         )
     else:
         assert entry.metadata is not None
         if entry.metadata.enrichment_status == "partial":
-            state = "Partial"
+            state = "Incomplete"
         elif entry.metadata.cache_status == "stale":
-            state = "Needs enrichment"
+            state = "Needs analysis"
         elif entry.metadata.status == "not_analyzed":
-            return "Never"
+            return "Not analyzed"
         elif partial := reanalysis_tasks(entry, context):
-            return f"Reanalyze · {task_names(partial)}"
+            return f"Out of date · {task_names(partial)}"
         else:
             state = {
                 "current": {
-                    "current": "Current",
-                    "needs_enrichment": "Needs enrichment",
-                    "partial": "Partial",
+                    "current": "Up to date",
+                    "needs_enrichment": "Needs analysis",
+                    "partial": "Incomplete",
                 }[entry.metadata.enrichment_status],
-                "stale": "Reanalyze",
-                "invalid": "Incomplete",
+                "stale": "Out of date",
+                "invalid": "Needs analysis",
             }[entry.metadata.status]
 
     return state
@@ -262,10 +260,10 @@ class GenreCheck:
 
     @property
     def suggestion_text(self) -> str:
+        """Only ever a genre, or a mark that the file already has it; state is in Status."""
         if self.suggested_genre is None:
-            return self.summary
-        prefix = "✓ " if self.relation == "match" else ""
-        return f"{prefix}{self.suggested_genre}"
+            return ""
+        return "✓ matches" if self.relation == "match" else self.suggested_genre
 
     @property
     def suggestion_style(self) -> str:
@@ -366,7 +364,7 @@ def row_cells(
     *,
     selected: bool,
     context: RowContext,
-) -> tuple[str, str, str, str, str, str]:
+) -> tuple[str, str, str, str, str]:
     """Every cell for one track, in fixed column order."""
     plan = entry.plan
     metadata = entry.metadata
@@ -384,7 +382,6 @@ def row_cells(
         file_genre,
         entry_analysis(entry, context),
         genre_check(entry, context).suggestion_text,
-        plan.write_plan_label if plan is not None else "—",
     )
 
 

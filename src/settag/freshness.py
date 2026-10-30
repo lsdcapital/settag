@@ -151,15 +151,15 @@ def record_values(*, audio_complete: bool, catalog: dict[str, Any]) -> list[str]
 def enrichment_notes(owned: Mapping[str, list[str] | None]) -> tuple[str, ...]:
     record = enrichment_record(owned)
     if record is None:
-        return (
-            "Enrichment contract is missing or outdated; compatible audio evidence can be reused.",
-        )
+        return ("Not checked against Beatport yet; current audio results will be reused.",)
     notes: list[str] = []
     if record.get("audio") != "complete":
-        notes.append("Audio analysis is incomplete; enrich again to retry.")
+        notes.append("Audio analysis is incomplete; analyze again to retry.")
     catalog = record.get("catalog")
     if isinstance(catalog, dict) and catalog.get("status") == "unavailable":
-        notes.append(f"Catalog check unavailable: {catalog.get('reason', 'retry enrichment')}")
+        notes.append(
+            f"Beatport check unavailable: {catalog.get('reason', 'analyze again to retry')}"
+        )
     elif not catalog_current(owned):
-        notes.append("Catalog check is incomplete; enrich again to finish it.")
+        notes.append("Beatport check is incomplete; analyze again to finish it.")
     return tuple(notes)

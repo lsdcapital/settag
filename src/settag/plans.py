@@ -164,21 +164,6 @@ class PlannedWrite:
         }[self.evidence_write_kind]
 
     @property
-    def write_plan_label(self) -> str:
-        """Compact table label for the metadata this plan would write."""
-        evidence = {
-            "unchanged": "",
-            "refreshed": "Refresh",
-            "updated": "Evidence",
-        }[self.evidence_write_kind]
-        genre = self.standard_genre_change is not None
-        if evidence and genre:
-            return f"{evidence} + genre"
-        if evidence:
-            return evidence
-        return "Genre edit" if genre else "None"
-
-    @property
     def standard_genre_change(self) -> TagChange | None:
         if self.target_file_genre is None or self.target_file_genre == self.file_genre:
             return None

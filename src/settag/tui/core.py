@@ -81,9 +81,9 @@ FILTER_ORDER: tuple[LibraryFilter, ...] = (
 
 FILTER_LABELS: dict[LibraryFilter, str] = {
     "all": "All",
-    "needs_analysis": "Needs enrichment",
+    "needs_analysis": "Needs analysis",
     "missing_genre": "Missing genre",
-    "current": "Analysis current",
+    "current": "Up to date",
 }
 
 
@@ -238,7 +238,7 @@ class SetTagAppCore(App[TuiOutcome]):
 
     def _notify_awaiting_new_result(self) -> None:
         self.notify(
-            "This track is being re-enriched. Review it when the new result arrives.",
+            "This track is being analyzed again. Review it when the new result arrives.",
             severity="warning",
         )
 
@@ -254,7 +254,7 @@ class SetTagAppCore(App[TuiOutcome]):
             yield Static("", markup=False, id="library-filters")
             with Vertical(id="analysis-activity"):
                 yield Static(
-                    "Preparing enrichment",
+                    "Preparing analysis",
                     markup=False,
                     id="analysis-activity-title",
                 )
@@ -462,10 +462,10 @@ class SetTagAppCore(App[TuiOutcome]):
         self.query_one("#review-tree").display = False
         self.query_one("#library-filters").display = True
         self.query_one("#tracks").display = True
-        self.sub_title = "Choose tracks to enrich"
+        self.sub_title = "Choose tracks to analyze"
         self.refresh_bindings()
         self.query_one("#tracks-pane .section-title", Static).update(
-            "Library · choose tracks to enrich"
+            "Library · choose tracks to analyze"
         )
         self._rebuild_table(preferred_index)
         self.call_after_refresh(self._sync_table_columns)
@@ -477,7 +477,7 @@ class SetTagAppCore(App[TuiOutcome]):
         self.query_one("#library-filters").display = False
         self.query_one("#library-empty").display = False
         self.query_one("#review-tree").display = True
-        self.sub_title = "Review enriched tracks"
+        self.sub_title = "Review results"
         self.refresh_bindings()
         self.query_one("#tracks-pane .section-title", Static).update(
             "Review · current → after write"
@@ -612,7 +612,7 @@ class SetTagAppCore(App[TuiOutcome]):
             text = (
                 # ui-count: every row this view has loaded
                 f"{len(self.entries)} tracks"
-                f"  ·  {needs} need enrichment"
+                f"  ·  {needs} need analysis"
                 f"{failing_text}"
                 f"{ready_text}"
                 f"  ·  {errors} metadata error{'s' if errors != 1 else ''}"
@@ -743,7 +743,7 @@ class SetTagAppCore(App[TuiOutcome]):
                 progress = "Stopping after the current track"
             else:
                 progress = (
-                    "Enrichment running in background"
+                    "Analyzing in background"
                     f"  ·  {self._analysis_completed_count} of "
                     # ui-count: background tracks queued for this analysis run
                     f"{len(self._pending_analysis_indices)} complete"
@@ -781,7 +781,7 @@ class SetTagAppCore(App[TuiOutcome]):
             step = self.entries[index].next_step if index is not None else None
             enter_hint = f"Enter {NEXT_STEP_LABELS[step]}  ·  " if step is not None else ""
             base = (
-                f"{enter_hint}R enrich selected  ·  {selected} selected in this view{review_hint}"
+                f"{enter_hint}R analyze selected  ·  {selected} selected in this view{review_hint}"
             )
         else:
             # ui-count: rows checked for writing in the current view
@@ -888,7 +888,7 @@ class SetTagAppCore(App[TuiOutcome]):
         if self.busy or self.phase != "choose":
             return
         if not self.review_indices:
-            self.notify("There are no enriched tracks ready to review.")
+            self.notify("There are no results ready to review.")
             return
         if self.analysis_running:
             self._analysis_navigation_changed = True
@@ -922,7 +922,7 @@ class SetTagAppCore(App[TuiOutcome]):
 
     def _current_review_index(self) -> int | None:
         if self.phase != "review":
-            self.notify("Enrich a selection before editing genre suggestions.")
+            self.notify("Analyze a track before editing its genre suggestion.")
             return None
         index = self._current_index()
         if index is None or self.entries[index].plan is None:

@@ -187,7 +187,7 @@ class UndoFlow(SetTagAppCore):
         if cleared:
             message += (
                 f" {cleared} pending review{'s were' if cleared != 1 else ' was'} cleared"
-                " because the file changed; enrich again to review it."
+                " because the file changed; analyze it again to review it."
             )
         skipped = self._pending_undo_skipped
         self._pending_undo_skipped = 0
