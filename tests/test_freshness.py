@@ -12,7 +12,6 @@ from test_enrichment import RELEASE, Provider, audio_file
 from settag.beatport import LookupStopped, PublicPageProvider
 from settag.enrichment import EnrichmentLoader
 from settag.freshness import (
-    CATALOG_TTL_SECONDS,
     ENRICHMENT_SCHEMA,
     EnrichmentState,
     catalog_current,
@@ -41,13 +40,12 @@ def record(status="no_match", checked_at=NOW, *, audio=True):
     ("age", "expected"),
     [
         (0, True),
-        (CATALOG_TTL_SECONDS - 1, True),
-        (CATALOG_TTL_SECONDS, False),
-        (CATALOG_TTL_SECONDS + 1, False),
+        (8 * 24 * 3600, True),
+        (10 * 365 * 24 * 3600, True),
         (-1, False),
     ],
 )
-def test_catalog_expiry_boundary(age, expected):
+def test_catalog_checks_never_expire_but_future_dates_are_refused(age, expected):
     owned = record(checked_at=NOW - age)
     assert catalog_current(owned, now=NOW) is expected
     assert enrichment_status(owned, audio_current=True, now=NOW) == (
@@ -98,7 +96,7 @@ def scan(path, config):
     )
 
 
-def test_old_audio_is_reused_then_combined_result_expires(tmp_path):
+def test_old_audio_is_reused_then_a_refresh_replaces_the_catalog_check(tmp_path):
     path = audio_file(tmp_path / "track.wav", seconds=35)
     old, config = model_result(path)
     apply_metadata_tags(path, old.desired)
@@ -139,16 +137,27 @@ def test_old_audio_is_reused_then_combined_result_expires(tmp_path):
     assert item.desired["SETTAG_ENRICHMENT"] is None
     assert item.enrichment is not None
     manifest = {**item.enrichment, "catalog": dict(item.enrichment["catalog"])}
-    manifest["catalog"]["checked_at"] = time.time() - CATALOG_TTL_SECONDS - 1
+    manifest["catalog"]["checked_at"] = time.time() - 365 * 24 * 3600
     loader.state_store.save_enrichment(
         path,
         manifest["catalog"]["identity_sha256"],
         EnrichmentState(manifest, item.desired["SETTAG_BEATPORT"]),
     )
-    assert scan(path, config).enrichment_status == "needs_enrichment"
-    loader.provider = provider
+    assert scan(path, config).enrichment_status == "current"  # A year old, still current.
+    lookups = []
+
+    class Counting(Provider):
+        def candidates(self, track):
+            lookups.append(track)
+            return super().candidates(track)
+
+    loader.provider = Counting((replace(RELEASE, duration_seconds=35),))
+    loader.begin_batch(refresh_catalog=True)
     refreshed = loader((path,), lambda *_a: None, lambda: False).planned[0]
+    assert lookups
     assert refreshed.enrichment_status == "current"
+    assert refreshed.enrichment is not None
+    assert refreshed.enrichment["catalog"]["checked_at"] > manifest["catalog"]["checked_at"]
     assert refreshed.desired["SETTAG_PROVENANCE"] == before["SETTAG_PROVENANCE"]
 
 
@@ -176,7 +185,7 @@ def test_invalid_or_missing_catalog_evidence_cannot_claim_current(status):
     assert not catalog_current(record(status), now=NOW)
 
 
-def test_expired_catalog_failure_is_partial_and_retry_recovers(tmp_path):
+def test_catalog_failure_is_partial_and_retry_recovers(tmp_path):
     path = audio_file(tmp_path / "track.wav", seconds=35)
     old, config = model_result(path)
     apply_metadata_tags(path, old.desired)
@@ -232,6 +241,18 @@ def test_cached_pages_retain_original_observation_time(tmp_path):
     replay.candidates(SOURCE)
     assert replay.requests == 0
     assert replay.oldest_observation == first - 86400
+
+
+def test_a_refresh_fetches_pages_again_instead_of_replaying_the_cache(tmp_path):
+    def fetch(url):
+        return (detail_page() if "/track/" in url else search_page()).encode()
+
+    PublicPageProvider(tmp_path, fetch=fetch, sleep=lambda _seconds: None).candidates(SOURCE)
+    refresh = PublicPageProvider(tmp_path, fetch=fetch, sleep=lambda _seconds: None)
+    refresh.refresh = True
+    refresh.candidates(SOURCE)
+    assert refresh.requests > 0
+    assert refresh.cache_hits == 0
 
 
 def test_fresh_catalog_survives_repeated_audio_unavailability(tmp_path):

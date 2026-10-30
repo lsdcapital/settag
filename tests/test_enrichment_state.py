@@ -11,7 +11,7 @@ from test_enrichment import RELEASE, Provider, audio_file, enrichment_plan
 from test_freshness import model_result
 
 from settag.enrichment import EnrichmentLoader
-from settag.freshness import CATALOG_TTL_SECONDS, EnrichmentState, record_values
+from settag.freshness import EnrichmentState, record_values
 from settag.plans import planned_write_from_record, planned_write_record
 from settag.state import WorkbenchStore
 from settag.tags import (
@@ -112,14 +112,16 @@ def test_legacy_tag_is_imported_and_preserved_while_local_miss_takes_precedence(
         catalog={
             "status": "matched",
             "identity_sha256": identity,
-            "checked_at": time.time() - CATALOG_TTL_SECONDS - 1,
+            "checked_at": time.time() - 365 * 24 * 3600,
         },
     )
     apply_metadata_tags(path, {**catalog.desired, "SETTAG_ENRICHMENT": legacy})
     original = path.read_bytes()
     assert scan(path, config, store).enrichment.record == json.loads(legacy[0])
     assert path.read_bytes() == original
-    refreshed = run(loader(config, store, Provider(())), path)
+    refreshing = loader(config, store, Provider(()))
+    refreshing.begin_batch(refresh_catalog=True)
+    refreshed = run(refreshing, path)
     assert refreshed.enrichment["catalog"]["status"] == "no_match"
     assert refreshed.target_file_genre is None
     assert refreshed.desired["SETTAG_ENRICHMENT"] == legacy
@@ -217,7 +219,7 @@ def test_failed_refresh_retains_unwritten_catalog_evidence_locally(tmp_path):
     path, config, store = setup_track(tmp_path)
     first = run(loader(config, store, Provider((replace(RELEASE, duration_seconds=35),))), path)
     record = {**first.enrichment, "catalog": dict(first.enrichment["catalog"])}
-    record["catalog"]["checked_at"] = time.time() - CATALOG_TTL_SECONDS - 1
+    record["catalog"]["checked_at"] = time.time() - 365 * 24 * 3600
     store.save_enrichment(
         path,
         record["catalog"]["identity_sha256"],
@@ -228,10 +230,14 @@ def test_failed_refresh_retains_unwritten_catalog_evidence_locally(tmp_path):
         def candidates(self, track):
             raise RuntimeError("Catalog unavailable")
 
-    failed = run(loader(config, store, Unavailable()), path)
-    assert failed.enrichment_status == "partial"
-    assert not failed.readable_changes
+    refreshing = loader(config, store, Unavailable())
+    refreshing.begin_batch(refresh_catalog=True)
+    failed = run(refreshing, path)
+    # The refresh could not reach Beatport, so the check it was replacing stands.
+    assert failed.enrichment_status == "current"
+    assert failed.enrichment["catalog"] == record["catalog"]
+    assert failed.desired["SETTAG_BEATPORT"] == first.desired["SETTAG_BEATPORT"]
     metadata = scan(path, config, store)
     assert metadata.enrichment.evidence == first.desired["SETTAG_BEATPORT"]
-    assert not metadata.catalog_current
+    assert metadata.catalog_current
     assert read_owned_values(path)["SETTAG_BEATPORT"] is None

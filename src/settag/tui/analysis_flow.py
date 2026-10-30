@@ -17,6 +17,14 @@ class AnalysisFlow(SetTagAppCore):
     """Runs background analysis and persists and reports its results."""
 
     def action_analyze(self) -> None:
+        self._start_enrichment(refresh_catalog=False)
+
+    def action_refresh_catalog(self) -> None:
+        # Beatport checks never expire, so this is how a stored one is replaced: the
+        # selected tracks are checked again live, and current audio is still reused.
+        self._start_enrichment(refresh_catalog=True)
+
+    def _start_enrichment(self, *, refresh_catalog: bool) -> None:
         if self.busy or self.analysis_running:
             return
         if self.phase != "choose":
@@ -45,7 +53,7 @@ class AnalysisFlow(SetTagAppCore):
         self.refresh_bindings()
         self._show_analysis_activity()
         self._update_status()
-        self._analyze_selected(indices)
+        self._analyze_selected(indices, refresh_catalog)
 
     def action_cancel_analysis(self) -> None:
         if not self.analysis_running:
@@ -58,12 +66,12 @@ class AnalysisFlow(SetTagAppCore):
         self._update_status()
 
     @work(thread=True, exclusive=True, group="analysis", exit_on_error=False)
-    def _analyze_selected(self, indices: tuple[int, ...]) -> None:
+    def _analyze_selected(self, indices: tuple[int, ...], refresh_catalog: bool = False) -> None:
         # ui-count: rows selected in this view for this analysis run
         total = len(indices)
         begin_batch = getattr(self.analysis_loader, "begin_batch", None)
         if begin_batch is not None:
-            begin_batch()
+            begin_batch(refresh_catalog=refresh_catalog)
         completed = 0
         cancelled = False
         for index in indices:

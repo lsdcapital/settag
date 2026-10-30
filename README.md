@@ -200,7 +200,7 @@ included.
 
 The library separates **enrichment freshness** from **genre agreement**:
 
-- **Enrichment: Current** means compatible audio and a fresh catalog check for this track.
+- **Enrichment: Current** means compatible audio and a completed catalog check for this track.
   **Ready** means a result is awaiting review; **Partial** means a source is incomplete.
   Audio-analysis dates are labeled separately in Details.
 - **File genre** is the tag currently stored in the file; staged edits appear in Review.
@@ -239,6 +239,7 @@ The library keys are:
 | `V` | Open saved results that are ready to review, when available |
 | `Enter` | Open details for the highlighted track |
 | `R` | Enrich the selected tracks |
+| `C` | Check the selected tracks against Beatport again, reusing current audio |
 | `Esc` | Stop after the track currently being analyzed |
 | `U` | Undo a previous write |
 | `H` | Switch to the separate metadata-hygiene review |
@@ -835,8 +836,10 @@ The combined freshness contract is `settag.enrichment/v2`, stored in the local
 metadata database. New enrichment runs do not create, update, or remove the
 legacy `SETTAG_ENRICHMENT` file tag. Scans import compatible legacy tags into the
 database; subsequent local observations take precedence. **Current** requires valid audio evidence and a completed catalog
-check less than seven days old for the current artist, title, duration, ISRC and
-Beatport ID. Editing that identity invalidates both cached matches and cached misses;
+check for the current artist, title, duration, ISRC and Beatport ID. A check
+does not expire: Details shows when it ran, and `C` asks Beatport again for the
+selected tracks, skipping cached pages. A refresh that cannot reach Beatport keeps
+the check it was replacing. Editing that identity invalidates both cached matches and cached misses;
 older checks without an identity fingerprint are checked again. **Partial** indicates a source failure; **Needs
-enrichment** includes missing/older contracts and expired checks. Upgrading the
+enrichment** includes missing/older contracts and out-of-date audio. Upgrading the
 contract reuses compatible audio results.

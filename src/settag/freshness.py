@@ -10,7 +10,6 @@ from dataclasses import dataclass
 from typing import Any, Literal
 
 ENRICHMENT_SCHEMA = "settag.enrichment/v2"
-CATALOG_TTL_SECONDS = 7 * 24 * 3600
 EnrichmentStatus = Literal["current", "needs_enrichment", "partial"]
 
 
@@ -108,12 +107,14 @@ def catalog_current(
         return False
     if catalog["status"] == "matched" and catalog_evidence(owned) is None:
         return False
+    # A check does not expire: it stays current until the user asks for a refresh.
+    # A date in the future is still refused, since nothing could have observed it.
     checked = catalog.get("checked_at")
     return (
         isinstance(checked, (int, float))
         and not isinstance(checked, bool)
         and math.isfinite(checked)
-        and 0 <= (time.time() if now is None else now) - checked < CATALOG_TTL_SECONDS
+        and checked <= (time.time() if now is None else now)
     )
 
 
@@ -159,5 +160,5 @@ def enrichment_notes(owned: Mapping[str, list[str] | None]) -> tuple[str, ...]:
     if isinstance(catalog, dict) and catalog.get("status") == "unavailable":
         notes.append(f"Catalog check unavailable: {catalog.get('reason', 'retry enrichment')}")
     elif not catalog_current(owned):
-        notes.append("Catalog check is expired or incomplete; enrich again to refresh it.")
+        notes.append("Catalog check is incomplete; enrich again to finish it.")
     return tuple(notes)

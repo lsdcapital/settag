@@ -205,17 +205,22 @@ class EnrichmentLoader:
         # failing. The app needs no skip: the library leaves such files unselected, and
         # selecting one anyway is the request to try again.
         self.skip_failing = skip_failing
+        # A catalog check never expires, so a stored one is reused until the user asks
+        # for a refresh; begin_batch sets this for one batch.
+        self.refresh_catalog = False
         self._audio_setup = (
             audio_setup_sha256(expected_model_ids, str(expected_config["sha256"]))
             if expected_model_ids is not None and expected_config is not None
             else None
         )
 
-    def begin_batch(self) -> None:
+    def begin_batch(self, *, refresh_catalog: bool = False) -> None:
         self.stopped_reason = ""
+        self.refresh_catalog = refresh_catalog
         if isinstance(self.provider, PublicPageProvider):
             self.provider.requests = 0
             self.provider.cache_hits = 0
+            self.provider.refresh = refresh_catalog and not self.provider.offline
 
     def __call__(
         self, paths: Sequence[Path], on_progress: ProgressCallback, should_cancel: CancelCallback
@@ -282,7 +287,51 @@ class EnrichmentLoader:
         current = item.evidence_view if item is not None else file_owned
         if history is not None:
             current = history.evidence_view(current)
-        if catalog_current(current, identity_sha256=identity_hash):
+        stored = catalog_current(current, identity_sha256=identity_hash)
+        reuse = stored and not self.refresh_catalog
+        if not reuse:
+            if self.stopped_reason:
+                catalog_info = {"status": "unavailable", "reason": self.stopped_reason}
+                notes.append(
+                    f"Beatport unavailable: {self.stopped_reason}; retry enrichment later."
+                )
+            else:
+                try:
+                    catalog, outcome = enrichment_plan(path, self.provider, should_cancel)
+                    checked_at = getattr(self.provider, "oldest_observation", None)
+                    catalog_info = {
+                        "status": "matched" if catalog else "no_match",
+                        "checked_at": time.time() if checked_at is None else checked_at,
+                        "identity_sha256": identity_hash,
+                    }
+                    if outcome["status"] == "missing_identity":
+                        catalog_info = {"status": "unavailable", "reason": outcome["reason"]}
+                        notes.append(str(outcome["reason"]))
+                    elif catalog is None:
+                        notes.append(
+                            "Beatport: no verified match found; existing evidence retained."
+                        )
+                except EnrichmentCancelled:
+                    notes.append("Enrichment cancelled before catalog lookup completed.")
+                    return self._finish(
+                        item,
+                        audio_complete,
+                        {"status": "unavailable", "reason": "Cancelled"},
+                        notes,
+                        history=history,
+                    )
+                except LookupStopped as error:
+                    self.stopped_reason = str(error)
+                    catalog_info = {"status": "unavailable", "reason": str(error)}
+                    notes.append(f"Beatport unavailable: {error}; retry enrichment later.")
+                except Exception as error:
+                    catalog_info = {"status": "unavailable", "reason": str(error)}
+                    notes.append(f"Beatport lookup failed: {error}; existing evidence retained.")
+            if stored and catalog_info["status"] == "unavailable":
+                # A refresh that could not reach Beatport keeps the check it replaced.
+                notes.append("Beatport refresh failed; the earlier check is kept.")
+                reuse = True
+        if reuse:
             record = enrichment_record(current)
             assert record is not None
             catalog_info = record["catalog"]
@@ -305,39 +354,6 @@ class EnrichmentLoader:
                 item = replace(
                     item, desired={**item.desired, "SETTAG_BEATPORT": current["SETTAG_BEATPORT"]}
                 )
-        elif self.stopped_reason:
-            catalog_info = {"status": "unavailable", "reason": self.stopped_reason}
-            notes.append(f"Beatport unavailable: {self.stopped_reason}; retry enrichment later.")
-        else:
-            try:
-                catalog, outcome = enrichment_plan(path, self.provider, should_cancel)
-                checked_at = getattr(self.provider, "oldest_observation", None)
-                catalog_info = {
-                    "status": "matched" if catalog else "no_match",
-                    "checked_at": time.time() if checked_at is None else checked_at,
-                    "identity_sha256": identity_hash,
-                }
-                if outcome["status"] == "missing_identity":
-                    catalog_info = {"status": "unavailable", "reason": outcome["reason"]}
-                    notes.append(str(outcome["reason"]))
-                elif catalog is None:
-                    notes.append("Beatport: no verified match found; existing evidence retained.")
-            except EnrichmentCancelled:
-                notes.append("Enrichment cancelled before catalog lookup completed.")
-                return self._finish(
-                    item,
-                    audio_complete,
-                    {"status": "unavailable", "reason": "Cancelled"},
-                    notes,
-                    history=history,
-                )
-            except LookupStopped as error:
-                self.stopped_reason = str(error)
-                catalog_info = {"status": "unavailable", "reason": str(error)}
-                notes.append(f"Beatport unavailable: {error}; retry enrichment later.")
-            except Exception as error:
-                catalog_info = {"status": "unavailable", "reason": str(error)}
-                notes.append(f"Beatport lookup failed: {error}; existing evidence retained.")
         if catalog is not None:
             if item is None:
                 item = catalog

@@ -295,6 +295,9 @@ class PublicPageProvider:
         self.requests = 0
         self.cache_hits = 0
         self.oldest_observation: float | None = None
+        # A refresh asks Beatport again instead of answering from cached pages; what it
+        # fetches still replaces the cache entry.
+        self.refresh = False
         self._fetch = fetch or self._http
         self._sleep = sleep
         self._prune_cache()
@@ -338,7 +341,7 @@ class PublicPageProvider:
 
     def _page(self, url: str, *, track_id: str = "") -> tuple[Candidate, ...]:
         cache_file = self.cache_dir / f"{hashlib.sha256(url.encode()).hexdigest()}.json"
-        if cache_file.exists():
+        if cache_file.exists() and not self.refresh:
             try:
                 cached = json.loads(cache_file.read_text())
                 age = time.time() - cached["fetched_at"]

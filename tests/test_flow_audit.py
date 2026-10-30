@@ -13,7 +13,7 @@ from test_freshness import model_result, scan
 from test_review_evidence import example
 
 from settag.enrichment import EnrichmentLoader
-from settag.freshness import CATALOG_TTL_SECONDS, record_values
+from settag.freshness import record_values
 from settag.hashing import sha256_audio
 from settag.plans import stage_default_file_genre, suggested_file_genre
 from settag.policy import Prediction
@@ -30,7 +30,7 @@ CONTEXT = RowContext(tasks=("genre",), review_top=5, score_cutoff=0.1)
 @pytest.mark.parametrize(
     ("status", "checked"),
     [
-        ("matched", time.time() - CATALOG_TTL_SECONDS - 60),
+        ("matched", time.time() + 3600),
         ("unavailable", time.time()),
         ("no_match", time.time()),
     ],
@@ -161,14 +161,14 @@ def test_combined_enrichment_reopen_write_expire_retry_and_undo(tmp_path):
     assert scan(path, config).enrichment_status == "current"
     assert loader((path,), lambda *_a: None, lambda: False).planned[0].readable_changes == ()
 
-    # Advance the freshness clock without touching the source file or defeating undo checks.
-
-    future = time.time() + CATALOG_TTL_SECONDS + 60
+    # A year on the check is still current; a refresh asks again and keeps the audio.
+    future = time.time() + 365 * 24 * 3600
     with patch("settag.freshness.time.time", return_value=future):
-        assert scan(path, config).enrichment_status == "needs_enrichment"
-        retry = loader((path,), lambda *_a: None, lambda: False).planned[0]
-        assert retry.enrichment_status == "current"
-        assert retry.desired["SETTAG_PROVENANCE"] == original_tags["SETTAG_PROVENANCE"]
+        assert scan(path, config).enrichment_status == "current"
+    loader.begin_batch(refresh_catalog=True)
+    retry = loader((path,), lambda *_a: None, lambda: False).planned[0]
+    assert retry.enrichment_status == "current"
+    assert retry.desired["SETTAG_PROVENANCE"] == original_tags["SETTAG_PROVENANCE"]
     assert not preflight_undo(writes).blocked
     assert apply_undo(writes) == 1
     assert read_owned_values(path) == original_tags

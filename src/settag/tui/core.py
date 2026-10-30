@@ -104,6 +104,7 @@ CHOOSE_ACTIONS = frozenset(
         "cycle_genre_filter",
         "review",
         "analyze",
+        "refresh_catalog",
         "hygiene",
         "undo",
         "quit",
@@ -339,7 +340,7 @@ class SetTagAppCore(App[TuiOutcome]):
         if (
             self.analysis_running
             and self.phase == "choose"
-            and action in {"toggle_track", "toggle_all", "analyze"}
+            and action in {"toggle_track", "toggle_all", "analyze", "refresh_catalog"}
         ):
             return False
         phase_actions = CHOOSE_ACTIONS if self.phase == "choose" else REVIEW_ACTIONS

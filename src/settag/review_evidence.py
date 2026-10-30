@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime, timezone
 
 from settag.freshness import (
     catalog_current,
@@ -74,7 +75,9 @@ def describe_evidence(plan: PlannedWrite | StoredEvidence) -> EvidenceReview:
         title = "Beatport · unreadable evidence"
         details.append("Stored catalog evidence is unreadable; enrich again.")
     elif check.get("status") == "no_match":
-        title = "Beatport · no verified match" if fresh else "Beatport · previous lookup expired"
+        title = (
+            "Beatport · no verified match" if fresh else "Beatport · previous lookup out of date"
+        )
         details.append("No catalog genre recommendation is available.")
         if catalog:
             details.append(
@@ -107,6 +110,10 @@ def describe_evidence(plan: PlannedWrite | StoredEvidence) -> EvidenceReview:
     else:
         title = "Beatport · not checked"
         details.append("No catalog evidence is available.")
+    if fresh:
+        # Checks never expire, so the date is how a user judges whether to refresh one.
+        checked = datetime.fromtimestamp(check["checked_at"], tz=timezone.utc).astimezone()
+        details.append(f"Checked {checked.day} {checked:%b %Y} · C refreshes it")
 
     suggestion = genre_suggestion(evidence, plan.selected, plan.file_genre)
     if plan.standard_genre_change is not None:

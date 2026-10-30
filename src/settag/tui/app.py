@@ -25,6 +25,7 @@ class SetTagApp(AnalysisFlow, WriteFlow, UndoFlow):
     BINDINGS = [
         Binding("w", "write", "Write"),
         Binding("r", "analyze", "Enrich"),
+        Binding("c", "refresh_catalog", "Refresh Beatport"),
         Binding("space", "toggle_track", "Toggle"),
         Binding("a", "toggle_all", "All/None"),
         Binding("i", "toggle_details", "Details"),

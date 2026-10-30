@@ -311,7 +311,8 @@ observation time, and corresponding catalog evidence even if a plan is never
 saved or is deleted after a write. `enrichment_files` caches audio digests against
 path, size, and mtime; renames and changed files are hashed again. An unchanged
 file's metadata scan reuses its digest. Lookup identity edits cannot reuse an
-old match or miss, and expired checks are refreshed.
+old match or miss. Checks do not expire; a refresh (`C` in the library) replaces
+one, and a refresh that fails keeps it.
 
 Scans import valid legacy `SETTAG_ENRICHMENT` tags whose lookup identity matches
 the file. Existing local observations always take precedence over the legacy

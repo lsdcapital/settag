@@ -269,6 +269,7 @@ def test_tui_reads_metadata_before_loading_model_and_analyzes_only_selection(
                 active.binding.action for active in app.screen.active_bindings.values()
             }
             assert "analyze" in choose_actions
+            assert "refresh_catalog" in choose_actions
             assert "toggle_details" in choose_actions
             assert "review" not in choose_actions
             assert "write" not in choose_actions
@@ -703,7 +704,9 @@ def test_genre_filters_combine_with_library_filters_and_keep_analysis_scoped(
         analysis_loader=lambda *_: pytest.fail("Only scheduling is under test"),
     )
     scheduled: list[tuple[int, ...]] = []
-    monkeypatch.setattr(app, "_analyze_selected", scheduled.append)
+    monkeypatch.setattr(
+        app, "_analyze_selected", lambda indices, _refresh: scheduled.append(indices)
+    )
 
     async def exercise() -> None:
         async with app.run_test(size=(120, 36)) as pilot:
