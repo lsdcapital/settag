@@ -287,7 +287,7 @@ The review keys are:
 | `Enter` | Expand/collapse a branch, or open details for a change |
 | `←` / `→` | Collapse/expand branches or move between parent and child |
 | `W` | Preflight, confirm once, write, and verify completed tracks |
-| `B` | Return to the metadata library to choose another enrichment batch |
+| `B` or `Esc` | Return to the library (Esc stops a running analysis first) |
 | `U` | Undo a previous write |
 | `H` | Switch to the separate metadata-hygiene review |
 | `Q` | Quit |

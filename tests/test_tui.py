@@ -2409,3 +2409,27 @@ def test_nothing_starts_selected_and_r_says_how_to_choose(tmp_path: Path) -> Non
             assert any("Nothing selected" in n.message for n in app._notifications)
 
     asyncio.run(exercise())
+
+
+def test_escape_returns_from_review_to_the_library(tmp_path: Path) -> None:
+    path = tmp_path / "track.wav"
+    _silent_wav(path)
+    app = _AppWithWorkSelected(
+        source=tmp_path,
+        initial_metadata=MetadataBatch((_metadata_track(path),), ()),
+        analysis_loader=lambda paths, _progress, _cancel: _analysis_batch(paths),
+    )
+
+    async def exercise() -> None:
+        async with app.run_test(size=(120, 36)) as pilot:
+            await pilot.pause()
+            await pilot.press("r")
+            await app.workers.wait_for_complete()
+            await pilot.pause()
+            assert app.phase == "review"
+            assert "Esc back to library" in str(app.query_one("#status", Static).render())
+            await pilot.press("escape")
+            await pilot.pause()
+            assert app.phase == "choose"
+
+    asyncio.run(exercise())

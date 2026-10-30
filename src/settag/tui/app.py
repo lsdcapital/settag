@@ -32,6 +32,8 @@ class SetTagApp(AnalysisFlow, WriteFlow, UndoFlow):
         Binding("f", "cycle_filter", "Library filter"),
         Binding("g", "cycle_genre_filter", "Genre filter"),
         Binding("escape", "cancel_analysis", "Cancel"),
+        # Esc stops a running analysis first; otherwise, in review, it goes back.
+        Binding("escape", "library", "Library", show=False),
         Binding("v", "review", "Review"),
         Binding("b", "library", "Library"),
         Binding("e", "edit_genre", "Genre"),

@@ -794,6 +794,7 @@ class SetTagAppCore(App[TuiOutcome]):
                 f"W review write  ·  {selected} will be written"
                 f"  ·  {genre_edits} standard genre edits"
                 "  ·  Space toggles track"
+                "  ·  Esc back to library"
             )
         self.query_one("#status", Static).update(f"{message}  ·  {base}" if message else base)
 
