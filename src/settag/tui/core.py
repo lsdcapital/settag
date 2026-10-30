@@ -38,6 +38,7 @@ from settag.plans import (
 from settag.policy import LibraryCutoffs
 from settag.tasks import AnalysisTask, ordered_tasks
 from settag.tui.entries import (
+    NEXT_STEP_LABELS,
     TASK_LABELS,
     AnalysisLoader,
     AppPhase,
@@ -49,7 +50,7 @@ from settag.tui.entries import (
     TrackEntry,
     TuiOutcome,
 )
-from settag.tui.inspector import display_path, metadata_inspector, review_inspector
+from settag.tui.inspector import MORE_DETAIL, display_path, metadata_inspector, review_inspector
 from settag.tui.review import NodeKey, ReviewTree
 from settag.tui.screens import (
     GenreEditScreen,
@@ -196,6 +197,8 @@ class SetTagAppCore(App[TuiOutcome]):
         self._edit_saver: ThreadPoolExecutor | None = None
         self._table_layout: tuple[tuple[TrackTableColumn, int], ...] = ()
         self._inspector_state: tuple[AppPhase, int, str] | None = None
+        # The last outcome shown, kept while the cursor moves and the Enter hint changes.
+        self._status_message: str | None = None
         self.sub_title = "Reading existing metadata"
 
     # The session owns this state; these names are how widgets, flows, and tests
@@ -643,11 +646,9 @@ class SetTagAppCore(App[TuiOutcome]):
         value = event.row_key.value
         if self.phase == "choose" and value is not None:
             self._update_inspector(int(value))
-
-    @on(DataTable.RowSelected, "#tracks")
-    def row_selected(self) -> None:
-        if self.phase == "choose":
-            self._open_details()
+            if not self.analysis_running:
+                # The status line names what Enter does for this track.
+                self._update_status(self._status_message)
 
     @on(Tree.NodeHighlighted, "#review-tree")
     def review_node_highlighted(self, event: Tree.NodeHighlighted[NodeKey]) -> None:
@@ -680,11 +681,7 @@ class SetTagAppCore(App[TuiOutcome]):
     def _update_inspector(self, index: int) -> None:
         entry = self.entries[index]
         if self.phase == "choose":
-            lines = metadata_inspector(
-                entry,
-                selected_for_enrichment=index in self.analysis_selected,
-                context=self._row_context,
-            )
+            lines = metadata_inspector(entry, context=self._row_context)
         else:
             lines = review_inspector(
                 entry, index, checked=index in self.write_selected, context=self._row_context
@@ -700,7 +697,7 @@ class SetTagAppCore(App[TuiOutcome]):
         if state == self._inspector_state:
             return
         self._inspector_state = state
-        inspector.update(text)
+        inspector.update(_inspector_text(lines) if self.phase == "choose" else text)
         inspector_scroll.scroll_home(animate=False)
 
     def _refresh_row(self, index: int, *, update_inspector: bool = True) -> None:
@@ -735,6 +732,7 @@ class SetTagAppCore(App[TuiOutcome]):
         self._update_status()
 
     def _update_status(self, message: str | None = None) -> None:
+        self._status_message = message
         if self.busy:
             if message is not None:
                 self.query_one("#status", Static).update(message)
@@ -779,9 +777,11 @@ class SetTagAppCore(App[TuiOutcome]):
                 # ui-count: the review selection built up in this session
                 f"  ·  V review {len(self.review_indices)} ready" if self.review_indices else ""
             )
+            index = self._current_index()
+            step = self.entries[index].next_step if index is not None else None
+            enter_hint = f"Enter {NEXT_STEP_LABELS[step]}  ·  " if step is not None else ""
             base = (
-                f"R enrich selected  ·  Enter details  ·  {selected} selected in this view"
-                f"{review_hint}"
+                f"{enter_hint}R enrich selected  ·  {selected} selected in this view{review_hint}"
             )
         else:
             # ui-count: rows checked for writing in the current view
@@ -997,3 +997,13 @@ class SetTagAppCore(App[TuiOutcome]):
             )
             return
         self.exit(TuiOutcome(0, "Opening metadata hygiene.", next_action="hygiene"))
+
+
+def _inspector_text(lines: list[str]) -> Text:
+    """The library panel with its summary leading: track name bold, the evidence dimmed."""
+    styled: list[Text] = []
+    dim = False
+    for number, line in enumerate(lines):
+        dim = dim or line == MORE_DETAIL
+        styled.append(Text(line, style="bold" if number == 0 else "dim" if dim else ""))
+    return Text("\n").join(styled)

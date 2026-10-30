@@ -57,6 +57,16 @@ def genre_outcome(plan: PlannedWrite, *, included: bool = True) -> str:
     return f"Genre: {current} → {end}{suffix}"
 
 
+def catalog_checked_on(evidence: OwnedValues) -> str | None:
+    """The date of the current Beatport check, e.g. "12 Oct 2026", or None."""
+    if not catalog_current(evidence):
+        return None
+    record = enrichment_record(evidence)
+    assert record is not None
+    checked = datetime.fromtimestamp(record["catalog"]["checked_at"], tz=timezone.utc).astimezone()
+    return f"{checked.day} {checked:%b %Y}"
+
+
 def describe_evidence(plan: PlannedWrite | StoredEvidence) -> EvidenceReview:
     evidence = plan.evidence_view
     current = ", ".join(plan.file_genre) or "None"
@@ -110,10 +120,9 @@ def describe_evidence(plan: PlannedWrite | StoredEvidence) -> EvidenceReview:
     else:
         title = "Beatport · not checked"
         details.append("No catalog evidence is available.")
-    if fresh:
+    if checked_on := catalog_checked_on(evidence):
         # Checks never expire, so the date is how a user judges whether to refresh one.
-        checked = datetime.fromtimestamp(check["checked_at"], tz=timezone.utc).astimezone()
-        details.append(f"Checked {checked.day} {checked:%b %Y} · C refreshes it")
+        details.append(f"Checked {checked_on} · C refreshes it")
 
     suggestion = genre_suggestion(evidence, plan.selected, plan.file_genre)
     if plan.standard_genre_change is not None:

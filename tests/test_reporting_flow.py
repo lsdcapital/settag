@@ -113,11 +113,7 @@ def test_background_completion_reports_partial_catalog_results(tmp_path):
             assert app.write_selected == {0}
             assert tuple(item.path for item in app._selected_items()) == (paths[0],)
             assert app.entries[1].plan is not None
-            details = "\n".join(
-                metadata_inspector(
-                    app.entries[1], selected_for_enrichment=False, context=app._row_context
-                )
-            )
+            details = "\n".join(metadata_inspector(app.entries[1], context=app._row_context))
             assert "unavailable" in details
             assert "Audio model" in details
 

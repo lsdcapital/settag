@@ -262,9 +262,7 @@ def test_tui_reads_metadata_before_loading_model_and_analyzes_only_selection(
             assert table.get_row_at(0)[4] == "Never"
             assert table.get_row_at(2)[4] == "Current"
             assert inspector_pane.display is False
-            assert "Viewing evidence does not run enrichment or write tags." in str(
-                inspector.render()
-            )
+            assert "Enter  analyze this track" in str(inspector.render())
             choose_actions = {
                 active.binding.action for active in app.screen.active_bindings.values()
             }
@@ -403,11 +401,11 @@ def test_review_tree_inspects_without_running_work_and_keeps_candidates_read_onl
     async def exercise() -> None:
         async with app.run_test(size=size) as pilot:
             await pilot.pause()
+            # A ready result: Enter opens it in review and runs nothing.
             await pilot.press("enter")
-            assert app.phase == "choose"
-            assert app.has_class("details-open")
+            assert app.phase == "review"
+            assert not app.has_class("details-open")
             assert not app.analysis_running
-            await pilot.press("i", "v")
             tree = app.query_one(ReviewTree)
             track = tree.nodes[(0, "track")]
             assert "Track [Live].wav" in str(track.label)
@@ -1446,7 +1444,7 @@ def test_tui_restores_cached_plan_in_library_and_opens_review_on_request(
             assert "Restored 1 ready-to-review track" in str(status.render())
             assert "Press V to review" in str(status.render())
             assert "Enrichment: Current" in str(inspector.render())
-            assert "Press V to review this saved result." in str(inspector.render())
+            assert "Enter  review the suggestion" in str(inspector.render())
             active_actions = {
                 active.binding.action for active in app.screen.active_bindings.values()
             }
@@ -1969,8 +1967,10 @@ def test_s_saves_the_included_plan_off_the_event_loop(
 
 
 @pytest.mark.parametrize("size", [(120, 36), (80, 24)])
-@pytest.mark.parametrize("phase", ["choose", "review"])
-@pytest.mark.parametrize("opening_key", ["i", "enter"])
+# In the library Enter acts on the track rather than opening Info, so it is not tried there.
+@pytest.mark.parametrize(
+    ("phase", "opening_key"), [("choose", "i"), ("review", "i"), ("review", "enter")]
+)
 def test_opening_info_keeps_arrow_navigation_in_main_view(tmp_path, size, phase, opening_key):
     paths = tuple(tmp_path / name for name in ("first.wav", "second.wav"))
     for path in paths:
@@ -2001,8 +2001,9 @@ def test_opening_info_keeps_arrow_navigation_in_main_view(tmp_path, size, phase,
             await pilot.pause()
             assert app.has_class("details-open")
             assert app.focused is view
-            # Repeated Enter on a details row must not silently transfer focus either.
-            await pilot.press("enter")
+            if phase == "review":
+                # Repeated Enter on a details row must not silently transfer focus either.
+                await pilot.press("enter")
             assert app.focused is view
             if isinstance(view, ReviewTree):
                 before = view.cursor_node
@@ -2302,3 +2303,58 @@ def test_genre_edits_save_in_order_without_blocking_the_ui(tmp_path: Path) -> No
         asyncio.run(exercise())
     finally:
         unlocked.set()
+
+
+def test_enter_analyzes_only_the_highlighted_track_then_opens_its_result(tmp_path: Path) -> None:
+    paths = tuple(tmp_path / name for name in ("a.wav", "b.wav"))
+    for path in paths:
+        _silent_wav(path)
+    analyzed: list[Path] = []
+
+    def loader(batch, _progress, _cancel):
+        analyzed.extend(batch)
+        return _analysis_batch(batch)
+
+    app = SetTagApp(
+        source=tmp_path,
+        initial_metadata=MetadataBatch(tuple(_metadata_track(path) for path in paths), ()),
+        analysis_loader=loader,
+    )
+
+    async def exercise() -> None:
+        async with app.run_test(size=(120, 36)) as pilot:
+            await pilot.pause()
+            assert app.analysis_selected == {0, 1}
+            assert "Enter analyze this track" in str(app.query_one("#status", Static).render())
+            await pilot.press("down", "enter")
+            await app.workers.wait_for_complete()
+            await pilot.pause()
+            assert analyzed == [paths[1]]
+            assert app.phase == "review"
+            assert app.query_one(ReviewTree).current_index == 1
+            # The other track stays selected for the next batch.
+            assert 0 in app.analysis_selected
+
+    asyncio.run(exercise())
+
+
+def test_enter_on_an_up_to_date_track_says_so_and_runs_nothing(tmp_path: Path) -> None:
+    path = tmp_path / "track.wav"
+    _silent_wav(path)
+    metadata = _metadata_track(path, status="current", standard_genre=("House",))
+    app = SetTagApp(
+        source=tmp_path,
+        initial_metadata=MetadataBatch((metadata,), ()),
+        analysis_loader=lambda *_args: pytest.fail("An up-to-date track must not be analyzed"),
+    )
+
+    async def exercise() -> None:
+        async with app.run_test(size=(120, 36)) as pilot:
+            await pilot.pause()
+            assert app.entries[0].next_step is None
+            await pilot.press("enter")
+            await pilot.pause()
+            assert app.phase == "choose"
+            assert any("Up to date" in n.message for n in app._notifications)
+
+    asyncio.run(exercise())

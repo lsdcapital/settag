@@ -237,7 +237,7 @@ The library keys are:
 | `F` | Cycle All, Needs enrichment, Missing genre, and Analysis current views |
 | `G` | Cycle All, Needs review, Missing genre, and Matches genre filters |
 | `V` | Open saved results that are ready to review, when available |
-| `Enter` | Open details for the highlighted track |
+| `Enter` | Take the highlighted track a step on: analyze it, or open its result in review |
 | `R` | Enrich the selected tracks |
 | `C` | Check the selected tracks against Beatport again, reusing current audio |
 | `Esc` | Stop after the track currently being analyzed |

@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from textual import work
-from textual.widgets import ProgressBar, Static
+from textual import on, work
+from textual.widgets import DataTable, ProgressBar, Static
 
 from settag.plans import PlannedWrite, stage_default_file_genre
 from settag.tui.core import SetTagAppCore
@@ -24,17 +24,44 @@ class AnalysisFlow(SetTagAppCore):
         # selected tracks are checked again live, and current audio is still reused.
         self._start_enrichment(refresh_catalog=True)
 
-    def _start_enrichment(self, *, refresh_catalog: bool) -> None:
+    @on(DataTable.RowSelected, "#tracks")
+    def row_selected(self) -> None:
+        """Enter takes the highlighted track one step forward, or says why it cannot."""
+        if self.phase != "choose" or self.busy:
+            return
+        index = self._current_index()
+        if index is None:
+            return
+        entry = self.entries[index]
+        step = entry.next_step
+        if step == "review":
+            self.action_review()
+        elif step == "enrich":
+            if self.analysis_running:
+                self.notify("Enrichment is already running. Esc stops after the current track.")
+                return
+            self._start_enrichment(refresh_catalog=False, indices=(index,))
+        elif entry.metadata_error is not None:
+            self.notify("This file's metadata cannot be read, so it cannot be analyzed.")
+        elif entry.metadata is not None and entry.metadata.is_sample:
+            self.notify("This file is too short to analyze.")
+        else:
+            self.notify("Up to date. To check Beatport again, select it with Space and press C.")
+
+    def _start_enrichment(
+        self, *, refresh_catalog: bool, indices: tuple[int, ...] | None = None
+    ) -> None:
         if self.busy or self.analysis_running:
             return
         if self.phase != "choose":
             self.notify("Press B to choose another enrichment batch.")
             return
-        indices = tuple(
-            index
-            for index in self.visible_indices
-            if (index in self.analysis_selected and self.entries[index].can_analyze)
-        )
+        if indices is None:
+            indices = tuple(
+                index
+                for index in self.visible_indices
+                if (index in self.analysis_selected and self.entries[index].can_analyze)
+            )
         if not indices:
             self.notify(
                 "Select at least one visible, readable track first.",

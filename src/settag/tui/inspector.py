@@ -11,12 +11,42 @@ from pathlib import Path
 
 from settag.freshness import enrichment_record, record_values
 from settag.policy import Prediction
-from settag.review_evidence import StoredEvidence, describe_evidence
+from settag.review_evidence import StoredEvidence, catalog_checked_on, describe_evidence
 from settag.tags import OwnedValues, read_task_provenance, task_evidence_from_owned
 from settag.tasks import AnalysisTask
-from settag.tui.entries import TASK_LABELS, TrackEntry, latest_analyzed_at, suggested_label
+from settag.tui.entries import (
+    NEXT_STEP_LABELS,
+    TASK_LABELS,
+    TrackEntry,
+    latest_analyzed_at,
+    suggested_label,
+)
 from settag.tui.review import review_track
-from settag.tui.table import RowContext, reanalysis_tasks, task_names
+from settag.tui.table import (
+    RowContext,
+    entry_analysis,
+    genre_check,
+    reanalysis_tasks,
+    task_names,
+)
+
+#: The library's status words, as a sentence for someone who has not learned them.
+STATUS_SENTENCES = {
+    "Never": "Not analyzed yet",
+    "Current": "Up to date",
+    "Needs enrichment": "Needs a fresh check",
+    "Partial": "Beatport could not be reached last time",
+    "Ready": "Result ready to review",
+    "Reanalyze": "Out of date",
+    "Incomplete": "Stored results are incomplete",
+    "Analysis error": "The last analysis failed",
+}
+
+#: Separates the library panel's summary from the evidence behind it.
+MORE_DETAIL = "── More detail ──"
+
+#: The intensity head's two labels, in the words the panel uses.
+INTENSITY_WORDS = {"Aggressive": "high", "Not Aggressive": "low"}
 
 
 def display_path(path: Path) -> str:
@@ -28,10 +58,8 @@ def display_path(path: Path) -> str:
     return "~" if relative == Path(".") else str(Path("~") / relative)
 
 
-def metadata_inspector(
-    entry: TrackEntry, *, selected_for_enrichment: bool, context: RowContext
-) -> list[str]:
-    """The Library details panel for one track."""
+def metadata_inspector(entry: TrackEntry, *, context: RowContext) -> list[str]:
+    """The Library details panel for one track: a short summary, then the evidence."""
     identity = ["", entry.path.name, display_path(entry.path.parent)]
     lines: list[str] = []
     if entry.metadata_error is not None:
@@ -79,11 +107,14 @@ def metadata_inspector(
         if partial
         else []
     )
+    lines.extend(_summary(entry, context, genre, evidence_owned))
     lines.extend(
         [
+            "",
+            MORE_DETAIL,
+            "",
             f"Recommendation: {review.recommendation}",
             f"Based on: {review.recommendation_source}",
-            f"Current file tag: {genre}",
             "",
             review.catalog_title,
             *(f"  {detail}" for detail in review.catalog_details),
@@ -119,17 +150,63 @@ def metadata_inspector(
                 else []
             ),
             *_audio_failure_lines(entry),
-            (
-                "Selected for enrichment."
-                if selected_for_enrichment
-                else "Not selected for enrichment."
-            ),
-            *(["Press V to review this saved result."] if entry.plan is not None else []),
-            "Viewing evidence does not run enrichment or write tags.",
-            *identity,
+            display_path(entry.path.parent),
         ]
     )
     return lines
+
+
+def _summary(entry: TrackEntry, context: RowContext, genre: str, owned: OwnedValues) -> list[str]:
+    """What SetTag thinks of the track, its state, and what Enter does next."""
+    check = genre_check(entry, context)
+    if check.suggested_genre is None:
+        # Before analysis the status line already says so; after it, say nothing stood out.
+        none = ["No genre suggestion"] if check.summary == "No suggestion" else []
+        headline = [*none, f"Your tag: {genre}"]
+    else:
+        source = "audio model" if check.model_genre is not None else "Beatport"
+        headline = (
+            [f"Genre: {check.suggested_genre} · your tag matches ({source})"]
+            if check.relation == "match"
+            else [f"Suggested genre: {check.suggested_genre} ({source})", f"Your tag: {genre}"]
+        )
+
+    labels: list[str] = []
+    evidence_by_task = task_evidence_from_owned(owned)
+    for task in context.tasks:
+        if task == "genre":
+            continue
+        chosen = context.select_for_review(evidence_by_task.get(task, ()), task)
+        if task == "mood-aggressive":
+            words = [INTENSITY_WORDS.get(chosen[0].label, chosen[0].label)] if chosen else []
+        else:
+            words = [suggested_label((p,)) or p.label for p in chosen[:3]]
+        if words:
+            labels.append(f"{TASK_LABELS[task]}: {' · '.join(words)}")
+
+    status = entry_analysis(entry, context)
+    word, _, detail = status.partition(" · ")
+    if word == "Reanalyze" and detail:
+        sentence = f"{detail} out of date"
+    elif word == "Sample":
+        sentence = "Too short to analyze"
+    elif word == "Keeps failing":
+        sentence = f"Analysis keeps failing ({detail})"
+    else:
+        sentence = STATUS_SENTENCES.get(status, status)
+    if checked_on := catalog_checked_on(owned):
+        sentence += f" · Beatport checked {checked_on}"
+
+    step = entry.next_step
+    return [
+        entry.path.name,
+        "",
+        *headline,
+        *labels,
+        "",
+        sentence,
+        *([f"Enter  {NEXT_STEP_LABELS[step]}"] if step is not None else []),
+    ]
 
 
 def _audio_failure_lines(entry: TrackEntry) -> list[str]:

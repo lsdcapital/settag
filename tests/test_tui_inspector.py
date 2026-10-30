@@ -8,25 +8,27 @@ from test_tui import _analysis_batch, _metadata_track, _silent_wav
 from settag.policy import Prediction, library_cutoffs
 from settag.state import AudioFailure
 from settag.tui.entries import TrackEntry
-from settag.tui.inspector import display_path, metadata_inspector, review_inspector
+from settag.tui.inspector import MORE_DETAIL, display_path, metadata_inspector, review_inspector
 from settag.tui.table import RowContext, entry_analysis
 from settag.workflow import AnalysisFailure
 
 CONTEXT = RowContext(tasks=("genre",), review_top=5, score_cutoff=0.10)
 
 
-def test_library_details_say_whether_the_track_is_selected(tmp_path: Path) -> None:
+def test_library_details_open_with_a_summary_and_the_next_step(tmp_path: Path) -> None:
     path = tmp_path / "track.wav"
     _silent_wav(path)
     entry = TrackEntry(path=path, metadata=_metadata_track(path))
 
-    selected = metadata_inspector(entry, selected_for_enrichment=True, context=CONTEXT)
-    unselected = metadata_inspector(entry, selected_for_enrichment=False, context=CONTEXT)
+    lines = metadata_inspector(entry, context=CONTEXT)
 
-    assert "Selected for enrichment." in selected
-    assert "Not selected for enrichment." in unselected
-    assert "Candidates · cutoff ≥ 0.10 · top 5" in selected
-    assert path.name in selected
+    detail = lines.index(MORE_DETAIL)
+    summary = lines[:detail]
+    assert summary[0] == path.name
+    assert "Not analyzed yet" in summary
+    assert "Enter  analyze this track" in summary
+    assert "Candidates · cutoff ≥ 0.10 · top 5" in lines[detail:]
+    assert display_path(path.parent) == lines[-1]
 
 
 def test_review_details_offer_to_dismiss_a_failed_track(tmp_path: Path) -> None:
@@ -64,7 +66,7 @@ def test_library_details_explain_a_file_that_keeps_failing(tmp_path: Path) -> No
     failure = AudioFailure("DecodeError: corrupt frame", 3, "2026-10-27T10:00:00Z")
     entry = TrackEntry(path=path, metadata=replace(_metadata_track(path), audio_failure=failure))
 
-    lines = metadata_inspector(entry, selected_for_enrichment=False, context=CONTEXT)
+    lines = metadata_inspector(entry, context=CONTEXT)
 
     assert "Audio analysis failed the last 3 times" in lines
     assert "  DecodeError: corrupt frame" in lines
@@ -104,6 +106,6 @@ def test_library_details_say_the_cutoff_is_genre_only_once_moods_rank(tmp_path: 
     )
     entry = TrackEntry(path=path, metadata=_metadata_track(path))
 
-    lines = metadata_inspector(entry, selected_for_enrichment=True, context=context)
+    lines = metadata_inspector(entry, context=context)
 
     assert "Candidates · genre cutoff ≥ 0.10 · top 5" in lines

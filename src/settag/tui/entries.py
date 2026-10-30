@@ -36,6 +36,14 @@ PlanDiscarder = Callable[[Sequence[Path]], None]
 
 AppPhase = Literal["choose", "review"]
 
+NextStep = Literal["review", "enrich"]
+
+#: What Enter does on a library row, shown in the details panel and the status line.
+NEXT_STEP_LABELS: dict[NextStep, str] = {
+    "review": "review the suggestion",
+    "enrich": "analyze this track",
+}
+
 LibraryFilter = Literal["all", "needs_analysis", "missing_genre", "current"]
 GenreFilter = Literal["all", "needs_review", "missing_genre", "matches"]
 
@@ -97,6 +105,19 @@ class TrackEntry:
         if self.plan is not None:
             return self.plan.enrichment_status != "current"
         return self.metadata is not None and self.can_analyze and self.metadata.needs_analysis
+
+    @property
+    def next_step(self) -> NextStep | None:
+        """What Enter does on this row: the one action that moves the track forward."""
+        if self.plan is not None and self.needs_write_review:
+            return "review"
+        if self.can_analyze and (
+            self.analysis_error is not None or self.needs_analysis or self.audio_keeps_failing
+        ):
+            return "enrich"
+        if self.plan is not None:
+            return "review"
+        return None
 
     @property
     def has_changes(self) -> bool:
