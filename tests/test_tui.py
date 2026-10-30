@@ -983,7 +983,8 @@ def test_completed_tracks_can_be_reviewed_and_written_during_analysis(
                     active.binding.action for active in app.screen.active_bindings.values()
                 }
                 assert "write" in active_actions
-                assert "cancel_analysis" in active_actions
+                # In review Esc goes back; the analysis is stopped from the library.
+                assert "cancel_analysis" not in active_actions
 
                 await pilot.press("w")
                 for _ in range(20):
@@ -2429,6 +2430,52 @@ def test_escape_returns_from_review_to_the_library(tmp_path: Path) -> None:
             assert app.phase == "review"
             assert "Esc back to library" in str(app.query_one("#status", Static).render())
             await pilot.press("escape")
+            await pilot.pause()
+            assert app.phase == "choose"
+
+    asyncio.run(exercise())
+
+
+def test_escape_in_review_goes_back_while_analysis_runs(tmp_path: Path) -> None:
+    paths = [tmp_path / f"track-{number}.wav" for number in range(4)]
+    for path in paths:
+        _silent_wav(path)
+    started = Event()
+    release = Event()
+
+    def loader(batch_paths, _progress, _cancel):
+        if batch_paths[0] != paths[0]:
+            started.set()
+            release.wait(5)
+        return _analysis_batch(batch_paths)
+
+    app = _AppWithWorkSelected(
+        source=tmp_path,
+        initial_metadata=MetadataBatch(tuple(_metadata_track(path) for path in paths), ()),
+        analysis_loader=loader,
+    )
+
+    async def exercise() -> None:
+        async with app.run_test(size=(120, 36)) as pilot:
+            await pilot.pause()
+            await pilot.press("r")
+            await asyncio.to_thread(started.wait, 5)
+            await pilot.pause()
+            await pilot.press("v")
+            await pilot.pause()
+            assert app.phase == "review"
+            await pilot.press("escape")
+            await pilot.pause()
+            # Esc went back rather than stopping the analysis.
+            assert app.phase == "choose"
+            assert app.analysis_running
+            assert not app._analysis_cancel_requested.is_set()
+            # Back in the library, Esc stops it, and the user is left where they are.
+            await pilot.press("escape")
+            await pilot.pause()
+            assert app._analysis_cancel_requested.is_set()
+            release.set()
+            await app.workers.wait_for_complete()
             await pilot.pause()
             assert app.phase == "choose"
 

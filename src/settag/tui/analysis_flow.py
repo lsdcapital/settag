@@ -316,7 +316,9 @@ class AnalysisFlow(SetTagAppCore):
 
         if cancelled and remaining > 0:
             if completed:
-                self._show_review()
+                # Someone who went back to the library meanwhile stays there.
+                if not self._analysis_navigation_changed:
+                    self._show_review()
                 self._update_status(
                     f"Cancelled after {completed} of {total} tracks; {remaining} remain selected"
                 )

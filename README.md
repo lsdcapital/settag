@@ -241,7 +241,7 @@ The library keys are:
 | `Enter` | Open the highlighted track's result in review, or offer to analyze just that track |
 | `R` | Analyze the selected tracks: audio where needed, and a Beatport check |
 | `C` | Check the selected tracks against Beatport again, reusing current audio |
-| `Esc` | Stop after the track currently being analyzed |
+| `Esc` | Stop after the track currently being analyzed (in review, Esc goes back instead) |
 | `U` | Undo a previous write |
 | `H` | Switch to the separate metadata-hygiene review |
 | `Q` | Quit |
@@ -287,7 +287,7 @@ The review keys are:
 | `Enter` | Expand/collapse a branch, or open details for a change |
 | `←` / `→` | Collapse/expand branches or move between parent and child |
 | `W` | Preflight, confirm once, write, and verify completed tracks |
-| `B` or `Esc` | Return to the library (Esc stops a running analysis first) |
+| `B` or `Esc` | Return to the library, even while an analysis runs |
 | `U` | Undo a previous write |
 | `H` | Switch to the separate metadata-hygiene review |
 | `Q` | Quit |

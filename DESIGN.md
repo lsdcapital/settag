@@ -259,7 +259,7 @@ The footer changes with the current phase:
 ```text
 Choose: Space toggle · I details · A all/none · F filter · V review (when ready) · Enter details · R analyze · Q quit
 Analyzing in Library: I details · F filter · V review completed · Esc stop after current
-Analyzing in Review: Space toggle · A all/none · I details · E genre · S save · W write completed · Esc stop after current
+Analyzing in Review: Space toggle · A all/none · I details · E genre · S save · W write completed · Esc back to library
 Review: Space toggle · A all/none · I details · E genre · S save · Enter expand/details · W write
 ```
 

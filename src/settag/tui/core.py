@@ -335,7 +335,8 @@ class SetTagAppCore(App[TuiOutcome]):
     ) -> bool | None:
         del parameters
         if action == "cancel_analysis":
-            if not self.analysis_running:
+            # In review, Esc goes back to the library; the analysis is stopped from there.
+            if not self.analysis_running or self.phase == "review":
                 return False
             return None if self._analysis_cancel_requested.is_set() else True
         if action == "review":
@@ -765,7 +766,7 @@ class SetTagAppCore(App[TuiOutcome]):
                     f"  ·  {selected} completed track"
                     f"{'s' if selected != 1 else ''} ready to write"
                     "  ·  W review completed writes"
-                    "  ·  Esc stop after current"
+                    "  ·  Esc back to library"
                 )
             self.query_one("#status", Static).update(f"{message}  ·  {base}" if message else base)
             return
