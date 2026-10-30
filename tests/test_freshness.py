@@ -53,7 +53,7 @@ def test_catalog_checks_never_expire_but_future_dates_are_refused(age, expected)
     )
 
 
-@pytest.mark.parametrize("checked", [None, True, "today", float("nan"), float("inf")])
+@pytest.mark.parametrize("checked", [None, True, "today", float("nan"), float("inf"), -1, -1e20])
 def test_invalid_dates_are_not_current(checked):
     assert not catalog_current(record(checked_at=checked), now=NOW)
 

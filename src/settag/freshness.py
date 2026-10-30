@@ -108,13 +108,14 @@ def catalog_current(
     if catalog["status"] == "matched" and catalog_evidence(owned) is None:
         return False
     # A check does not expire: it stays current until the user asks for a refresh.
-    # A date in the future is still refused, since nothing could have observed it.
+    # Dates before the epoch or in the future are refused, since nothing could have
+    # observed them, and Details can then always format the date it shows.
     checked = catalog.get("checked_at")
     return (
         isinstance(checked, (int, float))
         and not isinstance(checked, bool)
         and math.isfinite(checked)
-        and checked <= (time.time() if now is None else now)
+        and 0 <= checked <= (time.time() if now is None else now)
     )
 
 
