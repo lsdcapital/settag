@@ -190,11 +190,12 @@ open, the library looks like this:
  Audio last analyzed: 2026-07-26T17:52:49Z
 ```
 
-SetTag first scans existing metadata only. Tracks with no analysis, incomplete
-metadata for any configured task, or a changed task model/config are selected
-by default, along with tracks missing Beatport evidence. Fully enriched tracks remain visible but unselected. The active task
-families are shown in the library context line. Adjust the selection, then
-press `R` to enrich the selected tracks with Beatport metadata and any needed audio analysis
+SetTag first scans existing metadata only. Nothing starts selected, so no work
+runs until you choose it: `Space` selects a track, `A` every track in the view,
+and `F` narrows the view to tracks that need enrichment (no analysis, incomplete
+metadata for a configured task, a changed task model/config, or missing Beatport
+evidence). The active task families are shown in the library context line.
+Select tracks, then press `R` to enrich the selected tracks with Beatport metadata and any needed audio analysis
 visible in the current filter. Selections in other filtered views are not
 included.
 
@@ -815,8 +816,8 @@ failures are shown in review while useful results from other sources are retaine
 
 Audio analysis failures are remembered in the local metadata database, including
 an analyzer crash, which is pinned to the file it was reading. A file whose audio
-has failed the last two times shows **Keeps failing** in the library and is left out
-of the default selection; select it to try again. Plain `--no-tui` runs skip such
+has failed the last two times shows **Keeps failing** in the library; select it,
+or press `Enter` on it, to try again. Plain `--no-tui` runs skip such
 files' audio analysis (the catalog check still runs) unless `--retry-failed` is
 given. Editing the file, or changing SetTag, its models, or the evidence settings,
 gives it a fresh try. A missing model or a quit is not counted against any file.

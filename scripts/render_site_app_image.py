@@ -151,7 +151,7 @@ async def _capture(
     )
     async with app.run_test(size=size) as pilot:
         await pilot.pause()
-        await pilot.press("r")
+        await pilot.press("a", "r")
         for _ in range(120):
             await pilot.pause(0.05)
             if app.phase == "review" and not app.analysis_running:

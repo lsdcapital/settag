@@ -51,11 +51,9 @@ class ReviewSession:
     def load(self, entries: Iterable[TrackEntry]) -> None:
         """Start from freshly read metadata and any plans restored from the workbench."""
         self.entries = sorted(entries, key=lambda entry: str(entry.path))
-        self.analysis_selected = {
-            index
-            for index, entry in enumerate(self.entries)
-            if entry.can_analyze and entry.needs_analysis
-        }
+        # Nothing starts selected: work runs only on tracks the user picked, so a stray
+        # R cannot analyze a whole library.
+        self.analysis_selected = set()
         self.review_indices = {
             index for index, entry in enumerate(self.entries) if entry.plan is not None
         }

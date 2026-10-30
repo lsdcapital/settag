@@ -28,6 +28,8 @@ def _session(tmp_path: Path, names: tuple[str, ...] = ("a", "b", "c")) -> Review
         entries.append(TrackEntry(path=path, metadata=_metadata_track(path)))
     # Loaded out of order on purpose: the session sorts by path.
     session.load(reversed(entries))
+    # Nothing starts selected; these tests begin after the user pressed A.
+    session.toggle_all_analysis(range(len(session.entries)))
     return session
 
 
@@ -35,7 +37,7 @@ def _plan(session: ReviewSession, index: int):
     return _analysis_batch((session.entries[index].path,)).planned[0]
 
 
-def test_loading_selects_what_needs_enrichment_and_restores_ready_plans(tmp_path: Path) -> None:
+def test_loading_selects_nothing_and_restores_ready_plans(tmp_path: Path) -> None:
     session = ReviewSession(("genre",))
     ready = tmp_path / "a.wav"
     fresh = tmp_path / "b.wav"
@@ -51,7 +53,7 @@ def test_loading_selects_what_needs_enrichment_and_restores_ready_plans(tmp_path
     )
 
     assert [entry.path for entry in session.entries] == [ready, fresh]
-    assert session.analysis_selected == {1}
+    assert session.analysis_selected == set()
     assert session.review_indices == {0}
     assert session.write_selected == {0}
 
@@ -207,7 +209,7 @@ def test_a_file_that_keeps_failing_is_left_out_but_can_be_retried(tmp_path: Path
         ]
     )
 
-    assert session.analysis_selected == {1}
+    assert session.analysis_selected == set()
     assert session.entries[0].can_analyze
 
     session.toggle_analysis(0)

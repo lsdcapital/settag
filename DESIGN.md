@@ -177,7 +177,8 @@ The app has two explicit phases:
 
 The choose phase classifies each track as `Never analyzed`, `Analysis current`,
 `Reanalyze (model/config changed)`, or `Incomplete metadata`. Tracks needing
-analysis are preselected. Up-to-date tracks stay visible and unselected. The
+analysis are not preselected: nothing is, so work runs only on tracks the user
+chose and a stray `R` cannot analyze a whole library. The
 library can be filtered to all tracks, tracks needing analysis, tracks missing
 a conventional genre, or up-to-date tracks. Analysis consumes the intersection
 of the current filtered view and its selected tracks; hidden selections are
@@ -452,8 +453,8 @@ including one that takes SetTag down, to the file being read. Only failures that
 belong to the file count: an error reported for it, or the analyzer dying while
 reading it. Run-wide errors (a missing model, a worker that will not start, a
 worker stopped by quitting) restore the previous record. After two consecutive
-failures the scan leaves the track out of the default selection, like a sample,
-but it stays selectable; selecting it is the request to retry. Unattended runs
+failures the library marks the track **Keeps failing**, but it stays selectable;
+selecting it is the request to retry. Unattended runs
 skip its audio analysis unless `--retry-failed` is given. Bookkeeping is
 failure-absorbing and never fails the track it describes.
 

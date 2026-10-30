@@ -71,7 +71,8 @@ class AnalysisFlow(SetTagAppCore):
             )
         if not indices:
             self.notify(
-                "Select at least one visible, readable track first.",
+                "Nothing selected. Space selects a track, A every track in this view; "
+                "F shows only tracks that need it.",
                 severity="warning",
             )
             return

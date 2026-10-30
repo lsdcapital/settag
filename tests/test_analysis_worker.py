@@ -7,6 +7,7 @@ from threading import Event, Thread
 from types import SimpleNamespace
 
 import pytest
+from test_tui import _AppWithWorkSelected
 from textual.widgets import Static
 
 from settag.analysis_worker import (
@@ -20,7 +21,6 @@ from settag.analysis_worker import (
 )
 from settag.policy import Prediction
 from settag.tags import OWNED_DESCRIPTIONS, GenreState
-from settag.tui import SetTagApp
 from settag.workflow import MetadataBatch, MetadataTrack
 
 
@@ -179,7 +179,7 @@ def test_tui_remains_responsive_during_gil_holding_analysis(
         poll_interval=0.01,
     )
     loader.start()
-    app = SetTagApp(
+    app = _AppWithWorkSelected(
         source=path,
         initial_metadata=MetadataBatch(
             tracks=(_metadata_track(path),),

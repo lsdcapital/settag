@@ -220,10 +220,7 @@ def _audio_failure_lines(entry: TrackEntry) -> list[str]:
         f"Audio analysis failed the last {failure.attempts} times",
         f"  {failure.error}",
         # One line: the panel wraps it, and a hand-broken line wraps again mid-phrase.
-        (
-            f"  Last tried {failure.failed_at[:10]}. Left out of the default selection; "
-            "select it to try again."
-        ),
+        (f"  Last tried {failure.failed_at[:10]}. Select it, or press Enter, to try again."),
         "",
     ]
 

@@ -7,6 +7,7 @@ import pytest
 from mutagen.id3 import TIT2
 from test_enrichment import RELEASE, Provider, audio_file
 from test_freshness import model_result, scan
+from test_tui import _AppWithWorkSelected
 from textual.widgets import Static
 
 from settag.enrichment import EnrichmentLoader
@@ -92,7 +93,7 @@ def test_background_completion_reports_partial_catalog_results(tmp_path):
         expected_model_ids={"genre": "test-model"},
         expected_config=config,
     )
-    app = SetTagApp(
+    app = _AppWithWorkSelected(
         source=tmp_path,
         initial_metadata=MetadataBatch(tuple(metadata), ()),
         analysis_loader=loader,

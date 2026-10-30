@@ -11,6 +11,7 @@ from types import SimpleNamespace
 import pytest
 from mutagen.id3 import ID3, TCON, TIT2, TPE1
 from mutagen.wave import WAVE
+from test_tui import _AppWithWorkSelected
 from textual.widgets import Static
 
 from settag.beatport import Candidate, LookupStopped, TrackIdentity, TrackLookupFailed
@@ -20,7 +21,6 @@ from settag.enrichment import EnrichmentLoader, enrichment_plan, genre_evidence,
 from settag.plans import load_plan, planned_write_record
 from settag.state import WorkbenchStore, audio_setup_sha256
 from settag.tags import owned_tag_store, read_genre_state, read_owned_values
-from settag.tui import SetTagApp
 from settag.workflow import (
     AnalysisBatch,
     AnalysisFailure,
@@ -279,7 +279,7 @@ def test_tui_one_action_reviews_catalog_when_audio_unavailable(tmp_path, size):
     def unavailable(*_args):
         raise RuntimeError("Model not installed")
 
-    app = SetTagApp(
+    app = _AppWithWorkSelected(
         source=path,
         initial_metadata=MetadataBatch(
             (

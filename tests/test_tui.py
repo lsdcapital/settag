@@ -86,6 +86,23 @@ class FakeTaskAnalyzer:
         }
 
 
+class _AppWithWorkSelected(SetTagApp):
+    """The app once the user has selected every track that needs work.
+
+    Nothing starts selected. Most flows under test begin after that selection, so
+    this makes it the way a user would: by choosing the tracks, not by a default.
+    """
+
+    def _show_metadata(self, metadata: MetadataBatch) -> None:
+        super()._show_metadata(metadata)
+        self.analysis_selected = {
+            index
+            for index, entry in enumerate(self.entries)
+            if entry.can_analyze and entry.needs_analysis
+        }
+        self._rebuild_table(preserve_view=True)
+
+
 def _silent_wav(path: Path, *, seconds: float = 35.0) -> None:
     """Write a silent WAV.
 
@@ -237,7 +254,7 @@ def test_tui_reads_metadata_before_loading_model_and_analyzes_only_selection(
         analysis_calls.append(tuple(paths))
         return _analysis_batch(paths)
 
-    app = SetTagApp(
+    app = _AppWithWorkSelected(
         source=tmp_path,
         metadata_loader=load_metadata,
         analysis_loader=load_analysis,
@@ -340,7 +357,7 @@ def test_tui_hands_off_to_the_separate_hygiene_step(tmp_path: Path) -> None:
 def test_tui_analyzes_and_reviews_all_configured_tasks(tmp_path: Path) -> None:
     path = tmp_path / "track.wav"
     _silent_wav(path)
-    app = SetTagApp(
+    app = _AppWithWorkSelected(
         source=path,
         initial_metadata=MetadataBatch(
             tracks=(_metadata_track(path),),
@@ -581,7 +598,7 @@ def test_tui_details_scroll_and_return_focus_to_review_tree(tmp_path: Path) -> N
     second = tmp_path / "second.wav"
     for path in (first, second):
         _silent_wav(path)
-    app = SetTagApp(
+    app = _AppWithWorkSelected(
         source=tmp_path,
         initial_metadata=MetadataBatch(
             tracks=(_metadata_track(first), _metadata_track(second)),
@@ -647,7 +664,7 @@ def test_a_toggles_all_visible_tracks_and_n_is_unbound(tmp_path: Path) -> None:
     second = tmp_path / "second.wav"
     for path in (first, second):
         _silent_wav(path)
-    app = SetTagApp(
+    app = _AppWithWorkSelected(
         source=tmp_path,
         initial_metadata=MetadataBatch(
             tracks=(
@@ -696,7 +713,7 @@ def test_genre_filters_combine_with_library_filters_and_keep_analysis_scoped(
         )
         for index, genre in enumerate(genres)
     )
-    app = SetTagApp(
+    app = _AppWithWorkSelected(
         source=tmp_path,
         initial_metadata=MetadataBatch(metadata, ()),
         analysis_loader=lambda *_: pytest.fail("Only scheduling is under test"),
@@ -780,7 +797,7 @@ def test_escape_cancels_after_current_track_and_keeps_remaining_selected(
             should_cancel=should_cancel,
         )
 
-    app = SetTagApp(
+    app = _AppWithWorkSelected(
         source=tmp_path,
         initial_metadata=MetadataBatch(
             tracks=(
@@ -860,7 +877,7 @@ def test_analysis_progress_advances_to_the_next_filename(tmp_path: Path) -> None
         on_progress(1, 1, paths[0])
         return _analysis_batch(paths)
 
-    app = SetTagApp(
+    app = _AppWithWorkSelected(
         source=tmp_path,
         initial_metadata=MetadataBatch(
             tracks=(
@@ -923,7 +940,7 @@ def test_completed_tracks_can_be_reviewed_and_written_during_analysis(
                 raise RuntimeError("test analysis was not released")
         return _analysis_batch(paths)
 
-    app = SetTagApp(
+    app = _AppWithWorkSelected(
         source=tmp_path,
         initial_metadata=MetadataBatch(
             tracks=(
@@ -1036,7 +1053,7 @@ def test_tui_leaves_empty_genre_unchanged_without_review_candidate(
 ) -> None:
     path = tmp_path / "track.wav"
     _silent_wav(path)
-    app = SetTagApp(
+    app = _AppWithWorkSelected(
         source=path,
         initial_metadata=MetadataBatch(
             tracks=(_metadata_track(path),),
@@ -1078,7 +1095,7 @@ def test_tui_defaults_empty_genre_to_suggestion_and_allows_opt_out(
     path = tmp_path / "track.wav"
     _silent_wav(path)
     persisted = []
-    app = SetTagApp(
+    app = _AppWithWorkSelected(
         source=path,
         initial_metadata=MetadataBatch(
             tracks=(_metadata_track(path),),
@@ -1155,7 +1172,7 @@ def test_tui_requires_genre_screen_before_replacing_an_existing_standard_genre(
     assert isinstance(audio.tags, ID3)
     audio.tags.add(TCON(encoding=3, text=["201705"]))
     audio.save()
-    app = SetTagApp(
+    app = _AppWithWorkSelected(
         source=path,
         initial_metadata=MetadataBatch(
             tracks=(_metadata_track(path, standard_genre=("201705",)),),
@@ -1234,7 +1251,7 @@ def test_tui_write_confirmation_keeps_ledger_and_actions_visible_in_narrow_termi
 ) -> None:
     path = tmp_path / "a-long-track-name-for-the-write-confirmation.wav"
     _silent_wav(path)
-    app = SetTagApp(
+    app = _AppWithWorkSelected(
         source=path,
         initial_metadata=MetadataBatch(
             tracks=(_metadata_track(path),),
@@ -1471,7 +1488,7 @@ def test_tui_requires_confirmation_then_writes_and_verifies(tmp_path: Path) -> N
     path = tmp_path / "track.wav"
     _silent_wav(path)
     discarded: list[tuple[Path, ...]] = []
-    app = SetTagApp(
+    app = _AppWithWorkSelected(
         source=path,
         initial_metadata=MetadataBatch(
             tracks=(_metadata_track(path),),
@@ -1551,7 +1568,7 @@ def test_tui_write_is_journaled_and_can_be_undone_in_app(tmp_path: Path) -> None
     _silent_wav(path)
     journal = WriteJournal(tmp_path / "journal.sqlite3")
     discarded: list[tuple[Path, ...]] = []
-    app = SetTagApp(
+    app = _AppWithWorkSelected(
         source=path,
         initial_metadata=MetadataBatch(
             tracks=(_metadata_track(path),),
@@ -1712,7 +1729,7 @@ def test_completing_a_track_does_not_move_a_scrolled_library(tmp_path: Path) -> 
         on_progress(1, 1, analyzed[0])
         return _analysis_batch(analyzed)
 
-    app = SetTagApp(
+    app = _AppWithWorkSelected(
         source=tmp_path,
         initial_metadata=MetadataBatch(
             tracks=tuple(_metadata_track(path) for path in paths),
@@ -1776,7 +1793,7 @@ def test_a_sample_is_shown_as_such_and_never_selected_for_analysis(
         analyzed.append(tuple(paths))
         return _analysis_batch(paths)
 
-    app = SetTagApp(
+    app = _AppWithWorkSelected(
         source=tmp_path,
         initial_metadata=MetadataBatch(
             tracks=(
@@ -1826,7 +1843,7 @@ def test_tui_partial_undo_leaves_the_batch_open(tmp_path: Path) -> None:
     _silent_wav(first)
     _silent_wav(second)
     journal = WriteJournal(tmp_path / "journal.sqlite3")
-    app = SetTagApp(
+    app = _AppWithWorkSelected(
         source=tmp_path,
         initial_metadata=MetadataBatch(
             tracks=(_metadata_track(first), _metadata_track(second)),
@@ -1903,7 +1920,7 @@ def test_a_workbench_failure_keeps_the_result_and_warns(
     def refuse(plan: PlannedWrite) -> None:
         raise RuntimeError("workbench is locked")
 
-    app = SetTagApp(
+    app = _AppWithWorkSelected(
         source=path,
         initial_metadata=MetadataBatch(tracks=(_metadata_track(path),), failures=()),
         analysis_loader=lambda paths, _progress, _cancel: _analysis_batch(paths),
@@ -1936,7 +1953,7 @@ def test_s_saves_the_included_plan_off_the_event_loop(
     path = tmp_path / "track.wav"
     _silent_wav(path)
     monkeypatch.chdir(tmp_path)
-    app = SetTagApp(
+    app = _AppWithWorkSelected(
         source=path,
         initial_metadata=MetadataBatch(tracks=(_metadata_track(path),), failures=()),
         analysis_loader=lambda paths, _progress, _cancel: _analysis_batch(paths),
@@ -2037,7 +2054,7 @@ def test_a_second_q_quits_while_analysis_is_stuck_on_a_track(tmp_path: Path) -> 
         release.wait(10)
         return AnalysisBatch(planned=(), failures=(), cancelled=True)
 
-    app = SetTagApp(
+    app = _AppWithWorkSelected(
         source=path,
         initial_metadata=MetadataBatch(tracks=(_metadata_track(path),), failures=()),
         analysis_loader=hanging_analysis,
@@ -2072,7 +2089,7 @@ def test_an_uncaught_worker_error_still_lets_the_user_quit(
 ) -> None:
     path = tmp_path / "track.wav"
     _silent_wav(path)
-    app = SetTagApp(
+    app = _AppWithWorkSelected(
         source=path,
         initial_metadata=MetadataBatch(tracks=(_metadata_track(path),), failures=()),
         analysis_loader=lambda paths, _progress, _cancel: _analysis_batch(paths),
@@ -2129,7 +2146,7 @@ def test_a_track_being_re_enriched_cannot_be_edited_or_written_on_its_old_plan(
         release.wait(10)
         return _analysis_batch(paths)
 
-    app = SetTagApp(
+    app = _AppWithWorkSelected(
         source=tmp_path,
         initial_metadata=MetadataBatch(tracks=(metadata,), failures=()),
         analysis_loader=slow_analysis,
@@ -2184,7 +2201,7 @@ def test_dismissing_a_failed_track_unblocks_writing_the_rest(tmp_path: Path) -> 
             )
         return _analysis_batch(paths)
 
-    app = SetTagApp(
+    app = _AppWithWorkSelected(
         source=tmp_path,
         initial_metadata=MetadataBatch(
             tracks=(_metadata_track(good), _metadata_track(bad)), failures=()
@@ -2227,7 +2244,7 @@ def test_returning_to_the_library_keeps_unchecked_tracks_unchecked(tmp_path: Pat
     paths = [tmp_path / f"{name}.wav" for name in ("a", "b", "c")]
     for path in paths:
         _silent_wav(path)
-    app = SetTagApp(
+    app = _AppWithWorkSelected(
         source=tmp_path,
         initial_metadata=MetadataBatch(
             tracks=tuple(_metadata_track(path) for path in paths), failures=()
@@ -2324,7 +2341,9 @@ def test_enter_asks_then_analyzes_only_the_highlighted_track(tmp_path: Path) -> 
     async def exercise() -> None:
         async with app.run_test(size=(120, 36)) as pilot:
             await pilot.pause()
-            assert app.analysis_selected == {0, 1}
+            assert app.analysis_selected == set()
+            await pilot.press("space")
+            assert app.analysis_selected == {0}
             assert "Enter analyze this track" in str(app.query_one("#status", Static).render())
             await pilot.press("down", "enter")
             await pilot.pause()
@@ -2366,5 +2385,27 @@ def test_enter_on_an_up_to_date_track_says_so_and_runs_nothing(tmp_path: Path) -
             await pilot.pause()
             assert app.phase == "choose"
             assert any("Up to date" in n.message for n in app._notifications)
+
+    asyncio.run(exercise())
+
+
+def test_nothing_starts_selected_and_r_says_how_to_choose(tmp_path: Path) -> None:
+    path = tmp_path / "track.wav"
+    _silent_wav(path)
+    app = SetTagApp(
+        source=tmp_path,
+        initial_metadata=MetadataBatch((_metadata_track(path),), ()),
+        analysis_loader=lambda *_args: pytest.fail("Nothing was selected, so nothing runs"),
+    )
+
+    async def exercise() -> None:
+        async with app.run_test(size=(120, 36)) as pilot:
+            await pilot.pause()
+            assert app.entries[0].needs_analysis
+            assert app.analysis_selected == set()
+            await pilot.press("r")
+            await pilot.pause()
+            assert not app.analysis_running
+            assert any("Nothing selected" in n.message for n in app._notifications)
 
     asyncio.run(exercise())
