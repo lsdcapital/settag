@@ -203,7 +203,7 @@ def test_the_worker_runs_the_requested_tasks_and_refuses_unloaded_ones(tmp_path:
 
 @pytest.mark.parametrize(
     ("stale_tasks", "label"),
-    [(("mood-aggressive",), "Reanalyze · Aggression"), (TASKS, "Reanalyze")],
+    [(("mood-aggressive",), "Reanalyze · Intensity"), (TASKS, "Reanalyze")],
 )
 def test_the_library_names_the_tasks_a_partial_reanalysis_runs(
     stale_tasks: tuple[AnalysisTask, ...], label: str

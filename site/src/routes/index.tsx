@@ -107,7 +107,7 @@ function Home() {
             <div>
               <h2 className="block__title">What it runs</h2>
               <p className="block__body">
-                MAEST for genre and Discogs-EffNet heads for mood and aggression by default.
+                MAEST for genre and Discogs-EffNet heads for mood and intensity by default.
                 Instrument evidence is there when you ask for it.
               </p>
               <p className="block__body">
@@ -149,7 +149,7 @@ function Home() {
               </li>
             </ol>
             <p className="block__body">
-              Genre, mood/theme, and aggression run by default. After downloading the instrument
+              Genre, mood/theme, and intensity run by default. After downloading the instrument
               model, launch with <code>--tasks genre,mood-theme,instrument,mood-aggressive</code> to
               use all four tasks.
             </p>

@@ -709,11 +709,11 @@ def test_plan_written_before_mood_aggressive_still_loads(tmp_path: Path) -> None
 
 def test_mood_aggressive_changes_are_described_like_the_other_effnet_tasks() -> None:
     assert friendly_change(TagChange("TXXX:SETTAG_MOOD_AGGRESSIVE", None, ["A", "B"])) == (
-        "Aggression labels: 0 → 2"
+        "Intensity labels: 0 → 2"
     )
     assert friendly_change(
         TagChange("----:com.lsdcapital.settag:MOOD_AGGRESSIVE_SCORES", None, ["[]"])
-    ) == ("Aggression ranked score data: add")
+    ) == ("Intensity ranked score data: add")
 
 
 def test_old_plan_requires_original_file_when_exact_metadata_is_unknown(tmp_path: Path) -> None:

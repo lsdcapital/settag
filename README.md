@@ -2,8 +2,8 @@
 
 SetTag is a terminal-first analysis assistant for DJ music libraries. It uses
 MAEST for genre and optional Discogs-EffNet heads for mood/theme, instrument,
-and aggressive-mood evidence, then lets you stage and verify metadata changes
-before writing.
+and intensity (aggressive-mood) evidence, then lets you stage and verify
+metadata changes before writing.
 
 The default experience is a Textual app. The same executable also provides a
 plain, non-TUI CLI for scripts, redirected output, saved plans, and CI.
@@ -93,7 +93,7 @@ tasks = ["genre", "mood-theme", "instrument", "mood-aggressive"]
 ```
 
 Adding a task here does not mean analysing the library again from scratch.
-Tracks analysed before show **Reanalyze · Aggression** (or whichever tasks are
+Tracks analysed before show **Reanalyze · Intensity** (or whichever tasks are
 missing or out of date), and enrichment runs only those tasks, keeping the
 file's other results. The same applies when one task's model or settings change.
 

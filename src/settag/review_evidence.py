@@ -173,8 +173,8 @@ def describe_evidence(plan: PlannedWrite | StoredEvidence) -> EvidenceReview:
         "Mood/theme ranked score data",
         "Instrument labels",
         "Instrument ranked score data",
-        "Aggression labels",
-        "Aggression ranked score data",
+        "Intensity labels",
+        "Intensity ranked score data",
     }
     if prediction_fields.intersection(prefixes):
         changes.append("Save audio predictions and analysis provenance")

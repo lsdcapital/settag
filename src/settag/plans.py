@@ -581,7 +581,7 @@ def friendly_change(change: TagChange) -> str:
     effnet_names = {
         "SETTAG_MOOD_THEME": "Mood/theme",
         "SETTAG_INSTRUMENT": "Instrument",
-        "SETTAG_MOOD_AGGRESSIVE": "Aggression",
+        "SETTAG_MOOD_AGGRESSIVE": "Intensity",
     }
     if logical in effnet_names:
         return f"{effnet_names[logical]} labels: {before_count} → {after_count}"

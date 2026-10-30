@@ -556,7 +556,7 @@ pass of that task rather than a full reanalysis. The worker loads every configur
 model once and runs the requested subset per file; MAEST is skipped entirely when
 genre is current. A file never analysed, or with a record that cannot say which
 tasks are good, runs every task. The library labels a partial reanalysis with
-the tasks it will run (`Reanalyze · Aggression`). Audio
+the tasks it will run (`Reanalyze · Intensity`). Audio
 metadata stores the top 60 ranked results for each task without applying the
 review cutoff. `EVIDENCE_LIMIT` in `policy.py` is the single source of that
 bound and records why it is 60 rather than a shortlist.
