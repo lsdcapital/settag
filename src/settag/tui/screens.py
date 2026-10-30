@@ -179,6 +179,50 @@ class ConfirmWriteScreen(ModalScreen[bool]):
         self.dismiss(False)
 
 
+class ConfirmAnalyzeScreen(ModalScreen[bool]):
+    """Ask before Enter starts work on one track, so opening a track never runs anything."""
+
+    BINDINGS = [
+        Binding("enter,y", "confirm", "Analyze"),
+        Binding("n,escape", "cancel", "Cancel"),
+    ]
+
+    def __init__(self, track_name: str) -> None:
+        super().__init__()
+        self.track_name = track_name
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="confirm-dialog"):
+            yield Label("Analyze this track?", id="dialog-title")
+            yield Static(self.track_name, markup=False, id="confirm-summary")
+            yield Static(
+                "Only this track, whatever else is selected. Nothing is written to the file "
+                "until you review the result.",
+                markup=False,
+                id="dialog-help",
+            )
+            with Horizontal(classes="dialog-actions"):
+                yield Button("Cancel", id="cancel")
+                yield Button("Analyze", variant="primary", id="confirm")
+
+    def on_mount(self) -> None:
+        self.query_one("#confirm", Button).focus()
+
+    @on(Button.Pressed, "#confirm")
+    def confirm_button(self) -> None:
+        self.dismiss(True)
+
+    @on(Button.Pressed, "#cancel")
+    def cancel_button(self) -> None:
+        self.dismiss(False)
+
+    def action_confirm(self) -> None:
+        self.dismiss(True)
+
+    def action_cancel(self) -> None:
+        self.dismiss(False)
+
+
 class UndoScreen(ModalScreen[str | None]):
     """Pick a previous write batch to revert."""
 

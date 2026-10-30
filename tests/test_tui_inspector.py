@@ -26,7 +26,7 @@ def test_library_details_open_with_a_summary_and_the_next_step(tmp_path: Path) -
     summary = lines[:detail]
     assert summary[0] == path.name
     assert "Not analyzed yet" in summary
-    assert "Enter  analyze this track" in summary
+    assert "Enter  analyze this track (asks first)" in summary
     assert "Candidates · cutoff ≥ 0.10 · top 5" in lines[detail:]
     assert display_path(path.parent) == lines[-1]
 

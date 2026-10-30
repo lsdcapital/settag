@@ -27,7 +27,7 @@ from settag.tui import (
     UndoScreen,
 )
 from settag.tui.review import ReviewTree
-from settag.tui.screens import ErrorScreen
+from settag.tui.screens import ConfirmAnalyzeScreen, ErrorScreen
 from settag.workflow import (
     AnalysisBatch,
     AnalysisFailure,
@@ -2305,7 +2305,7 @@ def test_genre_edits_save_in_order_without_blocking_the_ui(tmp_path: Path) -> No
         unlocked.set()
 
 
-def test_enter_analyzes_only_the_highlighted_track_then_opens_its_result(tmp_path: Path) -> None:
+def test_enter_asks_then_analyzes_only_the_highlighted_track(tmp_path: Path) -> None:
     paths = tuple(tmp_path / name for name in ("a.wav", "b.wav"))
     for path in paths:
         _silent_wav(path)
@@ -2327,6 +2327,16 @@ def test_enter_analyzes_only_the_highlighted_track_then_opens_its_result(tmp_pat
             assert app.analysis_selected == {0, 1}
             assert "Enter analyze this track" in str(app.query_one("#status", Static).render())
             await pilot.press("down", "enter")
+            await pilot.pause()
+            # Enter only asks; Esc leaves everything as it was.
+            assert isinstance(app.screen, ConfirmAnalyzeScreen)
+            await pilot.press("escape")
+            await pilot.pause()
+            assert analyzed == []
+            assert not app.analysis_running
+            await pilot.press("enter")
+            await pilot.pause()
+            await pilot.press("enter")
             await app.workers.wait_for_complete()
             await pilot.pause()
             assert analyzed == [paths[1]]

@@ -9,7 +9,7 @@ from textual.widgets import DataTable, ProgressBar, Static
 
 from settag.plans import PlannedWrite, stage_default_file_genre
 from settag.tui.core import SetTagAppCore
-from settag.tui.screens import ErrorScreen
+from settag.tui.screens import ConfirmAnalyzeScreen, ErrorScreen
 from settag.workflow import AnalysisBatch
 
 
@@ -40,13 +40,20 @@ class AnalysisFlow(SetTagAppCore):
             if self.analysis_running:
                 self.notify("Enrichment is already running. Esc stops after the current track.")
                 return
-            self._start_enrichment(refresh_catalog=False, indices=(index,))
+            self.push_screen(
+                ConfirmAnalyzeScreen(entry.path.name),
+                lambda confirmed: self._analyze_one(index) if confirmed else None,
+            )
         elif entry.metadata_error is not None:
             self.notify("This file's metadata cannot be read, so it cannot be analyzed.")
         elif entry.metadata is not None and entry.metadata.is_sample:
             self.notify("This file is too short to analyze.")
         else:
             self.notify("Up to date. To check Beatport again, select it with Space and press C.")
+
+    def _analyze_one(self, index: int) -> None:
+        if self.phase == "choose" and not self.analysis_running:
+            self._start_enrichment(refresh_catalog=False, indices=(index,))
 
     def _start_enrichment(
         self, *, refresh_catalog: bool, indices: tuple[int, ...] | None = None

@@ -41,7 +41,7 @@ NextStep = Literal["review", "enrich"]
 #: What Enter does on a library row, shown in the details panel and the status line.
 NEXT_STEP_LABELS: dict[NextStep, str] = {
     "review": "review the suggestion",
-    "enrich": "analyze this track",
+    "enrich": "analyze this track (asks first)",
 }
 
 LibraryFilter = Literal["all", "needs_analysis", "missing_genre", "current"]
