@@ -1,4 +1,4 @@
-.PHONY: help build update check check-site fix format lint typecheck test release clean
+.PHONY: help build update check check-site deploy fix format lint typecheck test release clean
 
 BUMP ?= patch
 
@@ -8,6 +8,7 @@ help:
 	@echo "  make update       - Bump Python packages, site packages, and pinned actions"
 	@echo "  make check        - Run all quality checks (lint, format, typecheck, test, site)"
 	@echo "  make check-site   - Typecheck and build the marketing site only"
+	@echo "  make deploy       - Check the marketing site, then deploy it to Cloudflare"
 	@echo "  make fix          - Auto-fix issues (ruff check --fix, ruff format)"
 	@echo "  make format       - Format code with ruff"
 	@echo "  make lint         - Lint code with ruff"
@@ -68,6 +69,12 @@ check-site:
 	cd site && pnpm build
 	@test -f site/dist/client/index.html
 	@grep -aq "Audio never leaves the machine." site/dist/client/index.html
+
+# The site's deploy script reads the Cloudflare account and token from Doppler
+# settag/prod; see site/README.md for why it must not fall back to wrangler's
+# logged-in account. check-site first, so an empty prerender never ships.
+deploy: check-site
+	cd site && pnpm run deploy
 
 format:
 	uv run ruff format .
